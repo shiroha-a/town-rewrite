@@ -1,0 +1,144 @@
+// Package worker runs time-progression jobs (daily interest, economy ticks,
+// random events). Only one worker acts at a time via a Redis leader lock, and
+// daily jobs are idempotent per game date.
+package worker
+
+import (
+	"context"
+	"log/slog"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
+
+	"github.com/shiroha-a/town/internal/bank"
+	"github.com/shiroha-a/town/internal/config"
+	"github.com/shiroha-a/town/internal/gametime"
+	"github.com/shiroha-a/town/internal/ledger"
+)
+
+const leaderKey = "town:worker:leader"
+
+// Worker drives scheduled game progression.
+type Worker struct {
+	rdb    *redis.Client
+	pool   *pgxpool.Pool
+	ledger *ledger.Repo
+	cfg    *config.Config
+	logger *slog.Logger
+	loc    *time.Location
+}
+
+func New(rdb *redis.Client, pool *pgxpool.Pool, led *ledger.Repo, cfg *config.Config, logger *slog.Logger) *Worker {
+	loc, err := time.LoadLocation(cfg.Game.Timezone)
+	if err != nil {
+		logger.Warn("invalid timezone, falling back to UTC", "timezone", cfg.Game.Timezone, "err", err)
+		loc = time.UTC
+	}
+	return &Worker{rdb: rdb, pool: pool, ledger: led, cfg: cfg, logger: logger, loc: loc}
+}
+
+// Run ticks until the context is cancelled.
+func (w *Worker) Run(ctx context.Context) error {
+	interval := w.cfg.Worker.TickInterval.Std()
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	w.logger.Info("worker started", "tick", interval.String())
+	for {
+		select {
+		case <-ctx.Done():
+			w.logger.Info("worker stopping")
+			return nil
+		case <-ticker.C:
+			w.tick(ctx)
+		}
+	}
+}
+
+// tick acquires the leader lock and, if acquired, runs due jobs. Non-leaders
+// simply return until the lock expires.
+func (w *Worker) tick(ctx context.Context) {
+	ttl := w.cfg.Worker.LeaderLockTTL.Std()
+	if ttl <= 0 {
+		ttl = 30 * time.Second
+	}
+	acquired, err := w.rdb.SetNX(ctx, leaderKey, "1", ttl).Result()
+	if err != nil {
+		w.logger.Error("leader lock", "err", err)
+		return
+	}
+	if !acquired {
+		return
+	}
+	// 身体/頭脳パワーの自動回復と空腹値の減少(毎tick)。
+	if n, err := RecoverPower(ctx, w.pool, w.cfg.Game.EnergyRecoverySec, w.cfg.Game.NouRecoverySec); err != nil {
+		w.logger.Error("recover power", "err", err)
+	} else if n > 0 {
+		w.logger.Info("power recovered", "players", n)
+	}
+	if _, err := DecaySatiety(ctx, w.pool, w.cfg.Game.SatietyDecaySec); err != nil {
+		w.logger.Error("decay satiety", "err", err)
+	}
+	// 病気指数のコンディション評価(評価間隔を過ぎたプレイヤーを1回ぶん評価)。
+	if n, err := EvaluateDisease(ctx, w.pool, w.cfg.Game.ConditionEvalIntervalMin); err != nil {
+		w.logger.Error("evaluate disease", "err", err)
+	} else if n > 0 {
+		w.logger.Info("disease evaluated", "players", n)
+	}
+	w.runDailyIfNeeded(ctx, time.Now())
+}
+
+// gameDate returns the game day for a wall-clock instant. The day rolls over at
+// day_boundary_hour local time (e.g. AM 5:00), matching typical social-game
+// reset behavior.
+func (w *Worker) gameDate(now time.Time) time.Time {
+	return gametime.Date(now, w.loc, w.cfg.Game.DayBoundaryHour)
+}
+
+// runDailyIfNeeded runs the daily job exactly once per game date. The
+// worker_jobs table provides the idempotency and catch-up guarantee.
+func (w *Worker) runDailyIfNeeded(ctx context.Context, now time.Time) {
+	date := w.gameDate(now)
+	var (
+		ran              bool
+		interestAccounts int
+	)
+	// worker_jobsの請求と日次処理を同一トランザクションで行うことで、
+	// 途中クラッシュ時はロールバックされ「請求済みだが未処理」を防ぐ。
+	err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`INSERT INTO worker_jobs (job_date, job_type) VALUES ($1, 'daily')
+			 ON CONFLICT (job_date, job_type) DO NOTHING`, date)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return nil // 本日分は実行済み
+		}
+		ran = true
+		interestAccounts, err = bank.AccrueInterest(ctx, tx, w.ledger, w.cfg.Game.DailyInterestPermille)
+		if err != nil {
+			return err
+		}
+		// 日単位耐久アイテムの残日数を1減らし、失効したものを削除する。
+		if err := DecayDayItems(ctx, tx); err != nil {
+			return err
+		}
+		return nil
+		// TODO: 経済再計算・ランダムイベント等もここに追加する。
+	})
+	if err != nil {
+		w.logger.Error("daily job", "err", err)
+		return
+	}
+	if ran {
+		w.logger.Info("daily job ran",
+			"game_date", date.Format("2006-01-02"),
+			"interest_accounts", interestAccounts)
+	}
+}

@@ -1,0 +1,18 @@
+# 作業用一時ディレクトリ(元zip・展開物・設計メモ)
+.tmp/
+
+# Node / Playwright
+node_modules/
+test-results/
+playwright-report/
+blob-report/
+
+# E2Eテスト用に自動生成されるゲームインスタンス(scripts/reset_test_data.shで再生成)
+town_test/
+
+# レガシー原本・ローカル参照(第三者ゲーム。公開リポジトリには含めない)
+/town/
+/scripts/
+/docker/
+/compose.yaml
+/README.md

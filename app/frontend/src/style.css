@@ -1,0 +1,357 @@
+/* レガシーtown(TOWN ver.1.40)のレイアウト・配色を再現する。
+   参照: 稼働中のレガシーCGI(port 8081)。クラス名・色・背景画像はレガシー準拠。 */
+
+body {
+  margin: 5px;
+  background-color: #e0ffff;
+  background-image: url(/img/wall029.gif);
+  font-family: "MS PGothic", Osaka, "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
+  font-size: 13px;
+  color: #000;
+}
+
+/* レガシーのステータス系クラス */
+.dai {
+  font-size: 13px;
+  font-weight: bold;
+  color: #000;
+}
+.tyuu {
+  font-size: 13px;
+  color: #ff6600;
+}
+.honbun2 {
+  font-size: 13px;
+  line-height: 16px;
+  color: #006699;
+}
+/* 病気などコンディション悪化の強調表示 */
+.sick {
+  color: #cc0033;
+  font-weight: bold;
+}
+.honbun3 {
+  font-size: 13px;
+  line-height: 13px;
+  color: #006699;
+}
+.honbun5 {
+  font-size: 13px;
+  line-height: 13px;
+  color: #339900;
+}
+.honbun4 {
+  font-size: 13px;
+  line-height: 22px;
+  color: #006699;
+}
+.small {
+  font-size: 13px;
+  color: #444;
+}
+.midasi {
+  font-size: 16px;
+  font-weight: bold;
+  text-align: center;
+  color: #666;
+}
+
+/* レイアウト */
+.town {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+.col-left {
+  width: 522px;
+  flex: 0 0 auto;
+}
+.col-right {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.whitebox {
+  background: #fff;
+  border: 1px solid #cfcfcf;
+}
+.orangebox {
+  background: #fff;
+  border: 2px solid #ff9933;
+}
+
+.participant {
+  background: #fff;
+  border: 1px solid #ccc;
+  padding: 3px 6px;
+  margin-bottom: 4px;
+}
+
+/* 街マップ */
+.mapwrap {
+  background: #fff;
+  border: 1px solid #cfcfcf;
+  padding: 4px;
+}
+table.townmap {
+  border-collapse: collapse;
+  background-image: url(/img/sima.gif);
+  background-color: #66ccff;
+}
+table.townmap td {
+  width: 32px;
+  height: 32px;
+  text-align: center;
+  vertical-align: middle;
+  padding: 0;
+}
+.colhead {
+  font-size: 11px;
+  color: #333;
+  text-align: center;
+  width: 32px;
+  height: 14px;
+}
+.rowhead {
+  font-size: 11px;
+  color: #333;
+  width: 14px;
+}
+.facility {
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  line-height: 0;
+}
+.facility img {
+  display: block;
+}
+.facility:hover {
+  outline: 2px solid #ff6600;
+}
+
+.ticker {
+  color: #cc0033;
+  text-align: center;
+  padding: 4px;
+  background: #fff;
+  border: 1px solid #cfcfcf;
+  margin-top: 4px;
+}
+
+/* 右カラム: 街情報ヘッダ */
+.town-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+}
+.town-info .num {
+  font-size: 11px;
+  color: #333;
+  text-align: right;
+  line-height: 1.5;
+}
+
+/* コマンドアイコン列 */
+.command-icons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid #cfcfcf;
+}
+.command-icons button {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  line-height: 0;
+}
+.command-icons button:hover {
+  outline: 2px solid #ff6600;
+}
+/* 就労クールタイム中の仕事アイコン: グレーアウト+残り時間ラベル */
+.command-icons button.on-cooldown {
+  position: relative;
+  cursor: not-allowed;
+}
+.command-icons button.on-cooldown:hover {
+  outline: 0;
+}
+.command-icons button.on-cooldown img {
+  filter: grayscale(1);
+  opacity: 0.4;
+}
+.command-icons button .cmd-cooldown {
+  position: absolute;
+  left: 50%;
+  bottom: -2px;
+  transform: translateX(-50%);
+  font-size: 9px;
+  line-height: 1;
+  white-space: nowrap;
+  color: #a0308c;
+  background: rgba(255, 255, 255, 0.85);
+  padding: 1px 2px;
+  border-radius: 2px;
+}
+
+/* ステータスパネル */
+.status {
+  padding: 8px 10px;
+}
+.status .name {
+  color: #000;
+  font-weight: bold;
+}
+.money {
+  color: #cc3300;
+  font-weight: bold;
+}
+.powerbar {
+  display: inline-block;
+  width: 200px;
+  height: 8px;
+  vertical-align: middle;
+  background: #d9d9d9;
+  border: 1px solid #999;
+  overflow: hidden;
+}
+/* 残量バー本体。幅はJSで%指定、色は残量に応じてクラスで切替。値変化はtransitionで滑らかに描画 */
+.bar-fill {
+  display: block;
+  height: 100%;
+  transition:
+    width 0.6s ease,
+    background-color 0.4s ease;
+}
+.bar-fill.blue {
+  background-color: #2f7fe0;
+}
+.bar-fill.yellow {
+  background-color: #f0c020;
+}
+.bar-fill.red {
+  background-color: #e04040;
+}
+
+/* パラメータ一覧(右端) */
+.params {
+  width: 92px;
+  flex: 0 0 auto;
+}
+.params .phead {
+  text-align: center;
+  color: #cc0033;
+  font-weight: bold;
+  font-size: 12px;
+  border-bottom: 1px solid #eee;
+}
+.params table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.params td {
+  font-size: 12px;
+  color: #006699;
+  padding: 0 2px;
+}
+.params td.v {
+  text-align: right;
+  color: #333;
+  font-weight: bold;
+  background: #fffbe6;
+}
+
+/* 施設パネル(クリックで開く) */
+.facility-panel {
+  margin-top: 6px;
+  padding: 8px 10px;
+}
+.facility-panel h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: #ff6600;
+}
+table.grid {
+  width: 100%;
+  border-collapse: collapse;
+}
+table.grid td {
+  padding: 3px 6px;
+  border-bottom: 1px dashed #e2e2e2;
+}
+table.grid td.right {
+  text-align: right;
+}
+
+button.btn {
+  font-size: 12px;
+  padding: 2px 10px;
+  background: #f6f3e6;
+  border: 1px solid #b9bda4;
+  border-radius: 3px;
+  cursor: pointer;
+}
+button.btn:hover:not(:disabled) {
+  background: #efe9d2;
+}
+button.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+input[type='text'],
+input[type='number'] {
+  font-size: 12px;
+  padding: 2px 4px;
+  border: 1px solid #b9bda4;
+}
+
+.message {
+  margin: 4px 0;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+.message.error {
+  background: #ffe9e9;
+  color: #c00;
+}
+.message.ok {
+  background: #e9f6e9;
+  color: #060;
+}
+.muted {
+  color: #999;
+  font-size: 11px;
+}
+
+.footer {
+  text-align: center;
+  color: #666;
+  font-size: 12px;
+  margin: 16px 0;
+}
+
+/* ログイン画面はシンプルな白パネル */
+.login-panel {
+  background: #fff;
+  border: 1px solid #cfcfcf;
+  max-width: 420px;
+  margin: 0 auto 12px;
+  padding: 10px 12px;
+}
+.login-panel h2 {
+  font-size: 14px;
+  color: #ff6600;
+  margin: 0 0 8px;
+}
+h1.town-title {
+  font-size: 22px;
+  text-align: center;
+  color: #666;
+  letter-spacing: 4px;
+  margin: 8px 0;
+}

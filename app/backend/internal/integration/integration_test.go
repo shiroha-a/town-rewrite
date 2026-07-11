@@ -1,0 +1,1379 @@
+// Package integration holds API-level tests that exercise the full stack
+// against a real PostgreSQL instance. They run only when TOWN_TEST_DATABASE_URL
+// is set (e.g. pointed at the compose test database).
+package integration
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/shiroha-a/town/internal/action"
+	"github.com/shiroha-a/town/internal/bank"
+	"github.com/shiroha-a/town/internal/content"
+	"github.com/shiroha-a/town/internal/db"
+	"github.com/shiroha-a/town/internal/httpapi"
+	"github.com/shiroha-a/town/internal/ledger"
+	"github.com/shiroha-a/town/internal/player"
+	"github.com/shiroha-a/town/internal/rng"
+	"github.com/shiroha-a/town/internal/worker"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type playerResp struct {
+	ID      int64    `json:"id"`
+	Roles   []string `json:"roles"`
+	Money   int64    `json:"money"`
+	Savings int64    `json:"savings"`
+	Status  struct {
+		Job          string   `json:"job"`
+		JobLevel     int      `json:"job_level"`
+		JobExp       int      `json:"job_exp"`
+		JobKaisuu    int      `json:"job_kaisuu"`
+		MasteredJobs []string `json:"mastered_jobs"`
+		Energy       int      `json:"energy"`
+		EnergyMax    int      `json:"energy_max"`
+		NouEnergy    int      `json:"nou_energy"`
+		NouEnergyMax int      `json:"nou_energy_max"`
+		Satiety      int      `json:"satiety"`
+		HeightCm     int      `json:"height_cm"`
+		WeightG      int      `json:"weight_g"`
+		BMI          int      `json:"bmi"`
+		BodyType     string   `json:"body_type"`
+		DiseaseIndex int      `json:"disease_index"`
+		DiseaseName  string   `json:"disease_name"`
+		Condition    string   `json:"condition"`
+	} `json:"status"`
+	Items []struct {
+		ItemID        int64  `json:"item_id"`
+		Name          string `json:"name"`
+		Quantity      int    `json:"quantity"`
+		RemainingUses int    `json:"remaining_uses"`
+		Sets          int    `json:"sets"`
+	} `json:"items"`
+}
+
+func (p playerResp) itemQty(itemID int64) int {
+	for _, it := range p.Items {
+		if it.ItemID == itemID {
+			return it.Quantity
+		}
+	}
+	return 0
+}
+
+func (p playerResp) itemRemaining(itemID int64) int {
+	for _, it := range p.Items {
+		if it.ItemID == itemID {
+			return it.RemainingUses
+		}
+	}
+	return 0
+}
+
+func setup(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
+	t.Helper()
+	url := os.Getenv("TOWN_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TOWN_TEST_DATABASE_URL not set; skipping integration test")
+	}
+	ctx := context.Background()
+	if err := db.Migrate(url); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	pool, err := db.Connect(ctx, url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	// 各テスト前にワールド状態をまっさらにする(content_jobsのシードは残す)。
+	// shop_daily_stockはgame_date別に在庫を持つため、テスト間で在庫が持ち越されて
+	// 枯渇しないようリセット対象に含める。
+	if _, err := pool.Exec(ctx,
+		`TRUNCATE players, player_roles, player_status, status_history,
+		 ledger_entry, ledger_tx, action_log, worker_jobs, shop_daily_stock RESTART IDENTITY CASCADE`); err != nil {
+		pool.Close()
+		t.Fatalf("truncate: %v", err)
+	}
+
+	led := ledger.New(pool)
+	svc := player.New(pool, led, rng.New(1), 500000)
+	actions := action.New(pool, led, svc, rng.New(2), time.UTC, 5, 0, 60, 60)
+	contentSvc := content.New(pool)
+	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc))
+	t.Cleanup(func() {
+		srv.Close()
+		pool.Close()
+	})
+	return srv, pool
+}
+
+func register(t *testing.T, base, host, uid string) playerResp {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"instance_host": host, "remote_user_id": uid})
+	resp, err := http.Post(base+"/api/v1/players", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("register status: %d", resp.StatusCode)
+	}
+	var p playerResp
+	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return p
+}
+
+func hasRole(roles []string, want string) bool {
+	for _, r := range roles {
+		if r == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRegistrationAndLedger(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	// 最初のプレイヤーは管理者ロール + 初期所持金50万円。
+	first := register(t, srv.URL, "misskey.example", "alice")
+	if !hasRole(first.Roles, "admin") {
+		t.Errorf("first player roles = %v, want admin", first.Roles)
+	}
+	if first.Money != 500000 {
+		t.Errorf("first player money = %d, want 500000", first.Money)
+	}
+	if first.Status.Job != "学生" {
+		t.Errorf("first player job = %q, want 学生", first.Status.Job)
+	}
+
+	// 2人目は一般ユーザー。
+	second := register(t, srv.URL, "misskey.example", "bob")
+	if hasRole(second.Roles, "admin") {
+		t.Errorf("second player should not be admin: %v", second.Roles)
+	}
+	if !hasRole(second.Roles, "user") {
+		t.Errorf("second player roles = %v, want user", second.Roles)
+	}
+
+	// 同一identityの再登録は冪等: 同じID・所持金は二重付与されない。
+	again := register(t, srv.URL, "misskey.example", "alice")
+	if again.ID != first.ID {
+		t.Errorf("re-register id = %d, want %d", again.ID, first.ID)
+	}
+	if again.Money != 500000 {
+		t.Errorf("re-register money = %d, want 500000 (no double grant)", again.Money)
+	}
+
+	// GET でも同じ値が読める。
+	resp, err := http.Get(srv.URL + "/api/v1/players/" + strconv.FormatInt(first.ID, 10))
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status: %d", resp.StatusCode)
+	}
+
+	// 台帳の全entry合計は常に0(複式の不変条件)。
+	led := ledger.New(pool)
+	sum, err := led.AuditZeroSum(ctx)
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+	if sum != 0 {
+		t.Errorf("ledger zero-sum invariant broken: sum = %d", sum)
+	}
+
+	// 流通マネー総量 = 2人 × 50万円。
+	total, err := led.TotalPlayerMoney(ctx)
+	if err != nil {
+		t.Fatalf("total: %v", err)
+	}
+	if total != 1000000 {
+		t.Errorf("total player money = %d, want 1000000", total)
+	}
+}
+
+func doWork(t *testing.T, base string, id int64, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"idempotency_key": idemKey})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(id, 10)+"/work",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("work post: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("work decode: %v", err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+// 回帰: 別プレイヤーが同じ冪等キーを使っても、双方の入金が行われること。
+// (以前は台帳refがグローバルで、2人目の入金が誤ってスキップされていた)
+func TestCrossPlayerIdempotency(t *testing.T) {
+	srv, _ := setup(t)
+
+	p1 := register(t, srv.URL, "misskey.example", "one")
+	p2 := register(t, srv.URL, "misskey.example", "two")
+	changeJob(t, srv.URL, p1.ID, "アルバイト", "j-one")
+	changeJob(t, srv.URL, p2.ID, "アルバイト", "j-two")
+
+	const shared = "SHARED-KEY"
+	r1, c1 := doWork(t, srv.URL, p1.ID, shared)
+	r2, c2 := doWork(t, srv.URL, p2.ID, shared)
+	if c1 != http.StatusOK || c2 != http.StatusOK {
+		t.Fatalf("work status: %d %d", c1, c2)
+	}
+	if r1.Money != 501000 {
+		t.Errorf("player1 money = %d, want 501000", r1.Money)
+	}
+	if r2.Money != 501000 {
+		t.Errorf("player2 money = %d, want 501000 (同一キーでも別プレイヤーは独立)", r2.Money)
+	}
+}
+
+func changeJob(t *testing.T, base string, id int64, jobName, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"job_name": jobName, "idempotency_key": idemKey})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(id, 10)+"/job",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("job post: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		json.NewDecoder(resp.Body).Decode(&p)
+	}
+	return p, resp.StatusCode
+}
+
+func TestWorkAction(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	alice := register(t, srv.URL, "misskey.example", "alice")
+	// energy_maxは初期パラメータ(各5)由来で6(design 17.9、旧basic.cgi式)。
+	if alice.Status.Energy != 6 || alice.Money != 500000 {
+		t.Fatalf("initial state: energy=%d money=%d", alice.Status.Energy, alice.Money)
+	}
+	if alice.Status.Job != "学生" {
+		t.Fatalf("initial job = %q, want 学生", alice.Status.Job)
+	}
+
+	// 学生は働けない -> 422。
+	if _, code := doWork(t, srv.URL, alice.ID, "work-student"); code != http.StatusUnprocessableEntity {
+		t.Errorf("student work status = %d, want 422", code)
+	}
+
+	// 職業安定所でアルバイトに転職。
+	jp, code := changeJob(t, srv.URL, alice.ID, "アルバイト", "job-1")
+	if code != http.StatusOK {
+		t.Fatalf("change job status = %d", code)
+	}
+	if jp.Status.Job != "アルバイト" {
+		t.Errorf("job after change = %q, want アルバイト", jp.Status.Job)
+	}
+
+	// 仕事1回: +1000円, 身体パワー-1(初期上限6→6-1=5)。
+	p, code := doWork(t, srv.URL, alice.ID, "work-1")
+	if code != http.StatusOK {
+		t.Fatalf("work status = %d", code)
+	}
+	if p.Money != 501000 || p.Status.Energy != 5 {
+		t.Errorf("after work: money=%d energy=%d, want 501000/5", p.Money, p.Status.Energy)
+	}
+
+	// 同一idempotency_keyの再実行は冪等: 状態は変わらない。
+	p2, code := doWork(t, srv.URL, alice.ID, "work-1")
+	if code != http.StatusOK {
+		t.Fatalf("idempotent work status = %d", code)
+	}
+	if p2.Money != 501000 || p2.Status.Energy != 5 {
+		t.Errorf("idempotent work changed state: money=%d energy=%d", p2.Money, p2.Status.Energy)
+	}
+
+	// 別キーならもう一度適用される(5-1=4)。
+	p3, _ := doWork(t, srv.URL, alice.ID, "work-2")
+	if p3.Money != 502000 || p3.Status.Energy != 4 {
+		t.Errorf("second work: money=%d energy=%d, want 502000/4", p3.Money, p3.Status.Energy)
+	}
+
+	// 身体パワー0では条件不成立 -> 422、状態は不変。
+	if _, err := pool.Exec(ctx, `UPDATE player_status SET energy = 0 WHERE player_id = $1`, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, code = doWork(t, srv.URL, alice.ID, "work-3")
+	if code != http.StatusUnprocessableEntity {
+		t.Errorf("work with 0 energy status = %d, want 422", code)
+	}
+	after, _ := http.Get(srv.URL + "/api/v1/players/" + strconv.FormatInt(alice.ID, 10))
+	after.Body.Close()
+
+	// 失敗したアクションのidempotency_keyは消費されていない(再試行可能)。
+	var used int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM action_log WHERE idempotency_key = 'work-3'`).Scan(&used); err != nil {
+		t.Fatal(err)
+	}
+	if used != 0 {
+		t.Errorf("failed action consumed its idempotency key (count=%d)", used)
+	}
+
+	// 台帳ゼロ和は保たれる。
+	led := ledger.New(pool)
+	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
+		t.Errorf("ledger zero-sum broken: %d", sum)
+	}
+}
+
+func itemAction(t *testing.T, base, path string, playerID, itemID int64, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"item_id": itemID, "idempotency_key": idemKey})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+path,
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("%s post: %v", path, err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("%s decode: %v", path, err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+// buySets purchases `sets` sets of an item in one request.
+func buySets(t *testing.T, base string, playerID, itemID int64, sets int, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"item_id": itemID, "sets": sets, "idempotency_key": idemKey})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/buy",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("buy post: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		json.NewDecoder(resp.Body).Decode(&p)
+	}
+	return p, resp.StatusCode
+}
+
+func TestBuyAndUseItem(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	// シードされた「栄養ドリンク」(500円, energy+3)のIDを引く。
+	var drinkID int64
+	if err := pool.QueryRow(ctx,
+		`SELECT id FROM content_items WHERE name = '栄養ドリンク'`).Scan(&drinkID); err != nil {
+		t.Fatalf("seed lookup: %v", err)
+	}
+
+	alice := register(t, srv.URL, "misskey.example", "alice")
+
+	// 購入: 500円がplayerからsystem:shop_sinkへ抜け、所持品+1。
+	p, code := itemAction(t, srv.URL, "/buy", alice.ID, drinkID, "buy-1")
+	if code != http.StatusOK {
+		t.Fatalf("buy status = %d", code)
+	}
+	if p.Money != 499500 {
+		t.Errorf("money after buy = %d, want 499500", p.Money)
+	}
+	if p.itemQty(drinkID) != 1 {
+		t.Errorf("drink qty after buy = %d, want 1", p.itemQty(drinkID))
+	}
+
+	// 購入は流通マネーを減らす(sink)。台帳ゼロ和は維持。
+	led := ledger.New(pool)
+	if total, _ := led.TotalPlayerMoney(ctx); total != 499500 {
+		t.Errorf("circulating money = %d, want 499500", total)
+	}
+	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
+		t.Errorf("ledger zero-sum broken after buy: %d", sum)
+	}
+
+	// 購入の冪等性: 同一キーは二重課金しない。
+	p2, _ := itemAction(t, srv.URL, "/buy", alice.ID, drinkID, "buy-1")
+	if p2.Money != 499500 || p2.itemQty(drinkID) != 1 {
+		t.Errorf("idempotent buy changed state: money=%d qty=%d", p2.Money, p2.itemQty(drinkID))
+	}
+
+	// 使用: 所持品-1、energy+3。上限(パラメータ由来=6)未満まで下げてから使い回復を観測する。
+	if _, err := pool.Exec(ctx, `UPDATE player_status SET energy = 2 WHERE player_id = $1`, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	p3, code := itemAction(t, srv.URL, "/use", alice.ID, drinkID, "use-1")
+	if code != http.StatusOK {
+		t.Fatalf("use status = %d", code)
+	}
+	if p3.Status.Energy != 5 {
+		t.Errorf("energy after use = %d, want 5 (2+3)", p3.Status.Energy)
+	}
+	if p3.itemQty(drinkID) != 0 {
+		t.Errorf("drink qty after use = %d, want 0", p3.itemQty(drinkID))
+	}
+
+	// 在庫が無い状態での使用は 422。
+	_, code = itemAction(t, srv.URL, "/use", alice.ID, drinkID, "use-2")
+	if code != http.StatusUnprocessableEntity {
+		t.Errorf("use without stock status = %d, want 422", code)
+	}
+
+	// 所持金不足での購入は 422。所持金を0まで抜いて(複式でゼロ和維持)高額本を買う。
+	var bookID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM content_items WHERE name = '参考書'`).Scan(&bookID); err != nil {
+		t.Fatal(err)
+	}
+	if err := led.Post(ctx, "test_drain", "", []ledger.Entry{
+		{Account: ledger.PlayerAccount(alice.ID), Delta: -p3.Money},
+		{Account: ledger.SystemAccount("test_drain"), Delta: p3.Money},
+	}); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	_, code = itemAction(t, srv.URL, "/buy", alice.ID, bookID, "buy-book")
+	if code != http.StatusUnprocessableEntity {
+		t.Errorf("buy with no money status = %d, want 422", code)
+	}
+}
+
+func TestPowerRecovery(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	alice := register(t, srv.URL, "misskey.example", "alice")
+
+	// energyを2(基準5分前)、nouを3(基準2分前)にする。rate60秒。
+	// 回復メカニクスを上限式から切り離して検証するため energy_max/nou_energy_max は10に固定する。
+	if _, err := pool.Exec(ctx,
+		`UPDATE player_status
+		 SET energy = 2, energy_max = 10, energy_recovered_at = now() - interval '5 minutes',
+		     nou_energy = 3, nou_energy_max = 10, nou_recovered_at = now() - interval '2 minutes'
+		 WHERE player_id = $1`, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := worker.RecoverPower(ctx, pool, 60, 60); err != nil {
+		t.Fatal(err)
+	}
+	var e, ne int
+	if err := pool.QueryRow(ctx,
+		`SELECT energy, nou_energy FROM player_status WHERE player_id = $1`, alice.ID).Scan(&e, &ne); err != nil {
+		t.Fatal(err)
+	}
+	if e != 7 { // 2 + floor(300/60)=5
+		t.Errorf("energy = %d, want 7", e)
+	}
+	if ne != 5 { // 3 + floor(120/60)=2
+		t.Errorf("nou_energy = %d, want 5", ne)
+	}
+
+	// 上限クランプ: energy_max(10)を超えない。
+	if _, err := pool.Exec(ctx,
+		`UPDATE player_status SET energy = 9, energy_recovered_at = now() - interval '10 minutes'
+		 WHERE player_id = $1`, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := worker.RecoverPower(ctx, pool, 60, 60); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT energy FROM player_status WHERE player_id = $1`, alice.ID).Scan(&e); err != nil {
+		t.Fatal(err)
+	}
+	if e != 10 {
+		t.Errorf("energy after cap = %d, want 10", e)
+	}
+}
+
+func TestSyokudou(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	// 食堂メニュー取得。
+	resp, err := http.Get(srv.URL + "/api/v1/facilities/syokudou/menu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var menu []struct {
+		ID    int64  `json:"id"`
+		Name  string `json:"name"`
+		Price int64  `json:"price"`
+	}
+	json.NewDecoder(resp.Body).Decode(&menu)
+	resp.Body.Close()
+	if len(menu) < 3 {
+		t.Fatalf("menu size = %d", len(menu))
+	}
+	var curryID, curryPrice int64
+	for _, m := range menu {
+		if m.Name == "カレー" {
+			curryID, curryPrice = m.ID, m.Price
+		}
+	}
+	if curryID == 0 {
+		t.Fatal("カレー not in menu")
+	}
+
+	alice := register(t, srv.URL, "misskey.example", "alice") // satiety=100(満腹)
+
+	eatOnce := func(key string) (playerResp, int) {
+		body, _ := json.Marshal(map[string]any{"food_id": curryID, "idempotency_key": key})
+		resp, err := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/eat",
+			"application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("eat post: %v", err)
+		}
+		defer resp.Body.Close()
+		var p playerResp
+		if resp.StatusCode == http.StatusOK {
+			json.NewDecoder(resp.Body).Decode(&p)
+		}
+		return p, resp.StatusCode
+	}
+
+	// 満腹(100)では食べられない -> 422。
+	if _, code := eatOnce("eat-full"); code != http.StatusUnprocessableEntity {
+		t.Errorf("eat while full status = %d, want 422", code)
+	}
+
+	// 満腹度を50に下げると食べられる。一律で満腹(100)になる。
+	if _, err := pool.Exec(ctx, `UPDATE player_status SET satiety = 50 WHERE player_id = $1`, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	p, code := eatOnce("eat-1")
+	if code != http.StatusOK {
+		t.Fatalf("eat status = %d", code)
+	}
+	if p.Money != 500000-curryPrice {
+		t.Errorf("money = %d, want %d", p.Money, 500000-curryPrice)
+	}
+	if p.Status.Satiety != 100 {
+		t.Errorf("satiety = %d, want 100 (一律で満腹)", p.Status.Satiety)
+	}
+	var tairyoku int
+	pool.QueryRow(ctx, `SELECT tairyoku FROM player_status WHERE player_id = $1`, alice.ID).Scan(&tairyoku)
+	if tairyoku != 7 { // 初期5 + 2
+		t.Errorf("tairyoku = %d, want 7", tairyoku)
+	}
+
+	// 満腹になったので続けては食べられない -> 422。
+	if _, code := eatOnce("eat-2"); code != http.StatusUnprocessableEntity {
+		t.Errorf("second eat status = %d, want 422", code)
+	}
+}
+
+func TestGym(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	resp, err := http.Get(srv.URL + "/api/v1/facilities/gym/menu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var menu []struct {
+		ID    int64  `json:"id"`
+		Name  string `json:"name"`
+		Price int64  `json:"price"`
+	}
+	json.NewDecoder(resp.Body).Decode(&menu)
+	resp.Body.Close()
+	var stretchID, stretchPrice int64
+	for _, m := range menu {
+		if m.Name == "ストレッチ" {
+			stretchID, stretchPrice = m.ID, m.Price
+		}
+	}
+	if stretchID == 0 {
+		t.Fatal("ストレッチ not in gym menu")
+	}
+
+	alice := register(t, srv.URL, "misskey.example", "alice")
+
+	// 鍛える: 代金-600, 身体パワー-1(初期上限6→6-1=5), 体力+1。
+	body, _ := json.Marshal(map[string]any{"menu_id": stretchID, "idempotency_key": "gym-1"})
+	resp, _ = http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/facilities/gym/use",
+		"application/json", bytes.NewReader(body))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("train status = %d", resp.StatusCode)
+	}
+	var p playerResp
+	json.NewDecoder(resp.Body).Decode(&p)
+	resp.Body.Close()
+	if p.Money != 500000-stretchPrice {
+		t.Errorf("money = %d, want %d", p.Money, 500000-stretchPrice)
+	}
+	if p.Status.Energy != 5 {
+		t.Errorf("energy = %d, want 5", p.Status.Energy)
+	}
+	var tairyoku int
+	pool.QueryRow(ctx, `SELECT tairyoku FROM player_status WHERE player_id = $1`, alice.ID).Scan(&tairyoku)
+	if tairyoku != 6 { // 初期5 + 1
+		t.Errorf("tairyoku = %d, want 6", tairyoku)
+	}
+
+	// クールタイム内の再トレーニングは 422。
+	body, _ = json.Marshal(map[string]any{"menu_id": stretchID, "idempotency_key": "gym-2"})
+	resp, _ = http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/facilities/gym/use",
+		"application/json", bytes.NewReader(body))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("second train status = %d, want 422", resp.StatusCode)
+	}
+}
+
+func TestItemUseCooldown(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	// 栄養ドリンクは使用間隔30分。
+	var drinkID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM content_items WHERE name = '栄養ドリンク'`).Scan(&drinkID); err != nil {
+		t.Fatal(err)
+	}
+	alice := register(t, srv.URL, "misskey.example", "alice")
+
+	// 2個購入。
+	itemAction(t, srv.URL, "/buy", alice.ID, drinkID, "b1")
+	itemAction(t, srv.URL, "/buy", alice.ID, drinkID, "b2")
+
+	// 1回目の使用はOK。
+	if _, code := itemAction(t, srv.URL, "/use", alice.ID, drinkID, "u1"); code != http.StatusOK {
+		t.Fatalf("first use status = %d, want 200", code)
+	}
+	// 間隔内の2回目は 422(在庫はあるがクールタイム中)。
+	if _, code := itemAction(t, srv.URL, "/use", alice.ID, drinkID, "u2"); code != http.StatusUnprocessableEntity {
+		t.Errorf("second use within interval status = %d, want 422", code)
+	}
+	// 在庫は減っていない(2個購入-1使用=1個)。
+	var qty int
+	if err := pool.QueryRow(ctx,
+		`SELECT quantity FROM player_items WHERE player_id = $1 AND item_id = $2`,
+		alice.ID, drinkID).Scan(&qty); err != nil {
+		t.Fatal(err)
+	}
+	if qty != 1 {
+		t.Errorf("quantity = %d, want 1 (cooldownで2回目は消費されない)", qty)
+	}
+}
+
+func bankAction(t *testing.T, base, path string, playerID, amount int64, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"amount": amount, "idempotency_key": idemKey})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+path,
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("%s post: %v", path, err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("%s decode: %v", path, err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+func TestBankAndInterest(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	alice := register(t, srv.URL, "misskey.example", "alice") // cash 500000, savings 0
+
+	// 預金: cash 500000 -> 400000, savings 0 -> 100000。
+	p, code := bankAction(t, srv.URL, "/bank/deposit", alice.ID, 100000, "dep-1")
+	if code != http.StatusOK {
+		t.Fatalf("deposit status = %d", code)
+	}
+	if p.Money != 400000 || p.Savings != 100000 {
+		t.Errorf("after deposit: cash=%d savings=%d, want 400000/100000", p.Money, p.Savings)
+	}
+
+	// 引き出し: savings 100000 -> 60000, cash 400000 -> 440000。
+	p, code = bankAction(t, srv.URL, "/bank/withdraw", alice.ID, 40000, "wd-1")
+	if code != http.StatusOK {
+		t.Fatalf("withdraw status = %d", code)
+	}
+	if p.Money != 440000 || p.Savings != 60000 {
+		t.Errorf("after withdraw: cash=%d savings=%d, want 440000/60000", p.Money, p.Savings)
+	}
+
+	// 貯金超過の引き出しは 422。
+	_, code = bankAction(t, srv.URL, "/bank/withdraw", alice.ID, 999999, "wd-2")
+	if code != http.StatusUnprocessableEntity {
+		t.Errorf("over-withdraw status = %d, want 422", code)
+	}
+
+	// 日次利息: savings 60000 の 0.5% = 300(切り捨て)。
+	led := ledger.New(pool)
+	accrue := func() int {
+		var n int
+		err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			var e error
+			n, e = bank.AccrueInterest(ctx, tx, led, 5)
+			return e
+		})
+		if err != nil {
+			t.Fatalf("accrue: %v", err)
+		}
+		return n
+	}
+	if n := accrue(); n != 1 {
+		t.Errorf("interest accounts = %d, want 1", n)
+	}
+	sav, err := led.Balance(ctx, ledger.SavingsAccount(alice.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sav != 60300 {
+		t.Errorf("savings after interest = %d, want 60300 (60000 + floor(0.5%%))", sav)
+	}
+
+	// 台帳ゼロ和は利息(faucet)後も維持。
+	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
+		t.Errorf("ledger zero-sum broken after interest: %d", sum)
+	}
+}
+
+func adminPost(t *testing.T, base, path string, actingID int64, body any) (int, []byte) {
+	t.Helper()
+	b, _ := json.Marshal(body)
+	req, err := http.NewRequest(http.MethodPost, base+path, bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if actingID > 0 {
+		req.Header.Set("X-Acting-Player-Id", strconv.FormatInt(actingID, 10))
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, data
+}
+
+func TestAdminContentAndSimulate(t *testing.T) {
+	srv, _ := setup(t)
+
+	admin := register(t, srv.URL, "misskey.example", "root") // 最初=admin
+	user := register(t, srv.URL, "misskey.example", "alice") // 一般
+
+	// 認可: ヘッダ無し=401、非admin=403。
+	if code, _ := adminPost(t, srv.URL, "/api/v1/admin/items", 0, map[string]any{"name": "x"}); code != http.StatusUnauthorized {
+		t.Errorf("no-header status = %d, want 401", code)
+	}
+	if code, _ := adminPost(t, srv.URL, "/api/v1/admin/items", user.ID, map[string]any{"name": "x"}); code != http.StatusForbidden {
+		t.Errorf("non-admin status = %d, want 403", code)
+	}
+
+	// アイテム作成(有効な効果)。
+	code, body := adminPost(t, srv.URL, "/api/v1/admin/items", admin.ID, map[string]any{
+		"name": "回復薬", "category": "薬", "price": 300,
+		"effect": []map[string]any{{"op": "add_param", "param": "energy", "amount": 5}},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("create item status = %d, body = %s", code, body)
+	}
+	var created struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == 0 || created.Name != "回復薬" {
+		t.Errorf("created item = %+v", created)
+	}
+
+	// 不正な効果は 400 で拒否(未知op)。
+	if code, _ := adminPost(t, srv.URL, "/api/v1/admin/items", admin.ID, map[string]any{
+		"name": "bad", "effect": []map[string]any{{"op": "delete_universe"}},
+	}); code != http.StatusBadRequest {
+		t.Errorf("invalid effect status = %d, want 400", code)
+	}
+
+	// シミュレート: 所持金を増やす効果は faucet 警告を返す。
+	code, body = adminPost(t, srv.URL, "/api/v1/admin/simulate", admin.ID, map[string]any{
+		"effect": []map[string]any{
+			{"op": "add_money", "amount": 1000},
+			{"op": "add_param", "param": "energy", "amount": -2},
+		},
+		"state": map[string]any{
+			"money":  500,
+			"params": map[string]any{"energy": map[string]any{"value": 5, "max": 10}},
+		},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("simulate status = %d, body = %s", code, body)
+	}
+	var sim struct {
+		Plan struct {
+			MoneyDelta int64 `json:"money_delta"`
+			Params     []struct {
+				Name     string `json:"name"`
+				NewValue int    `json:"new_value"`
+			} `json:"params"`
+		} `json:"plan"`
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(body, &sim); err != nil {
+		t.Fatal(err)
+	}
+	if sim.Plan.MoneyDelta != 1000 {
+		t.Errorf("sim money_delta = %d, want 1000", sim.Plan.MoneyDelta)
+	}
+	if len(sim.Plan.Params) != 1 || sim.Plan.Params[0].NewValue != 3 {
+		t.Errorf("sim params = %+v, want energy->3", sim.Plan.Params)
+	}
+	if len(sim.Warnings) == 0 {
+		t.Error("expected a faucet warning for the money-adding effect")
+	}
+
+	// End-to-end: 管理者が作ったアイテムをプレイヤーが購入できる。
+	p, buyCode := itemAction(t, srv.URL, "/buy", user.ID, created.ID, "buy-created")
+	if buyCode != http.StatusOK {
+		t.Fatalf("buy admin-created item status = %d", buyCode)
+	}
+	if p.Money != 499700 {
+		t.Errorf("money after buying created item = %d, want 499700", p.Money)
+	}
+	if p.itemQty(created.ID) != 1 {
+		t.Errorf("qty of created item = %d, want 1", p.itemQty(created.ID))
+	}
+}
+
+// TestItemDurability: 耐久6回の参考書を1セット買い、6回使えて7回目は消えて使えないこと。
+func TestItemDurability(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	var bookID int64 // 参考書: durability=6, use_interval=60分
+	if err := pool.QueryRow(ctx, `SELECT id FROM content_items WHERE name = '参考書'`).Scan(&bookID); err != nil {
+		t.Fatalf("seed lookup: %v", err)
+	}
+	alice := register(t, srv.URL, "misskey.example", "alice")
+
+	p, code := itemAction(t, srv.URL, "/buy", alice.ID, bookID, "buy-book")
+	if code != http.StatusOK {
+		t.Fatalf("buy status = %d", code)
+	}
+	if got := p.itemRemaining(bookID); got != 6 {
+		t.Errorf("remaining after buy = %d, want 6", got)
+	}
+	if got := p.itemQty(bookID); got != 1 {
+		t.Errorf("sets after buy = %d, want 1", got)
+	}
+
+	// 6回使える(クールタイムはlast_used_atをクリアして回避)。
+	for i := 1; i <= 6; i++ {
+		if _, err := pool.Exec(ctx,
+			`UPDATE player_items SET last_used_at = NULL WHERE player_id = $1 AND item_id = $2`,
+			alice.ID, bookID); err != nil {
+			t.Fatal(err)
+		}
+		if _, code := itemAction(t, srv.URL, "/use", alice.ID, bookID, fmt.Sprintf("use-%d", i)); code != http.StatusOK {
+			t.Fatalf("use #%d status = %d, want 200", i, code)
+		}
+	}
+	// 残量が尽きて7回目は所持していない(422)。
+	if _, code := itemAction(t, srv.URL, "/use", alice.ID, bookID, "use-7"); code != http.StatusUnprocessableEntity {
+		t.Errorf("7th use status = %d, want 422 (durability exhausted)", code)
+	}
+}
+
+// TestPurchaseLimit: 同一アイテムは最大5セットまで、超過は422。
+func TestPurchaseLimit(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	var drinkID int64 // 栄養ドリンク: durability=1, max_sets=5, stock=20
+	if err := pool.QueryRow(ctx, `SELECT id FROM content_items WHERE name = '栄養ドリンク'`).Scan(&drinkID); err != nil {
+		t.Fatalf("seed lookup: %v", err)
+	}
+	alice := register(t, srv.URL, "misskey.example", "alice")
+
+	// 5セット一括はOK。
+	p, code := buySets(t, srv.URL, alice.ID, drinkID, 5, "buy5")
+	if code != http.StatusOK {
+		t.Fatalf("buy 5 sets status = %d", code)
+	}
+	if p.itemQty(drinkID) != 5 {
+		t.Errorf("sets after buy5 = %d, want 5", p.itemQty(drinkID))
+	}
+	// 6セット目は所持上限超過で422。
+	if _, code := buySets(t, srv.URL, alice.ID, drinkID, 1, "buy6"); code != http.StatusUnprocessableEntity {
+		t.Errorf("6th set status = %d, want 422", code)
+	}
+	// 一度に6セットも上限超過で422。
+	bob := register(t, srv.URL, "misskey.example", "bob")
+	if _, code := buySets(t, srv.URL, bob.ID, drinkID, 6, "buy6b"); code != http.StatusUnprocessableEntity {
+		t.Errorf("buy 6 at once status = %d, want 422", code)
+	}
+}
+
+// TestStockSoldOut: 在庫が尽きると購入不可(422)。
+func TestStockSoldOut(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	var drinkID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM content_items WHERE name = '栄養ドリンク'`).Scan(&drinkID); err != nil {
+		t.Fatalf("seed lookup: %v", err)
+	}
+	alice := register(t, srv.URL, "misskey.example", "alice")
+
+	// 1セット購入で当日在庫行がlazy生成される。
+	if _, code := itemAction(t, srv.URL, "/buy", alice.ID, drinkID, "b1"); code != http.StatusOK {
+		t.Fatalf("buy status = %d", code)
+	}
+	// 在庫を0にして売り切れを再現。
+	if _, err := pool.Exec(ctx, `UPDATE shop_daily_stock SET remaining = 0 WHERE item_id = $1`, drinkID); err != nil {
+		t.Fatal(err)
+	}
+	if _, code := itemAction(t, srv.URL, "/buy", alice.ID, drinkID, "b2"); code != http.StatusUnprocessableEntity {
+		t.Errorf("sold-out buy status = %d, want 422", code)
+	}
+}
+
+// TestDayDurabilityItem: 日単位耐久は使用で減らず、日次デクリメントで失効する。
+func TestDayDurabilityItem(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	var passID int64 // フィットネス会員証: durability=7, unit=day
+	if err := pool.QueryRow(ctx, `SELECT id FROM content_items WHERE name = 'フィットネス会員証'`).Scan(&passID); err != nil {
+		t.Fatalf("seed lookup: %v", err)
+	}
+	alice := register(t, srv.URL, "misskey.example", "alice")
+
+	p, code := itemAction(t, srv.URL, "/buy", alice.ID, passID, "buy-pass")
+	if code != http.StatusOK {
+		t.Fatalf("buy status = %d", code)
+	}
+	if got := p.itemRemaining(passID); got != 7 {
+		t.Errorf("remaining after buy = %d, want 7", got)
+	}
+
+	// 使用しても残日数は減らない(日単位)。
+	p2, code := itemAction(t, srv.URL, "/use", alice.ID, passID, "use-pass")
+	if code != http.StatusOK {
+		t.Fatalf("use status = %d", code)
+	}
+	if got := p2.itemRemaining(passID); got != 7 {
+		t.Errorf("remaining after use = %d, want 7 (day unit does not consume)", got)
+	}
+
+	// 日次デクリメントを7回で失効し持ち物から消える。
+	for i := 0; i < 7; i++ {
+		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			return worker.DecayDayItems(ctx, tx)
+		}); err != nil {
+			t.Fatalf("decay day items: %v", err)
+		}
+	}
+	var cnt int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM player_items WHERE player_id = $1 AND item_id = $2`,
+		alice.ID, passID).Scan(&cnt); err != nil {
+		t.Fatal(err)
+	}
+	if cnt != 0 {
+		t.Errorf("expired day item still held: count = %d, want 0", cnt)
+	}
+}
+
+// TestBodyMetrics covers Phase C: initial height/weight from the server RNG,
+// server-authoritative BMI/body-type derivation, and weight gain from eating.
+func TestBodyMetrics(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	alice := register(t, srv.URL, "misskey.example", "alice")
+
+	// 初期身長/体重はサーバRNGで女性テーブルの範囲に収まる。
+	if alice.Status.HeightCm < 150 || alice.Status.HeightCm > 174 {
+		t.Errorf("height_cm = %d, want 150..174", alice.Status.HeightCm)
+	}
+	if alice.Status.WeightG < 48000 || alice.Status.WeightG > 67000 {
+		t.Errorf("weight_g = %d, want 48000..67000", alice.Status.WeightG)
+	}
+
+	// BMIはサーバ側でfloor算出。手計算と一致すること。
+	h := float64(alice.Status.HeightCm) / 100.0
+	wantBMI := int(float64(alice.Status.WeightG) / 1000.0 / (h * h))
+	if alice.Status.BMI != wantBMI {
+		t.Errorf("bmi = %d, want %d", alice.Status.BMI, wantBMI)
+	}
+	if alice.Status.BodyType == "" {
+		t.Error("body_type is empty")
+	}
+
+	// カレー(calorie_g=1000)を食べると体重がちょうど1000g増える。
+	resp, err := http.Get(srv.URL + "/api/v1/facilities/syokudou/menu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var menu []struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	}
+	json.NewDecoder(resp.Body).Decode(&menu)
+	resp.Body.Close()
+	var curryID int64
+	for _, m := range menu {
+		if m.Name == "カレー" {
+			curryID = m.ID
+		}
+	}
+	if curryID == 0 {
+		t.Fatal("カレー not in menu")
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE player_status SET satiety = 30 WHERE player_id = $1`, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := alice.Status.WeightG
+	body, _ := json.Marshal(map[string]any{"food_id": curryID, "idempotency_key": "body-eat-1"})
+	eatResp, err := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/eat",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eatResp.StatusCode != http.StatusOK {
+		t.Fatalf("eat status = %d", eatResp.StatusCode)
+	}
+	var after playerResp
+	json.NewDecoder(eatResp.Body).Decode(&after)
+	eatResp.Body.Close()
+
+	if after.Status.WeightG != before+1000 {
+		t.Errorf("weight after curry = %d, want %d (+1000 calorie_g)", after.Status.WeightG, before+1000)
+	}
+	// 体重変化に伴いBMI/体型も再算出される。
+	h2 := float64(after.Status.HeightCm) / 100.0
+	wantBMI2 := int(float64(after.Status.WeightG) / 1000.0 / (h2 * h2))
+	if after.Status.BMI != wantBMI2 {
+		t.Errorf("bmi after eat = %d, want %d", after.Status.BMI, wantBMI2)
+	}
+}
+
+// TestHospitalTreat covers Phase D: the hospital charges the server-derived fee
+// for the current disease and resets the disease index to the healthy baseline.
+func TestHospitalTreat(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	alice := register(t, srv.URL, "misskey.example", "alice")
+
+	// disease_index=-12 -> 病名「風邪」、治療費28000。
+	if _, err := pool.Exec(ctx,
+		`UPDATE player_status SET disease_index = -12 WHERE player_id = $1`, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := register(t, srv.URL, "misskey.example", "alice") // 既存を引き直し(お金確認用)
+	if before.Status.DiseaseName != "風邪" {
+		t.Fatalf("disease_name = %q, want 風邪", before.Status.DiseaseName)
+	}
+	if before.Status.Condition != "風邪" {
+		t.Errorf("condition = %q, want 風邪(病名で上書き)", before.Status.Condition)
+	}
+
+	body, _ := json.Marshal(map[string]any{"idempotency_key": "treat-1"})
+	resp, err := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/hospital/treat",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("treat status = %d", resp.StatusCode)
+	}
+	var after playerResp
+	json.NewDecoder(resp.Body).Decode(&after)
+	resp.Body.Close()
+
+	if after.Money != before.Money-28000 {
+		t.Errorf("money after treat = %d, want %d (fee 28000)", after.Money, before.Money-28000)
+	}
+	if after.Status.DiseaseIndex != 50 {
+		t.Errorf("disease_index after treat = %d, want 50", after.Status.DiseaseIndex)
+	}
+	if after.Status.DiseaseName != "" {
+		t.Errorf("disease_name after treat = %q, want empty", after.Status.DiseaseName)
+	}
+
+	// お金不足なら422。重病(癌 index=-101, fee 88000)に所持金を0近くにして再現。
+	if _, err := pool.Exec(ctx,
+		`UPDATE player_status SET disease_index = -101 WHERE player_id = $1`, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	// 所持金を1円に(貯金には移さずledgerで引き出す代わりにテスト用に直接不足を作る)。
+	drain := after.Money - 1
+	body2, _ := json.Marshal(map[string]any{"amount": drain, "idempotency_key": "drain-1"})
+	dep, _ := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/bank/deposit",
+		"application/json", bytes.NewReader(body2))
+	dep.Body.Close()
+	body3, _ := json.Marshal(map[string]any{"idempotency_key": "treat-poor"})
+	poor, _ := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/hospital/treat",
+		"application/json", bytes.NewReader(body3))
+	if poor.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("treat while poor status = %d, want 422", poor.StatusCode)
+	}
+	poor.Body.Close()
+}
+
+// TestDiseaseDrift covers the worker's condition-based disease-index evaluation.
+func TestDiseaseDrift(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	alice := register(t, srv.URL, "misskey.example", "alice")
+
+	// 悪いコンディション(sisuu~25)を作る: energy50%/nou0%/標準体型/丁度いい満腹。
+	// 病気指数=40、評価時刻を1時間前にしてdueにする。
+	if _, err := pool.Exec(ctx, `
+		UPDATE player_status SET energy=5, energy_max=10, nou_energy=0, nou_energy_max=10,
+		    kenkou=5, satiety=70, height_cm=160, weight_g=56000,
+		    disease_index=40, disease_evaled_at = now() - interval '1 hour'
+		WHERE player_id = $1`, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	// 悪い(delta -3) -> 40 - 3 = 37。
+	n, err := worker.EvaluateDisease(ctx, pool, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("evaluated players = %d, want 1", n)
+	}
+	var idx int
+	pool.QueryRow(ctx, `SELECT disease_index FROM player_status WHERE player_id=$1`, alice.ID).Scan(&idx)
+	if idx != 37 {
+		t.Errorf("disease_index after bad-condition eval = %d, want 37 (悪い -3)", idx)
+	}
+
+	// 直後は評価時刻が更新されており、続けて評価してもdueにならない。
+	n2, _ := worker.EvaluateDisease(ctx, pool, 1)
+	if n2 != 0 {
+		t.Errorf("second eval players = %d, want 0 (評価時刻が更新済み)", n2)
+	}
+
+	// 最高コンディションは+2だが上限50でクリップ。
+	if _, err := pool.Exec(ctx, `
+		UPDATE player_status SET energy=10, nou_energy=10, satiety=70,
+		    disease_index=50, disease_evaled_at = now() - interval '1 hour'
+		WHERE player_id = $1`, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	worker.EvaluateDisease(ctx, pool, 1)
+	pool.QueryRow(ctx, `SELECT disease_index FROM player_status WHERE player_id=$1`, alice.ID).Scan(&idx)
+	if idx != 50 {
+		t.Errorf("disease_index after best-condition eval = %d, want 50 (上限クリップ)", idx)
+	}
+}
+
+// TestJobEconomy covers Phase E: salary + condition-based experience on work,
+// mastery at level 15, and the require_master gate on higher-tier jobs.
+func TestJobEconomy(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	alice := register(t, srv.URL, "misskey.example", "alice")
+	changeJob(t, srv.URL, alice.ID, "アルバイト", "j-baito")
+
+	// 1回働く: 給料+1000、勤務回数1、経験値が正方向に増える。
+	p, code := doWork(t, srv.URL, alice.ID, "w1")
+	if code != http.StatusOK {
+		t.Fatalf("work status = %d", code)
+	}
+	if p.Money != 501000 {
+		t.Errorf("money after work = %d, want 501000 (salary 1000)", p.Money)
+	}
+	if p.Status.JobKaisuu != 1 {
+		t.Errorf("job_kaisuu = %d, want 1", p.Status.JobKaisuu)
+	}
+	if p.Status.JobExp <= 0 {
+		t.Errorf("job_exp = %d, want > 0", p.Status.JobExp)
+	}
+
+	// マスターしていないので正社員(require_master=アルバイト)には就けない。
+	_, code = changeJob(t, srv.URL, alice.ID, "正社員", "j-seishain-early")
+	if code != http.StatusUnprocessableEntity {
+		t.Errorf("change to 正社員 without master status = %d, want 422", code)
+	}
+
+	// 就労条件を最高コンディションにし、経験値をレベル15手前に上げて1回働くとマスター認定。
+	if _, err := pool.Exec(ctx, `
+		UPDATE player_status SET job_exp = 1499, energy = 10, nou_energy = 10, satiety = 70,
+		    height_cm = 160, weight_g = 56000, disease_index = 50
+		WHERE player_id = $1`, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	p, code = doWork(t, srv.URL, alice.ID, "w-master")
+	if code != http.StatusOK {
+		t.Fatalf("master work status = %d", code)
+	}
+	if p.Status.JobLevel < 15 {
+		t.Fatalf("job_level = %d, want >= 15", p.Status.JobLevel)
+	}
+	mastered := false
+	for _, m := range p.Status.MasteredJobs {
+		if m == "アルバイト" {
+			mastered = true
+		}
+	}
+	if !mastered {
+		t.Errorf("mastered_jobs = %v, want to contain アルバイト", p.Status.MasteredJobs)
+	}
+
+	// マスター後は正社員に就ける(転職で経験値/回数リセット)。
+	p, code = changeJob(t, srv.URL, alice.ID, "正社員", "j-seishain")
+	if code != http.StatusOK {
+		t.Fatalf("change to 正社員 after master status = %d", code)
+	}
+	if p.Status.Job != "正社員" {
+		t.Errorf("job = %q, want 正社員", p.Status.Job)
+	}
+	if p.Status.JobExp != 0 || p.Status.JobKaisuu != 0 {
+		t.Errorf("after job change exp/kaisuu = %d/%d, want 0/0", p.Status.JobExp, p.Status.JobKaisuu)
+	}
+}
+
+// TestWorkCannotWhenSick covers that severe illness blocks working.
+func TestWorkCannotWhenSick(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	alice := register(t, srv.URL, "misskey.example", "alice")
+	changeJob(t, srv.URL, alice.ID, "アルバイト", "j-baito")
+
+	// 結核(disease_index=-50)は重病で就労不可。
+	if _, err := pool.Exec(ctx,
+		`UPDATE player_status SET disease_index = -50 WHERE player_id = $1`, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, code := doWork(t, srv.URL, alice.ID, "w-sick")
+	if code != http.StatusUnprocessableEntity {
+		t.Errorf("work while gravely ill status = %d, want 422", code)
+	}
+}
+
+// TestDerivedPowerMax covers Phase F (design 17.9): energy_max / nou_energy_max
+// are derived from the player's parameters (legacy basic.cgi formula) rather than
+// a fixed cap, and are recomputed when parameters change.
+func TestDerivedPowerMax(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	alice := register(t, srv.URL, "misskey.example", "alice")
+	// 初期パラメータ(各5)由来: energy_max = floor(5/12+5/4+5/4+5/8*3)+1 = 6、nou も 6。
+	var emax, nmax int
+	if err := pool.QueryRow(ctx,
+		`SELECT energy_max, nou_energy_max FROM player_status WHERE player_id = $1`, alice.ID).
+		Scan(&emax, &nmax); err != nil {
+		t.Fatal(err)
+	}
+	if emax != 6 || nmax != 6 {
+		t.Errorf("initial derived max = %d/%d, want 6/6", emax, nmax)
+	}
+
+	// 身体パラメータを鍛えた状態にし、パラメータ変化(アイテム使用)で上限が再計算されること。
+	if _, err := pool.Exec(ctx,
+		`UPDATE player_status SET tairyoku = 40, kenkou = 40, power = 40 WHERE player_id = $1`, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	var drinkID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM content_items WHERE name = '栄養ドリンク'`).Scan(&drinkID); err != nil {
+		t.Fatal(err)
+	}
+	itemAction(t, srv.URL, "/buy", alice.ID, drinkID, "pm-buy")
+	itemAction(t, srv.URL, "/use", alice.ID, drinkID, "pm-use") // energy(パラメータ)変化 -> RefreshPowerMax
+
+	if err := pool.QueryRow(ctx,
+		`SELECT energy_max FROM player_status WHERE player_id = $1`, alice.ID).Scan(&emax); err != nil {
+		t.Fatal(err)
+	}
+	// floor(5/12 + 40/4 + 40/4 + 5/8 + 40/8 + 5/8 + 5/8) + 1 = floor(27.29) + 1 = 28。
+	if emax != 28 {
+		t.Errorf("derived energy_max after training = %d, want 28", emax)
+	}
+}
+
+// TestOnsen covers the reworked hot spring: bathing accelerates the player's
+// natural power recovery by the bath's multiplier over elapsed time (not a fixed
+// amount), charges the fee, and rejects bathing while already full.
+func TestOnsen(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	alice := register(t, srv.URL, "misskey.example", "alice")
+
+	var bathID int64
+	var price int64
+	if err := pool.QueryRow(ctx,
+		`SELECT id, price FROM content_items WHERE name = '普通風呂' AND facility = 'onsen'`).
+		Scan(&bathID, &price); err != nil {
+		t.Fatal(err)
+	}
+
+	// パワーを1に下げ、回復基準時刻を5分前にして経過時間を作る(倍率10で一気にMAX回復)。
+	if _, err := pool.Exec(ctx, `
+		UPDATE player_status SET energy = 1, nou_energy = 1,
+		    energy_recovered_at = now() - interval '5 minutes',
+		    nou_recovered_at = now() - interval '5 minutes'
+		WHERE player_id = $1`, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(map[string]any{"bath_id": bathID, "idempotency_key": "onsen-1"})
+	resp, err := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/onsen/bathe",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("bathe status = %d", resp.StatusCode)
+	}
+	var after playerResp
+	json.NewDecoder(resp.Body).Decode(&after)
+	resp.Body.Close()
+
+	// 倍率10 × 5分ぶんの加速回復で上限(6)までフル回復し、料金が引かれる。
+	if after.Status.Energy != after.Status.EnergyMax {
+		t.Errorf("energy after onsen = %d, want max %d", after.Status.Energy, after.Status.EnergyMax)
+	}
+	if after.Money != 500000-price {
+		t.Errorf("money after onsen = %d, want %d", after.Money, 500000-price)
+	}
+
+	// 満タン状態でもう一度入ると無駄遣い防止で422。
+	body2, _ := json.Marshal(map[string]any{"bath_id": bathID, "idempotency_key": "onsen-full"})
+	full, _ := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/onsen/bathe",
+		"application/json", bytes.NewReader(body2))
+	if full.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("bathe while full status = %d, want 422", full.StatusCode)
+	}
+	full.Body.Close()
+}

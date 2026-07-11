@@ -1,0 +1,341 @@
+// Package player implements player registration and status reads. Money is
+// always read through the ledger; it is never stored as a mutable column.
+package player
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/shiroha-a/town/internal/condition"
+	"github.com/shiroha-a/town/internal/effects"
+	"github.com/shiroha-a/town/internal/ledger"
+	"github.com/shiroha-a/town/internal/rng"
+)
+
+// Player is the aggregate returned to callers.
+type Player struct {
+	ID           int64
+	InstanceHost string
+	RemoteUserID string
+	DisplayName  string
+	Roles        []string
+	Money        int64
+	Savings      int64
+	Status       Status
+	Params       Params
+	Items        []ItemStack
+}
+
+// Params holds the detailed player parameters shown on the main screen.
+// アダルト系(エッチ)はリライトで排除済み。
+type Params struct {
+	// 頭脳(教科)
+	Kokugo  int
+	Suugaku int
+	Rika    int
+	Syakai  int
+	Eigo    int
+	Ongaku  int
+	Bijutsu int
+	// 身体
+	Looks      int
+	Tairyoku   int
+	Kenkou     int
+	Speed      int
+	Power      int
+	Wanryoku   int
+	Kyakuryoku int
+	// その他
+	Love       int
+	Omoshirosa int
+}
+
+// ItemStack is one held item with its quantity and use-effect summary.
+type ItemStack struct {
+	ItemID          int64
+	Name            string
+	Quantity        int
+	RemainingUses   int            // 残量('use'=残り総使用回数, 'day'=残日数)
+	Sets            int            // 表示セット数 = ceil(remaining_uses/durability)
+	Money           int64          // 使用時のお金増減
+	Params          map[string]int // 使用時の上昇パラメータ
+	IntervalMin     int            // 使用間隔(分)
+	NextAvailableAt *time.Time     // クールタイム中の再使用可能時刻(未使用/経過済みはnil)
+}
+
+// Status holds the current gameplay stats.
+type Status struct {
+	Energy          int
+	EnergyMax       int
+	NouEnergy       int
+	NouEnergyMax    int
+	Job             string
+	JobLevel        int
+	JobExp          int        // 現在の職業の総経験値
+	JobKaisuu       int        // 現在の職業での累計勤務回数
+	MasteredJobs    []string   // マスター済み職業(レベル15到達で追加)
+	Satiety         int        // 空腹値(満腹度 0-100)
+	HeightCm        int        // 身長cm
+	WeightG         int        // 体重g(表示はweight_g/1000でkg)
+	BMI             int        // 体格指数(weight/height^2の整数切り捨て、旧check_BMI準拠)
+	BodyType        string     // 体型ラベル(BMIからの派生)
+	DiseaseIndex    int        // 病気指数(基準50、0未満で発病)
+	DiseaseName     string     // 病名(病気指数からの派生、健康なら空)
+	Condition       string     // コンディション表示ラベル(病名があれば病名、なければ体調ラベル)
+	WorkAvailableAt *time.Time // 就労クールタイム中の再就労可能時刻(可能ならnil)
+}
+
+// Service is the player domain service.
+type Service struct {
+	pool         *pgxpool.Pool
+	ledger       *ledger.Repo
+	rng          *rng.Rand
+	initialMoney int64
+}
+
+func New(pool *pgxpool.Pool, l *ledger.Repo, r *rng.Rand, initialMoney int64) *Service {
+	return &Service{pool: pool, ledger: l, rng: r, initialMoney: initialMoney}
+}
+
+// ErrNotFound is returned when a player does not exist.
+var ErrNotFound = errors.New("player not found")
+
+// Register creates a new player, or returns the existing one if the identity
+// (instance_host, remote_user_id) is already registered. The very first player
+// in the world is granted the admin role. New players receive the initial money
+// grant through the ledger (idempotent by ref).
+func (s *Service) Register(ctx context.Context, instanceHost, remoteUserID, displayName string) (*Player, error) {
+	var (
+		id      int64
+		created bool
+	)
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var count int64
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM players`).Scan(&count); err != nil {
+			return fmt.Errorf("count players: %w", err)
+		}
+
+		err := tx.QueryRow(ctx,
+			`INSERT INTO players (instance_host, remote_user_id, display_name)
+			 VALUES ($1, $2, $3)
+			 ON CONFLICT (instance_host, remote_user_id) DO NOTHING
+			 RETURNING id`, instanceHost, remoteUserID, displayName).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// 既存プレイヤー: 既存IDを引く
+			return tx.QueryRow(ctx,
+				`SELECT id FROM players WHERE instance_host = $1 AND remote_user_id = $2`,
+				instanceHost, remoteUserID).Scan(&id)
+		}
+		if err != nil {
+			return fmt.Errorf("insert player: %w", err)
+		}
+		created = true
+
+		// 初期身長/体重はサーバRNGで生成する(design 17.3。性別未実装のため旧の女性テーブル)。
+		heightCm := 150 + s.rng.IntN(25)        // 150〜174cm
+		weightG := (48 + s.rng.IntN(20)) * 1000 // 48〜67kg
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO player_status (player_id, height_cm, weight_g) VALUES ($1, $2, $3)`,
+			id, heightCm, weightG); err != nil {
+			return fmt.Errorf("insert player_status: %w", err)
+		}
+		// パワー上限を初期パラメータから導出し、現在値を上限にクランプする。
+		if err := RefreshPowerMax(ctx, tx, id); err != nil {
+			return err
+		}
+
+		// 最初のプレイヤーは管理者ロールを付与
+		role := "user"
+		if count == 0 {
+			role = "admin"
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO player_roles (player_id, role) VALUES ($1, $2)`, id, role); err != nil {
+			return fmt.Errorf("insert player_roles: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("register: %w", err)
+	}
+
+	if created {
+		ref := fmt.Sprintf("initial_grant:%d", id)
+		if err := s.ledger.Post(ctx, "initial_grant", ref, []ledger.Entry{
+			{Account: ledger.SystemAccount("initial_grant"), Delta: -s.initialMoney},
+			{Account: ledger.PlayerAccount(id), Delta: s.initialMoney},
+		}); err != nil {
+			return nil, fmt.Errorf("initial grant: %w", err)
+		}
+	}
+
+	return s.Get(ctx, id)
+}
+
+// RefreshPowerMax recomputes energy_max / nou_energy_max from the player's
+// parameters using the legacy basic.cgi formula and clamps the current
+// energy / nou_energy to the new maxima. It must run at registration and after
+// any parameter change so the derived maxima (and the condition percentages that
+// use them) stay in sync. energy_max/nou_energy_max are thus parameter-derived
+// rather than a fixed cap (design 17.9).
+func RefreshPowerMax(ctx context.Context, tx pgx.Tx, playerID int64) error {
+	if _, err := tx.Exec(ctx, `
+		UPDATE player_status ps SET
+			energy_max = m.emax, nou_energy_max = m.nmax,
+			energy = LEAST(ps.energy, m.emax),
+			nou_energy = LEAST(ps.nou_energy, m.nmax),
+			updated_at = now()
+		FROM (
+			SELECT player_id,
+				(FLOOR(looks/12.0 + tairyoku/4.0 + kenkou/4.0 + speed/8.0
+				       + power/8.0 + wanryoku/8.0 + kyakuryoku/8.0) + 1)::int AS emax,
+				(FLOOR(kokugo/6.0 + suugaku/6.0 + rika/6.0 + syakai/6.0
+				       + eigo/6.0 + ongaku/6.0 + bijutsu/6.0) + 1)::int AS nmax
+			FROM player_status WHERE player_id = $1
+		) m
+		WHERE ps.player_id = m.player_id`, playerID); err != nil {
+		return fmt.Errorf("refresh power max: %w", err)
+	}
+	return nil
+}
+
+// HasRole reports whether the player holds the given role.
+func (s *Service) HasRole(ctx context.Context, id int64, role string) (bool, error) {
+	var exists bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM player_roles WHERE player_id = $1 AND role = $2)`,
+		id, role).Scan(&exists); err != nil {
+		return false, fmt.Errorf("has role: %w", err)
+	}
+	return exists, nil
+}
+
+// Get returns a player aggregate including current money (from the ledger).
+func (s *Service) Get(ctx context.Context, id int64) (*Player, error) {
+	p := &Player{ID: id}
+	err := s.pool.QueryRow(ctx,
+		`SELECT instance_host, remote_user_id, display_name
+		 FROM players WHERE id = $1 AND deleted_at IS NULL`, id).
+		Scan(&p.InstanceHost, &p.RemoteUserID, &p.DisplayName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get player: %w", err)
+	}
+
+	if err := s.pool.QueryRow(ctx,
+		`SELECT energy, energy_max, nou_energy, nou_energy_max, job, job_level, satiety,
+		        job_exp, job_kaisuu, mastered_jobs,
+		        height_cm, weight_g, disease_index,
+		        kokugo, suugaku, rika, syakai, eigo, ongaku, bijutsu,
+		        looks, tairyoku, kenkou, speed, power, wanryoku, kyakuryoku,
+		        love, omoshirosa
+		 FROM player_status WHERE player_id = $1`, id).
+		Scan(&p.Status.Energy, &p.Status.EnergyMax, &p.Status.NouEnergy,
+			&p.Status.NouEnergyMax, &p.Status.Job, &p.Status.JobLevel, &p.Status.Satiety,
+			&p.Status.JobExp, &p.Status.JobKaisuu, &p.Status.MasteredJobs,
+			&p.Status.HeightCm, &p.Status.WeightG, &p.Status.DiseaseIndex,
+			&p.Params.Kokugo, &p.Params.Suugaku, &p.Params.Rika, &p.Params.Syakai,
+			&p.Params.Eigo, &p.Params.Ongaku, &p.Params.Bijutsu,
+			&p.Params.Looks, &p.Params.Tairyoku, &p.Params.Kenkou, &p.Params.Speed,
+			&p.Params.Power, &p.Params.Wanryoku, &p.Params.Kyakuryoku,
+			&p.Params.Love, &p.Params.Omoshirosa); err != nil {
+		return nil, fmt.Errorf("get status: %w", err)
+	}
+	// BMI・体型・コンディションはサーバ側で権威的に算出する(副作用なし。旧check_BMIと同一)。
+	p.Status.BMI = condition.BMI(p.Status.HeightCm, p.Status.WeightG)
+	p.Status.BodyType = condition.BodyType(p.Status.BMI)
+	cond := condition.Compute(condition.Input{
+		Energy: p.Status.Energy, EnergyMax: p.Status.EnergyMax,
+		NouEnergy: p.Status.NouEnergy, NouEnergyMax: p.Status.NouEnergyMax,
+		Kenkou: p.Params.Kenkou, Satiety: p.Status.Satiety,
+		BMI: p.Status.BMI, DiseaseIndex: p.Status.DiseaseIndex,
+	})
+	p.Status.DiseaseName = cond.DiseaseName
+	p.Status.Condition = cond.Display
+
+	// 就労クールタイム中なら再就労可能時刻を返す(経過済み/未就労はnil)。
+	var workAt *time.Time
+	if err := s.pool.QueryRow(ctx,
+		`SELECT next_available_at FROM player_facility_cooldowns
+		 WHERE player_id = $1 AND facility = 'work' AND next_available_at > now()`,
+		id).Scan(&workAt); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("get work cooldown: %w", err)
+	}
+	p.Status.WorkAvailableAt = workAt
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT role FROM player_roles WHERE player_id = $1 ORDER BY role`, id)
+	if err != nil {
+		return nil, fmt.Errorf("get roles: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var role string
+		if err := rows.Scan(&role); err != nil {
+			return nil, fmt.Errorf("scan role: %w", err)
+		}
+		p.Roles = append(p.Roles, role)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("roles rows: %w", err)
+	}
+
+	bal, err := s.ledger.Balance(ctx, ledger.PlayerAccount(id))
+	if err != nil {
+		return nil, err
+	}
+	p.Money = bal
+
+	savings, err := s.ledger.Balance(ctx, ledger.SavingsAccount(id))
+	if err != nil {
+		return nil, err
+	}
+	p.Savings = savings
+
+	items, err := s.pool.Query(ctx,
+		`SELECT ci.id, ci.name, pi.quantity, pi.remaining_uses,
+		        CEIL(pi.remaining_uses::numeric / ci.durability)::int AS sets,
+		        ci.effect, ci.use_interval_min,
+		        CASE WHEN pi.last_used_at IS NOT NULL
+		                  AND pi.last_used_at + make_interval(mins => ci.use_interval_min) > now()
+		             THEN pi.last_used_at + make_interval(mins => ci.use_interval_min)
+		             ELSE NULL END AS next_available_at
+		 FROM player_items pi
+		 JOIN content_items ci ON ci.id = pi.item_id
+		 WHERE pi.player_id = $1 AND pi.remaining_uses > 0
+		 ORDER BY ci.id`, id)
+	if err != nil {
+		return nil, fmt.Errorf("get items: %w", err)
+	}
+	defer items.Close()
+	for items.Next() {
+		var (
+			it      ItemStack
+			effJSON []byte
+		)
+		if err := items.Scan(&it.ItemID, &it.Name, &it.Quantity, &it.RemainingUses, &it.Sets, &effJSON, &it.IntervalMin, &it.NextAvailableAt); err != nil {
+			return nil, fmt.Errorf("scan item: %w", err)
+		}
+		if eff, err := effects.ParseEffect(effJSON); err == nil {
+			it.Money = eff.MoneySum()
+			it.Params = map[string]int{}
+			for k, v := range eff.ParamSum() {
+				if v != 0 {
+					it.Params[k] = v
+				}
+			}
+		}
+		p.Items = append(p.Items, it)
+	}
+	if err := items.Err(); err != nil {
+		return nil, fmt.Errorf("items rows: %w", err)
+	}
+	return p, nil
+}

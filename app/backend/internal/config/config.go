@@ -1,0 +1,111 @@
+// Package config loads the backend configuration from a YAML file
+// (default.yml) with environment-variable overrides for containers.
+package config
+
+import (
+	"fmt"
+	"os"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Config is the top-level backend configuration.
+type Config struct {
+	Server   ServerConfig   `yaml:"server"`
+	Database DatabaseConfig `yaml:"database"`
+	Redis    RedisConfig    `yaml:"redis"`
+	Game     GameConfig     `yaml:"game"`
+	Worker   WorkerConfig   `yaml:"worker"`
+}
+
+type ServerConfig struct {
+	HTTPAddr string `yaml:"http_addr"`
+}
+
+type DatabaseConfig struct {
+	URL string `yaml:"url"`
+}
+
+type RedisConfig struct {
+	Addr string `yaml:"addr"`
+	DB   int    `yaml:"db"`
+}
+
+// GameConfig holds gameplay-wide parameters. Money values are integer yen.
+type GameConfig struct {
+	Timezone        string `yaml:"timezone"`
+	DayBoundaryHour int    `yaml:"day_boundary_hour"`
+	InitialMoney    int64  `yaml:"initial_money"`
+	MoneyMax        int64  `yaml:"money_max"`
+	// RNGSeed fixes the random seed for deterministic runs/tests. 0 = time-based.
+	RNGSeed int64 `yaml:"rng_seed"`
+	// DailyInterestPermille is the savings interest rate per mille per game day
+	// (5 = 0.5%). Interest is floored to an integer, matching the legacy game.
+	DailyInterestPermille int `yaml:"daily_interest_permille"`
+	// EnergyRecoverySec / NouRecoverySec: seconds required to recover 1 point of
+	// 身体パワー / 頭脳パワー. The worker recovers power on this cadence.
+	EnergyRecoverySec int `yaml:"energy_recovery_sec"`
+	NouRecoverySec    int `yaml:"nou_recovery_sec"`
+	// MealIntervalMin: 食事のクールタイム(分)。前回食事からこの時間は次の食事不可。
+	MealIntervalMin int `yaml:"meal_interval_min"`
+	// SatietyDecaySec: 空腹値(満腹度)が1減るのに要する秒数。workerが減少させる。
+	SatietyDecaySec int `yaml:"satiety_decay_sec"`
+	// ConditionEvalIntervalMin: 病気指数のコンディション評価間隔(分)。この間隔ごとに
+	// workerがコンディションに応じて病気指数を増減する。
+	ConditionEvalIntervalMin int `yaml:"condition_eval_interval_min"`
+	// WorkIntervalMin: 就労のクールタイム(分)。前回出勤からこの時間は再出勤できない。
+	WorkIntervalMin int `yaml:"work_interval_min"`
+}
+
+type WorkerConfig struct {
+	TickInterval  Duration `yaml:"tick_interval"`
+	LeaderLockTTL Duration `yaml:"leader_lock_ttl"`
+}
+
+// Duration is a time.Duration that unmarshals from a Go duration string
+// (e.g. "10s", "5m") in YAML.
+type Duration time.Duration
+
+func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
+	var s string
+	if err := value.Decode(&s); err != nil {
+		return err
+	}
+	parsed, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("invalid duration %q: %w", s, err)
+	}
+	*d = Duration(parsed)
+	return nil
+}
+
+// Std returns the underlying time.Duration.
+func (d Duration) Std() time.Duration { return time.Duration(d) }
+
+// Load reads the config file (path from TOWN_CONFIG, default "default.yml")
+// and applies environment overrides used in containerized deployments.
+func Load() (*Config, error) {
+	path := os.Getenv("TOWN_CONFIG")
+	if path == "" {
+		path = "default.yml"
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read config %s: %w", path, err)
+	}
+	var c Config
+	if err := yaml.Unmarshal(b, &c); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	if v := os.Getenv("TOWN_HTTP_ADDR"); v != "" {
+		c.Server.HTTPAddr = v
+	}
+	if v := os.Getenv("TOWN_DATABASE_URL"); v != "" {
+		c.Database.URL = v
+	}
+	if v := os.Getenv("TOWN_REDIS_ADDR"); v != "" {
+		c.Redis.Addr = v
+	}
+	return &c, nil
+}

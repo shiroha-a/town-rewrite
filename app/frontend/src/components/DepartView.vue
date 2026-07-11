@@ -1,0 +1,204 @@
+<script setup lang="ts">
+import { ref, computed, onMounted } from 'vue';
+import { api, type Player, type ShopItem } from '../api';
+import { PARAM_COLUMNS } from '../params';
+
+const props = defineProps<{ player: Player }>();
+const emit = defineEmits<{ update: [player: Player]; back: [] }>();
+
+const yen = (n: number) => n.toLocaleString('ja-JP');
+const items = ref<ShopItem[]>([]);
+const message = ref('');
+const kind = ref<'ok' | 'error'>('ok');
+const busy = ref(false);
+
+onMounted(async () => {
+  try {
+    items.value = await api.shopItems();
+  } catch (e) {
+    message.value = e instanceof Error ? e.message : String(e);
+    kind.value = 'error';
+  }
+});
+
+const intervalLabel = (m: number) => (m > 0 ? `${m}分` : '-');
+
+// カテゴリ別にグループ化(レガシーのカテゴリ見出し付き表を再現)
+const grouped = computed(() => {
+  const g = new Map<string, ShopItem[]>();
+  for (const it of items.value) {
+    const c = it.category || 'その他';
+    if (!g.has(c)) g.set(c, []);
+    g.get(c)!.push(it);
+  }
+  return [...g.entries()];
+});
+
+async function buy(it: ShopItem) {
+  busy.value = true;
+  message.value = '';
+  try {
+    emit('update', await api.buy(props.player.id, it.id));
+    message.value = `●${it.name}を購入しました。`;
+    kind.value = 'ok';
+  } catch (e) {
+    message.value = e instanceof Error ? e.message : String(e);
+    kind.value = 'error';
+  } finally {
+    busy.value = false;
+  }
+}
+</script>
+
+<template>
+  <div class="facility-page depart-page">
+    <button class="btn back" @click="emit('back')">街に戻る</button>
+
+    <div class="depart-header">
+      <div class="lead">
+        デパートです。品揃えは毎日変わります。種類は豊富ですが値段は高めです。<br />
+        また一度に持てる所有物の限度は25品目です。<br />
+        ●{{ player.display_name }}さんの所持金：<span class="money">{{ yen(player.money) }}円</span>
+      </div>
+      <div class="title">デパート</div>
+    </div>
+
+    <div v-if="message" :class="['message', kind]" data-test="message">{{ message }}</div>
+
+    <div class="panel-white">
+      <div class="table-scroll">
+        <table class="depart-table">
+          <thead>
+            <tr>
+              <th class="l">品名</th>
+              <th>価格</th>
+              <th>耐久</th>
+              <th v-for="c in PARAM_COLUMNS" :key="c.key" class="p">{{ c.label }}</th>
+              <th>間隔</th>
+              <th></th>
+            </tr>
+          </thead>
+          <template v-for="[cat, list] in grouped" :key="cat">
+            <tbody>
+              <tr class="cat-row">
+                <td :colspan="PARAM_COLUMNS.length + 5">●{{ cat }}</td>
+              </tr>
+              <tr v-for="it in list" :key="it.id" :data-test="`shop-${it.id}`">
+                <td class="l">{{ it.name }}</td>
+                <td class="price">{{ yen(it.price) }}円</td>
+                <td class="dura">{{ it.durability }}{{ it.durability_unit === 'day' ? '日' : '回' }}</td>
+                <td v-for="c in PARAM_COLUMNS" :key="c.key" class="p" :class="{ up: (it.params[c.key] ?? 0) > 0 }">
+                  {{ it.params[c.key] ?? 0 }}
+                </td>
+                <td class="interval">{{ intervalLabel(it.interval_min) }}</td>
+                <td class="buy">
+                  <button class="btn" :disabled="busy" @click="buy(it)">買う</button>
+                </td>
+              </tr>
+            </tbody>
+          </template>
+        </table>
+      </div>
+    </div>
+
+    <div style="text-align: center; margin-top: 8px">
+      <button class="btn" @click="emit('back')">街に戻る</button>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.depart-page {
+  background-color: #ffffcc;
+  padding: 6px;
+  min-height: 80vh;
+}
+.btn.back {
+  margin-bottom: 6px;
+}
+.depart-header {
+  display: flex;
+  align-items: stretch;
+  margin-bottom: 8px;
+}
+.depart-header .lead {
+  flex: 1 1 auto;
+  background: #fff;
+  border: 1px solid #999;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #333;
+  line-height: 1.6;
+}
+.depart-header .title {
+  flex: 0 0 130px;
+  background: #339933;
+  color: #fff;
+  font-weight: bold;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #999;
+}
+.money {
+  color: #cc3300;
+  font-weight: bold;
+}
+.panel-white {
+  background: #fff;
+  border: 1px solid #999;
+  padding: 8px;
+}
+.table-scroll {
+  overflow-x: auto;
+}
+.depart-table {
+  border-collapse: collapse;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.depart-table th {
+  background: #ffcc66;
+  color: #663300;
+  padding: 2px 4px;
+  border: 1px solid #e0c080;
+  position: sticky;
+  top: 0;
+}
+.depart-table th.l,
+.depart-table td.l {
+  text-align: left;
+}
+.depart-table td {
+  padding: 2px 4px;
+  border: 1px solid #eee;
+  text-align: center;
+  background: #fffef0;
+}
+.depart-table th.p,
+.depart-table td.p {
+  width: 20px;
+  color: #999;
+}
+.depart-table td.p.up {
+  color: #060;
+  font-weight: bold;
+  background: #eaffea;
+}
+.depart-table td.price {
+  color: #cc3300;
+  font-weight: bold;
+  text-align: right;
+}
+.depart-table tr.cat-row td {
+  background: #ccff99;
+  color: #060;
+  font-weight: bold;
+  text-align: left;
+  border-top: 2px solid #339933;
+}
+.depart-table td.buy {
+  width: 44px;
+}
+</style>

@@ -1,0 +1,247 @@
+<script setup lang="ts">
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
+import { api, type Player, type ItemStack } from '../api';
+import { PARAM_COLUMNS } from '../params';
+
+const props = defineProps<{ player: Player }>();
+const emit = defineEmits<{ update: [player: Player]; back: [] }>();
+
+const message = ref('');
+const kind = ref<'ok' | 'error'>('ok');
+const busy = ref(false);
+
+// サーバ時刻とクライアント時計のずれ(ms)。カウントダウンをサーバ基準に補正し、
+// 端末時計がずれていても残り時間が正しく表示されるようにする。
+const skewMs = ref(0);
+function syncSkew() {
+  const serverNow = new Date(props.player.server_now).getTime();
+  if (!Number.isNaN(serverNow)) {
+    skewMs.value = serverNow - Date.now();
+  }
+}
+syncSkew();
+watch(() => props.player.server_now, syncSkew);
+
+// 1秒ごとに進むクロック。カウントダウン表示の再計算トリガとして使う。
+const nowMs = ref(Date.now());
+let timer: number | undefined;
+onMounted(() => {
+  timer = window.setInterval(() => {
+    nowMs.value = Date.now();
+  }, 1000);
+});
+onUnmounted(() => {
+  if (timer !== undefined) window.clearInterval(timer);
+});
+
+// サーバ基準の現在時刻(ms)。
+const serverCorrectedNow = computed(() => nowMs.value + skewMs.value);
+
+interface Cooldown {
+  active: boolean; // クールタイム中か
+  label: string; // 表示文字列
+  soon: boolean; // 残り3分未満(もうすぐ使用可能)
+}
+
+const SOON_MS = 3 * 60 * 1000;
+
+function computeCooldown(it: ItemStack, now: number): Cooldown {
+  if (!it.next_available_at) {
+    return { active: false, label: 'OK', soon: false };
+  }
+  const target = new Date(it.next_available_at).getTime();
+  const remain = target - now;
+  if (Number.isNaN(target) || remain <= 0) {
+    return { active: false, label: 'OK', soon: false };
+  }
+  const totalSec = Math.ceil(remain / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  const label = m > 0 ? `あと${m}分${String(s).padStart(2, '0')}秒` : `あと${s}秒`;
+  return { active: true, label, soon: remain < SOON_MS };
+}
+
+// item_id -> クールタイム状態。nowMs更新のたびに再計算される。
+const cooldowns = computed<Record<number, Cooldown>>(() => {
+  const now = serverCorrectedNow.value;
+  const map: Record<number, Cooldown> = {};
+  for (const it of props.player.items) {
+    map[it.item_id] = computeCooldown(it, now);
+  }
+  return map;
+});
+
+async function use(it: ItemStack) {
+  // クールタイム中はボタンをグレーアウトしているが、二重の安全策として弾く。
+  if (cooldowns.value[it.item_id]?.active) return;
+  busy.value = true;
+  message.value = '';
+  try {
+    emit('update', await api.use(props.player.id, it.item_id));
+    message.value = `${it.name}を使用しました。`;
+    kind.value = 'ok';
+  } catch (e) {
+    message.value = e instanceof Error ? e.message : String(e);
+    kind.value = 'error';
+  } finally {
+    busy.value = false;
+  }
+}
+</script>
+
+<template>
+  <div class="facility-page item-page">
+    <button class="btn back" @click="emit('back')">街に戻る</button>
+    <div class="item-header">
+      <div class="lead">持っているアイテムを使うことができます。</div>
+      <div class="title">アイテム使用</div>
+    </div>
+
+    <div v-if="message" :class="['message', kind]" data-test="message">{{ message }}</div>
+
+    <div class="panel-white">
+      <p v-if="player.items.length === 0" class="muted">持ち物はありません。</p>
+      <div v-else class="table-scroll">
+        <table class="item-table">
+          <thead>
+            <tr>
+              <th class="l">品名</th>
+              <th>数</th>
+              <th v-for="c in PARAM_COLUMNS" :key="c.key" class="p">{{ c.label }}</th>
+              <th>間隔</th>
+              <th>使用可</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="it in player.items" :key="it.item_id" :data-test="`item-${it.item_id}`">
+              <td class="l">○{{ it.name }}</td>
+              <td>{{ it.quantity }}</td>
+              <td v-for="c in PARAM_COLUMNS" :key="c.key" class="p" :class="{ up: (it.params[c.key] ?? 0) > 0 }">
+                {{ it.params[c.key] ?? 0 }}
+              </td>
+              <td class="interval">{{ it.interval_min > 0 ? `${it.interval_min}分` : '-' }}</td>
+              <td
+                class="cooldown"
+                :class="{
+                  ok: !cooldowns[it.item_id].active,
+                  soon: cooldowns[it.item_id].active && cooldowns[it.item_id].soon,
+                  wait: cooldowns[it.item_id].active && !cooldowns[it.item_id].soon,
+                }"
+                :data-test="`cooldown-${it.item_id}`"
+              >
+                {{ cooldowns[it.item_id].label }}
+              </td>
+              <td>
+                <button
+                  class="btn"
+                  :disabled="busy || cooldowns[it.item_id].active"
+                  :data-test="`use-${it.item_id}`"
+                  @click="use(it)"
+                >
+                  使う
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div style="text-align: center; margin-top: 8px">
+      <button class="btn" @click="emit('back')">街に戻る</button>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.item-page {
+  background-color: #ffcc66;
+  background-image: url(/img/command_bak.gif);
+  padding: 6px;
+  min-height: 80vh;
+}
+.btn.back {
+  margin-bottom: 6px;
+}
+.item-header {
+  display: flex;
+  margin-bottom: 8px;
+  border: 1px solid #333;
+}
+.item-header .lead {
+  flex: 1 1 auto;
+  background: #fff;
+  padding: 8px 12px;
+  color: #333;
+}
+.item-header .title {
+  flex: 0 0 140px;
+  background: #cc9933;
+  color: #fff;
+  font-weight: bold;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.panel-white {
+  background: #fff;
+  border: 1px solid #333;
+  padding: 12px;
+}
+.table-scroll {
+  overflow-x: auto;
+}
+.item-table {
+  border-collapse: collapse;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.item-table th {
+  background: #ffe0a3;
+  color: #663300;
+  padding: 2px 4px;
+  border: 1px solid #e0c080;
+}
+.item-table td {
+  padding: 2px 4px;
+  border: 1px solid #eee;
+  text-align: center;
+}
+.item-table th.l,
+.item-table td.l {
+  text-align: left;
+}
+.item-table th.p,
+.item-table td.p {
+  width: 20px;
+  color: #999;
+}
+.item-table td.p.up {
+  color: #060;
+  font-weight: bold;
+  background: #eaffea;
+}
+.item-table td.cooldown {
+  font-weight: bold;
+}
+.item-table td.cooldown.ok {
+  color: #060;
+}
+.item-table td.cooldown.soon {
+  color: #0a7d2c;
+  background: #eaffea;
+}
+.item-table td.cooldown.wait {
+  color: #a0308c;
+  background: #fbeaf6;
+}
+.btn:disabled {
+  background: #ccc;
+  color: #888;
+  border-color: #bbb;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+</style>
