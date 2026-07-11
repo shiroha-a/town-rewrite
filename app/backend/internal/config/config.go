@@ -56,6 +56,9 @@ type GameConfig struct {
 	ConditionEvalIntervalMin int `yaml:"condition_eval_interval_min"`
 	// WorkIntervalMin: 就労のクールタイム(分)。前回出勤からこの時間は再出勤できない。
 	WorkIntervalMin int `yaml:"work_interval_min"`
+	// DebugNoCooldown: trueにすると仕事・アイテム使用・施設・食事の各間隔(クールタイム)を
+	// すべて無効化する。デバッグ用。本番では false にすること。
+	DebugNoCooldown bool `yaml:"debug_no_cooldown"`
 }
 
 type WorkerConfig struct {

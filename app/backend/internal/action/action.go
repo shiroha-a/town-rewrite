@@ -87,9 +87,10 @@ type Service struct {
 	workIntervalMin int
 	energyRecinSec  int
 	nouRecinSec     int
+	debugNoCooldown bool
 }
 
-func New(pool *pgxpool.Pool, led *ledger.Repo, players *player.Service, r *rng.Rand, loc *time.Location, dayBoundaryHour, workIntervalMin, energyRecoverySec, nouRecoverySec int) *Service {
+func New(pool *pgxpool.Pool, led *ledger.Repo, players *player.Service, r *rng.Rand, loc *time.Location, dayBoundaryHour, workIntervalMin, energyRecoverySec, nouRecoverySec int, debugNoCooldown bool) *Service {
 	if loc == nil {
 		loc = time.UTC
 	}
@@ -103,6 +104,7 @@ func New(pool *pgxpool.Pool, led *ledger.Repo, players *player.Service, r *rng.R
 		pool: pool, ledger: led, players: players, rng: r, loc: loc,
 		dayBoundaryHour: dayBoundaryHour, workIntervalMin: workIntervalMin,
 		energyRecinSec: energyRecoverySec, nouRecinSec: nouRecoverySec,
+		debugNoCooldown: debugNoCooldown,
 	}
 }
 
@@ -168,24 +170,38 @@ func (s *Service) runAction(ctx context.Context, playerID int64, actionType, ide
 	return s.players.Get(ctx, playerID)
 }
 
+// WorkResult summarizes a single work action for the result screen (design 17.5).
+type WorkResult struct {
+	ExpGained  int      // 今回の経験値増減
+	NewLevel   int      // 到達レベル
+	LeveledUp  bool     // レベルが上がったか(昇給発生)
+	ThisSalary int64    // 昇給後の給料(1回あたり)
+	Pay        int64    // 今回支給された給料(支払間隔到達時のみ>0)
+	PayEvery   int      // 支払間隔(N回出勤ごと)
+	Bonus      int64    // レベルアップ時ボーナス
+	Mastered   []string // 今回新たにマスターした職業
+}
+
 // DoWork works the player's current job (design 17.5 do_work). Students cannot
 // work. Working is gated by the work interval, ability requirements, power floor
 // and BMI condition; it then earns condition-based experience (which may level
 // the player up), pays salary on the pay interval, grants a level-up bonus,
-// records job mastery at level 15, and spends power and weight.
-func (s *Service) DoWork(ctx context.Context, playerID int64, idempotencyKey string) (*player.Player, error) {
+// records job mastery at level 15, and spends power and weight. It returns a
+// WorkResult so the UI can show the legacy-style salary/raise/bonus messages.
+func (s *Service) DoWork(ctx context.Context, playerID int64, idempotencyKey string) (*player.Player, *WorkResult, error) {
 	job, err := s.currentJob(ctx, playerID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if job == "学生" {
-		return nil, &ConditionError{Message: "学生は働けません。職業安定所で仕事を探してください。"}
+		return nil, nil, &ConditionError{Message: "学生は働けません。職業安定所で仕事を探してください。"}
 	}
 	econ, err := s.loadJobEconomy(ctx, job)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return s.runAction(ctx, playerID, "work", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+	var result WorkResult
+	p, err := s.runAction(ctx, playerID, "work", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
 		// 1. 就労間隔(前回出勤からwork_interval_min分は再出勤不可)。
 		var nextAt *time.Time
 		if err := tx.QueryRow(ctx,
@@ -193,7 +209,7 @@ func (s *Service) DoWork(ctx context.Context, playerID int64, idempotencyKey str
 			playerID).Scan(&nextAt); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("read work cooldown: %w", err)
 		}
-		if nextAt != nil && time.Now().Before(*nextAt) {
+		if !s.debugNoCooldown && nextAt != nil && time.Now().Before(*nextAt) {
 			remain := int(time.Until(*nextAt).Minutes()) + 1
 			return &ConditionError{Message: fmt.Sprintf("まだ働けません。あと約%d分お待ちください。", remain)}
 		}
@@ -299,8 +315,20 @@ func (s *Service) DoWork(ctx context.Context, playerID int64, idempotencyKey str
 			playerID, s.workIntervalMin); err != nil {
 			return fmt.Errorf("set work cooldown: %w", err)
 		}
+		// 結果画面用にサマリを控える。
+		result = WorkResult{
+			ExpGained: randed, NewLevel: newLevel, LeveledUp: leveledUp,
+			ThisSalary: thisSalary, Pay: pay, PayEvery: payInterval, Bonus: bonus,
+		}
+		if masteredNow {
+			result.Mastered = []string{job}
+		}
 		return nil
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return p, &result, nil
 }
 
 // contains reports whether v is in s.
@@ -566,10 +594,10 @@ func (s *Service) DoUse(ctx context.Context, playerID, itemID int64, idempotency
 		return nil, err
 	}
 	return s.runAction(ctx, playerID, "use", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
-		if fillsSatiety && state.Params["satiety"].Value >= satietyMax {
+		if !s.debugNoCooldown && fillsSatiety && state.Params["satiety"].Value >= satietyMax {
 			return &ConditionError{Message: "お腹がいっぱいです。今は食べられません。"}
 		}
-		if intervalMin > 0 {
+		if !s.debugNoCooldown && intervalMin > 0 {
 			var lastUsed *time.Time
 			err := tx.QueryRow(ctx,
 				`SELECT last_used_at FROM player_items WHERE player_id = $1 AND item_id = $2`,
@@ -641,7 +669,7 @@ func (s *Service) DoEat(ctx context.Context, playerID, foodID int64, idempotency
 		return nil, err
 	}
 	return s.runAction(ctx, playerID, "eat", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
-		if state.Params["satiety"].Value >= satietyMax {
+		if !s.debugNoCooldown && state.Params["satiety"].Value >= satietyMax {
 			return &ConditionError{Message: "お腹がいっぱいです。今は食べられません。"}
 		}
 		if state.Money < price {
@@ -705,7 +733,7 @@ func (s *Service) DoFacilityAction(ctx context.Context, playerID int64, facility
 			playerID, facility).Scan(&nextAt); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("read cooldown: %w", err)
 		}
-		if nextAt != nil && time.Now().Before(*nextAt) {
+		if !s.debugNoCooldown && nextAt != nil && time.Now().Before(*nextAt) {
 			remain := int(time.Until(*nextAt).Minutes()) + 1
 			return &ConditionError{Message: fmt.Sprintf("まだ利用できません。あと約%d分お待ちください。", remain)}
 		}

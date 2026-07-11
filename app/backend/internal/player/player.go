@@ -92,14 +92,15 @@ type Status struct {
 
 // Service is the player domain service.
 type Service struct {
-	pool         *pgxpool.Pool
-	ledger       *ledger.Repo
-	rng          *rng.Rand
-	initialMoney int64
+	pool            *pgxpool.Pool
+	ledger          *ledger.Repo
+	rng             *rng.Rand
+	initialMoney    int64
+	debugNoCooldown bool
 }
 
-func New(pool *pgxpool.Pool, l *ledger.Repo, r *rng.Rand, initialMoney int64) *Service {
-	return &Service{pool: pool, ledger: l, rng: r, initialMoney: initialMoney}
+func New(pool *pgxpool.Pool, l *ledger.Repo, r *rng.Rand, initialMoney int64, debugNoCooldown bool) *Service {
+	return &Service{pool: pool, ledger: l, rng: r, initialMoney: initialMoney, debugNoCooldown: debugNoCooldown}
 }
 
 // ErrNotFound is returned when a player does not exist.
@@ -260,15 +261,17 @@ func (s *Service) Get(ctx context.Context, id int64) (*Player, error) {
 	p.Status.DiseaseName = cond.DiseaseName
 	p.Status.Condition = cond.Display
 
-	// 就労クールタイム中なら再就労可能時刻を返す(経過済み/未就労はnil)。
-	var workAt *time.Time
-	if err := s.pool.QueryRow(ctx,
-		`SELECT next_available_at FROM player_facility_cooldowns
-		 WHERE player_id = $1 AND facility = 'work' AND next_available_at > now()`,
-		id).Scan(&workAt); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("get work cooldown: %w", err)
+	// 就労クールタイム中なら再就労可能時刻を返す(経過済み/未就労はnil)。デバッグ時は常にnil。
+	if !s.debugNoCooldown {
+		var workAt *time.Time
+		if err := s.pool.QueryRow(ctx,
+			`SELECT next_available_at FROM player_facility_cooldowns
+			 WHERE player_id = $1 AND facility = 'work' AND next_available_at > now()`,
+			id).Scan(&workAt); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("get work cooldown: %w", err)
+		}
+		p.Status.WorkAvailableAt = workAt
 	}
-	p.Status.WorkAvailableAt = workAt
 
 	rows, err := s.pool.Query(ctx,
 		`SELECT role FROM player_roles WHERE player_id = $1 ORDER BY role`, id)
@@ -322,6 +325,9 @@ func (s *Service) Get(ctx context.Context, id int64) (*Player, error) {
 		)
 		if err := items.Scan(&it.ItemID, &it.Name, &it.Quantity, &it.RemainingUses, &it.Sets, &effJSON, &it.IntervalMin, &it.NextAvailableAt); err != nil {
 			return nil, fmt.Errorf("scan item: %w", err)
+		}
+		if s.debugNoCooldown {
+			it.NextAvailableAt = nil // デバッグ: クールタイム表示を無効化
 		}
 		if eff, err := effects.ParseEffect(effJSON); err == nil {
 			it.Money = eff.MoneySum()

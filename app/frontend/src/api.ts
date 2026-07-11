@@ -124,6 +124,19 @@ export function newIdempotencyKey(): string {
   return `k-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
+// 仕事1回の結果サマリ(給料・昇給・ボーナス・経験値)。
+export interface WorkResult {
+  exp_gained: number;
+  new_level: number;
+  leveled_up: boolean;
+  this_salary: number;
+  pay: number;
+  pay_every: number;
+  bonus: number;
+  mastered: string[];
+}
+export type WorkResponse = Player & { work_result: WorkResult };
+
 export const api = {
   register: (instanceHost: string, remoteUserId: string, displayName: string) =>
     request<Player>('POST', '/players', {
@@ -151,7 +164,7 @@ export const api = {
       idempotency_key: newIdempotencyKey(),
     }),
   work: (id: number) =>
-    request<Player>('POST', `/players/${id}/work`, { idempotency_key: newIdempotencyKey() }),
+    request<WorkResponse>('POST', `/players/${id}/work`, { idempotency_key: newIdempotencyKey() }),
   buy: (id: number, itemId: number) =>
     request<Player>('POST', `/players/${id}/buy`, {
       item_id: itemId,

@@ -15,6 +15,24 @@ type workReq struct {
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
+// workResultResp is the salary/raise/bonus summary shown on the work result page.
+type workResultResp struct {
+	ExpGained  int      `json:"exp_gained"`
+	NewLevel   int      `json:"new_level"`
+	LeveledUp  bool     `json:"leveled_up"`
+	ThisSalary int64    `json:"this_salary"`
+	Pay        int64    `json:"pay"`
+	PayEvery   int      `json:"pay_every"`
+	Bonus      int64    `json:"bonus"`
+	Mastered   []string `json:"mastered"`
+}
+
+// workResp is the player state plus the just-completed work's summary.
+type workResp struct {
+	playerResp
+	WorkResult workResultResp `json:"work_result"`
+}
+
 // work runs the "アルバイト" action for the player. The optional idempotency_key
 // makes retries safe.
 func (s *Server) work(w http.ResponseWriter, r *http.Request) {
@@ -31,7 +49,7 @@ func (s *Server) work(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := s.actions.DoWork(r.Context(), id, req.IdempotencyKey)
+	p, result, err := s.actions.DoWork(r.Context(), id, req.IdempotencyKey)
 	if err != nil {
 		var condErr *action.ConditionError
 		switch {
@@ -45,5 +63,21 @@ func (s *Server) work(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	writeJSON(w, http.StatusOK, toResp(p))
+	mastered := result.Mastered
+	if mastered == nil {
+		mastered = []string{}
+	}
+	writeJSON(w, http.StatusOK, workResp{
+		playerResp: toResp(p),
+		WorkResult: workResultResp{
+			ExpGained:  result.ExpGained,
+			NewLevel:   result.NewLevel,
+			LeveledUp:  result.LeveledUp,
+			ThisSalary: result.ThisSalary,
+			Pay:        result.Pay,
+			PayEvery:   result.PayEvery,
+			Bonus:      result.Bonus,
+			Mastered:   mastered,
+		},
+	})
 }

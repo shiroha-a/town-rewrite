@@ -50,9 +50,9 @@ func Run(ctx context.Context, mode string, cfg *config.Config) error {
 
 	led := ledger.New(pool)
 	rnd := rng.New(cfg.Game.RNGSeed)
-	players := player.New(pool, led, rnd, cfg.Game.InitialMoney)
+	players := player.New(pool, led, rnd, cfg.Game.InitialMoney, cfg.Game.DebugNoCooldown)
 	actions := action.New(pool, led, players, rnd, loc, cfg.Game.DayBoundaryHour, cfg.Game.WorkIntervalMin,
-		cfg.Game.EnergyRecoverySec, cfg.Game.NouRecoverySec)
+		cfg.Game.EnergyRecoverySec, cfg.Game.NouRecoverySec, cfg.Game.DebugNoCooldown)
 	contentSvc := content.New(pool)
 
 	switch mode {

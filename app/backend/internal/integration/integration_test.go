@@ -106,8 +106,8 @@ func setup(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 	}
 
 	led := ledger.New(pool)
-	svc := player.New(pool, led, rng.New(1), 500000)
-	actions := action.New(pool, led, svc, rng.New(2), time.UTC, 5, 0, 60, 60)
+	svc := player.New(pool, led, rng.New(1), 500000, false)
+	actions := action.New(pool, led, svc, rng.New(2), time.UTC, 5, 0, 60, 60, false)
 	contentSvc := content.New(pool)
 	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc))
 	t.Cleanup(func() {

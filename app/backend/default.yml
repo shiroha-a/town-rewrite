@@ -23,6 +23,7 @@ game:
   satiety_decay_sec: 300        # 空腹値が1減るのに必要な秒数(5分で1)
   condition_eval_interval_min: 10  # 病気指数のコンディション評価間隔(分)
   work_interval_min: 3             # 就労のクールタイム(分。旧work_seigen_time)
+  debug_no_cooldown: true          # デバッグ: 仕事/アイテム/施設/食事の間隔をすべて無効化(本番はfalse)
 
 worker:
   tick_interval: "10s"
