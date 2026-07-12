@@ -78,19 +78,21 @@ const zaikoAdjust = 2
 
 // Service applies actions.
 type Service struct {
-	pool            *pgxpool.Pool
-	ledger          *ledger.Repo
-	players         *player.Service
-	rng             *rng.Rand
-	loc             *time.Location
-	dayBoundaryHour int
-	workIntervalMin int
-	energyRecinSec  int
-	nouRecinSec     int
-	debugNoCooldown bool
+	pool               *pgxpool.Pool
+	ledger             *ledger.Repo
+	players            *player.Service
+	rng                *rng.Rand
+	loc                *time.Location
+	dayBoundaryHour    int
+	workIntervalMin    int
+	energyRecinSec     int
+	nouRecinSec        int
+	debugNoCooldown    bool
+	departDailyCount   int
+	syokudouDailyCount int
 }
 
-func New(pool *pgxpool.Pool, led *ledger.Repo, players *player.Service, r *rng.Rand, loc *time.Location, dayBoundaryHour, workIntervalMin, energyRecoverySec, nouRecoverySec int, debugNoCooldown bool) *Service {
+func New(pool *pgxpool.Pool, led *ledger.Repo, players *player.Service, r *rng.Rand, loc *time.Location, dayBoundaryHour, workIntervalMin, energyRecoverySec, nouRecoverySec int, debugNoCooldown bool, departDailyCount, syokudouDailyCount int) *Service {
 	if loc == nil {
 		loc = time.UTC
 	}
@@ -104,8 +106,26 @@ func New(pool *pgxpool.Pool, led *ledger.Repo, players *player.Service, r *rng.R
 		pool: pool, ledger: led, players: players, rng: r, loc: loc,
 		dayBoundaryHour: dayBoundaryHour, workIntervalMin: workIntervalMin,
 		energyRecinSec: energyRecoverySec, nouRecinSec: nouRecoverySec,
-		debugNoCooldown: debugNoCooldown,
+		debugNoCooldown:  debugNoCooldown,
+		departDailyCount: departDailyCount, syokudouDailyCount: syokudouDailyCount,
 	}
+}
+
+// dailyMenuCond appends the "in today's rotation" filter to a load query when the
+// facility rotates daily (depart/syokudou). Returns the extra SQL and args.
+func (s *Service) dailyMenuCond(facility string, nextArg int) (string, []any) {
+	var n int
+	switch facility {
+	case "":
+		n = s.departDailyCount
+	case "syokudou":
+		n = s.syokudouDailyCount
+	}
+	if n <= 0 {
+		return "", nil
+	}
+	cond := fmt.Sprintf(" AND id IN (SELECT id FROM daily_shop_ids($%d, $%d, $%d))", nextArg, nextArg+1, nextArg+2)
+	return cond, []any{facility, gametime.DateKey(time.Now(), s.loc, s.dayBoundaryHour), n}
 }
 
 // gameDate returns the current game day (日境界 AM5:00 等) for stock partitioning.
@@ -701,9 +721,11 @@ func (s *Service) loadFood(ctx context.Context, foodID int64) (int64, effects.Ef
 		price   int64
 		effJSON []byte
 	)
+	cond, extra := s.dailyMenuCond("syokudou", 2)
+	args := append([]any{foodID}, extra...)
 	err := s.pool.QueryRow(ctx,
 		`SELECT price, effect FROM content_items
-		 WHERE id = $1 AND enabled AND facility = 'syokudou'`, foodID).Scan(&price, &effJSON)
+		 WHERE id = $1 AND enabled AND facility = 'syokudou'`+cond, args...).Scan(&price, &effJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, effects.Effect{}, ErrItemNotFound
 	}
@@ -831,9 +853,11 @@ func (s *Service) loadJobEconomy(ctx context.Context, name string) (jobEconomy, 
 // and per-item ownership cap (max_sets). Only facility=” items are sellable at
 // the department store; 食堂(syokudou)は DoEat、ジム/温泉は DoFacilityAction 経由。
 func (s *Service) loadItemBuy(ctx context.Context, itemID int64) (price int64, durability, maxSets int, err error) {
+	cond, extra := s.dailyMenuCond("", 2)
+	args := append([]any{itemID}, extra...)
 	err = s.pool.QueryRow(ctx,
 		`SELECT price, durability, max_sets FROM content_items
-		 WHERE id = $1 AND enabled AND facility = ''`, itemID).Scan(&price, &durability, &maxSets)
+		 WHERE id = $1 AND enabled AND facility = ''`+cond, args...).Scan(&price, &durability, &maxSets)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, 0, 0, ErrItemNotFound
 	}

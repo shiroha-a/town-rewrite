@@ -24,6 +24,8 @@ game:
   condition_eval_interval_min: 10  # 病気指数のコンディション評価間隔(分)
   work_interval_min: 3             # 就労のクールタイム(分。旧work_seigen_time)
   debug_no_cooldown: true          # デバッグ: 仕事/アイテム/施設/食事の間隔をすべて無効化(本番はfalse)
+  depart_daily_count: 100          # デパートで毎日表示する品数(旧仕様。0以下=全件)
+  syokudou_daily_count: 9          # 食堂で毎日表示する品数(旧仕様。0以下=全件)
 
 worker:
   tick_interval: "10s"

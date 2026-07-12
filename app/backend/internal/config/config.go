@@ -59,6 +59,10 @@ type GameConfig struct {
 	// DebugNoCooldown: trueにすると仕事・アイテム使用・施設・食事の各間隔(クールタイム)を
 	// すべて無効化する。デバッグ用。本番では false にすること。
 	DebugNoCooldown bool `yaml:"debug_no_cooldown"`
+	// DepartDailyCount / SyokudouDailyCount: デパート/食堂で毎日表示する品数(旧100/9)。
+	// 商品プールから game_date をシードに決定論的に選ぶ。0以下は全件表示。
+	DepartDailyCount   int `yaml:"depart_daily_count"`
+	SyokudouDailyCount int `yaml:"syokudou_daily_count"`
 }
 
 type WorkerConfig struct {

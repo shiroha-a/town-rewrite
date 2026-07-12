@@ -52,8 +52,9 @@ func Run(ctx context.Context, mode string, cfg *config.Config) error {
 	rnd := rng.New(cfg.Game.RNGSeed)
 	players := player.New(pool, led, rnd, cfg.Game.InitialMoney, cfg.Game.DebugNoCooldown)
 	actions := action.New(pool, led, players, rnd, loc, cfg.Game.DayBoundaryHour, cfg.Game.WorkIntervalMin,
-		cfg.Game.EnergyRecoverySec, cfg.Game.NouRecoverySec, cfg.Game.DebugNoCooldown)
-	contentSvc := content.New(pool)
+		cfg.Game.EnergyRecoverySec, cfg.Game.NouRecoverySec, cfg.Game.DebugNoCooldown,
+		cfg.Game.DepartDailyCount, cfg.Game.SyokudouDailyCount)
+	contentSvc := content.New(pool, loc, cfg.Game.DayBoundaryHour, cfg.Game.DepartDailyCount, cfg.Game.SyokudouDailyCount)
 
 	switch mode {
 	case "web":

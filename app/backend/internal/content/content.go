@@ -8,10 +8,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/shiroha-a/town/internal/effects"
+	"github.com/shiroha-a/town/internal/gametime"
 )
 
 // ValidationError is a client-fixable problem with admin input (e.g. a
@@ -41,10 +43,34 @@ type Job struct {
 
 // Service manages content rows.
 type Service struct {
-	pool *pgxpool.Pool
+	pool               *pgxpool.Pool
+	loc                *time.Location
+	dayBoundaryHour    int
+	departDailyCount   int
+	syokudouDailyCount int
 }
 
-func New(pool *pgxpool.Pool) *Service { return &Service{pool: pool} }
+func New(pool *pgxpool.Pool, loc *time.Location, dayBoundaryHour, departDailyCount, syokudouDailyCount int) *Service {
+	if loc == nil {
+		loc = time.UTC
+	}
+	return &Service{
+		pool: pool, loc: loc, dayBoundaryHour: dayBoundaryHour,
+		departDailyCount: departDailyCount, syokudouDailyCount: syokudouDailyCount,
+	}
+}
+
+// dailyCountFor returns how many items to show today for a facility (0 = all).
+func (s *Service) dailyCountFor(facility string) int {
+	switch facility {
+	case "":
+		return s.departDailyCount
+	case "syokudou":
+		return s.syokudouDailyCount
+	default:
+		return 0 // ジム/温泉などは日替わりなし
+	}
+}
 
 func orEmptyArray(b []byte) []byte {
 	if len(b) == 0 {
@@ -149,9 +175,16 @@ func (s *Service) ListFacilityMenu(ctx context.Context, facility string) ([]Shop
 }
 
 func (s *Service) listItems(ctx context.Context, facility string) ([]ShopItem, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, name, COALESCE(category, ''), price, effect, use_interval_min, durability, durability_unit, power_multiplier
-		 FROM content_items WHERE enabled AND facility = $1 ORDER BY id`, facility)
+	query := `SELECT id, name, COALESCE(category, ''), price, effect, use_interval_min, durability, durability_unit, power_multiplier
+	          FROM content_items WHERE enabled AND facility = $1`
+	args := []any{facility}
+	// デパート/食堂は毎日一部だけを品揃えする(旧仕様)。
+	if n := s.dailyCountFor(facility); n > 0 {
+		query += ` AND id IN (SELECT id FROM daily_shop_ids($1, $2, $3))`
+		args = append(args, gametime.DateKey(time.Now(), s.loc, s.dayBoundaryHour), n)
+	}
+	query += ` ORDER BY id`
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list items: %w", err)
 	}

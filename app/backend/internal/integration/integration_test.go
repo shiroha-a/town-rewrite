@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/shiroha-a/town/internal/bank"
 	"github.com/shiroha-a/town/internal/content"
 	"github.com/shiroha-a/town/internal/db"
+	"github.com/shiroha-a/town/internal/gametime"
 	"github.com/shiroha-a/town/internal/httpapi"
 	"github.com/shiroha-a/town/internal/ledger"
 	"github.com/shiroha-a/town/internal/player"
@@ -107,8 +109,10 @@ func setup(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 
 	led := ledger.New(pool)
 	svc := player.New(pool, led, rng.New(1), 500000, false)
-	actions := action.New(pool, led, svc, rng.New(2), time.UTC, 5, 0, 60, 60, false)
-	contentSvc := content.New(pool)
+	// 既存テストは日次ローテを無効(0=全件)にして全アイテムを購入可能に保つ。
+	// 日次ローテ自体は TestDailyShop が専用サービスで検証する。
+	actions := action.New(pool, led, svc, rng.New(2), time.UTC, 5, 0, 60, 60, false, 0, 0)
+	contentSvc := content.New(pool, time.UTC, 5, 0, 0)
 	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc))
 	t.Cleanup(func() {
 		srv.Close()
@@ -1376,4 +1380,59 @@ func TestOnsen(t *testing.T) {
 		t.Errorf("bathe while full status = %d, want 422", full.StatusCode)
 	}
 	full.Body.Close()
+}
+
+// TestDailyShop covers the daily shop rotation: the department store shows only a
+// deterministic per-day subset of the item pool, and buying an item outside
+// today's rotation is rejected (while an in-rotation item is not).
+func TestDailyShop(t *testing.T) {
+	_, pool := setup(t)
+	ctx := context.Background()
+
+	led := ledger.New(pool)
+	rnd := rng.New(1)
+	psvc := player.New(pool, led, rnd, 500000, false)
+	// デパートは1日3件だけ品揃えするサービスで検証する。
+	const daily = 3
+	csvc := content.New(pool, time.UTC, 5, daily, daily)
+	asvc := action.New(pool, led, psvc, rnd, time.UTC, 5, 0, 60, 60, false, daily, daily)
+
+	items, err := csvc.ListShopItems(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) == 0 || len(items) > daily {
+		t.Fatalf("daily depart count = %d, want 1..%d", len(items), daily)
+	}
+	// 決定論: 再取得しても同じ集合。
+	items2, _ := csvc.ListShopItems(ctx)
+	if len(items2) != len(items) {
+		t.Errorf("non-deterministic daily shop: %d vs %d", len(items), len(items2))
+	}
+
+	// 本日の品揃えに含まれないデパート商品IDを1つ特定する。
+	daykey := gametime.DateKey(time.Now(), time.UTC, 5)
+	var outID int64
+	pool.QueryRow(ctx,
+		`SELECT id FROM content_items
+		 WHERE enabled AND facility = '' AND id NOT IN (SELECT id FROM daily_shop_ids('', $1, $2))
+		 LIMIT 1`, daykey, daily).Scan(&outID)
+
+	alice, err := psvc.Register(ctx, "misskey.example", "shopper", "shopper")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 本日の品揃え内の商品は「品揃えにない」で弾かれない(価格不足等は別問題)。
+	if _, err := asvc.DoBuy(ctx, alice.ID, items[0].ID, 1, "buy-in"); errors.Is(err, action.ErrItemNotFound) {
+		t.Errorf("in-rotation item rejected as not found")
+	}
+	// 本日の品揃え外の商品は購入不可(ErrItemNotFound)。
+	if outID != 0 {
+		if _, err := asvc.DoBuy(ctx, alice.ID, outID, 1, "buy-out"); !errors.Is(err, action.ErrItemNotFound) {
+			t.Errorf("out-of-rotation buy err = %v, want ErrItemNotFound", err)
+		}
+	} else {
+		t.Log("プールが小さく品揃え外の商品が無いためbuy-out検証はスキップ")
+	}
 }

@@ -10,3 +10,9 @@ func Date(now time.Time, loc *time.Location, boundaryHour int) time.Time {
 	local := now.In(loc).Add(-time.Duration(boundaryHour) * time.Hour)
 	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
 }
+
+// DateKey returns the game day as a YYYY-MM-DD string, used as a per-day seed
+// for the daily shop rotation.
+func DateKey(now time.Time, loc *time.Location, boundaryHour int) string {
+	return Date(now, loc, boundaryHour).Format("2006-01-02")
+}
