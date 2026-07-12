@@ -119,6 +119,12 @@ const DETAIL_PARAMS: { key: keyof Player['params']; label: string }[] = [
   { key: 'omoshirosa', label: '面白さ' },
 ];
 const editingPlayer = ref<(AdminPlayerPayload & { id: number }) | null>(null);
+// 職業の選択肢: 学生(初期職) + content_jobs。編集中プレイヤーの現職も必ず含める。
+const jobOptions = computed(() => {
+  const set = new Set<string>(['学生', ...jobs.value.map((j) => j.name)]);
+  if (editingPlayer.value?.job) set.add(editingPlayer.value.job);
+  return [...set];
+});
 async function openEditPlayer(id: number) {
   message.value = '';
   try {
@@ -598,7 +604,11 @@ async function deleteEdit() {
         <label class="chk"><input type="checkbox" v-model="editingPlayer.is_admin" /> 管理者権限</label>
         <div class="econ-grid">
           <label>所持金<input type="number" v-model.number="editingPlayer.money" /></label>
-          <label>職業<input v-model="editingPlayer.job" /></label>
+          <label>職業
+            <select v-model="editingPlayer.job">
+              <option v-for="name in jobOptions" :key="name" :value="name">{{ name }}</option>
+            </select>
+          </label>
           <label>職Lv<input type="number" v-model.number="editingPlayer.job_level" /></label>
           <label>職経験値<input type="number" v-model.number="editingPlayer.job_exp" /></label>
           <label>身体P<input type="number" v-model.number="editingPlayer.energy" /></label>
