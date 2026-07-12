@@ -99,10 +99,15 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  headers?: Record<string, string>,
+): Promise<T> {
   const res = await fetch(`/api/v1${path}`, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(headers ?? {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
@@ -151,6 +156,93 @@ export interface WorkResult {
   mastered: string[];
 }
 export type WorkResponse = Player & { work_result: WorkResult };
+
+// 効果エンジンのop(add_param / add_money)。
+export interface EffectOp {
+  op: 'add_param' | 'add_money';
+  param?: string;
+  amount: number;
+}
+// 条件(param_gte)。
+export interface Condition {
+  pred: 'param_gte';
+  param: string;
+  value: number;
+}
+export interface AdminItem {
+  id: number;
+  name: string;
+  category: string;
+  price: number;
+  effect: EffectOp[];
+  enabled: boolean;
+}
+export interface AdminJob {
+  id: number;
+  name: string;
+  requirements: Condition[];
+  effect: EffectOp[];
+  salary: number;
+  pay_interval: number;
+  bonus_rate: number;
+  raise_rate: number;
+  rank: number;
+  require_master: string;
+  body_cost: number;
+  nou_cost: number;
+  enabled: boolean;
+}
+// 職業の作成/更新ペイロード。
+export interface JobPayload {
+  name: string;
+  requirements: Condition[];
+  effect: EffectOp[];
+  salary: number;
+  pay_interval: number;
+  bonus_rate: number;
+  raise_rate: number;
+  rank: number;
+  require_master: string;
+  body_cost: number;
+  nou_cost: number;
+  enabled: boolean;
+}
+export interface SimResult {
+  plan: {
+    money_delta: number;
+    params: { name: string; old_value: number; new_value: number }[];
+  };
+  warnings: string[];
+}
+
+export interface AdminPlayerSummary {
+  id: number;
+  display_name: string;
+  roles: string[];
+  money: number;
+  job: string;
+  job_level: number;
+}
+// プレイヤーの管理者編集ペイロード。
+export interface AdminPlayerPayload {
+  display_name: string;
+  money: number;
+  is_admin: boolean;
+  params: Params;
+  energy: number;
+  nou_energy: number;
+  satiety: number;
+  job: string;
+  job_level: number;
+  job_exp: number;
+  disease_index: number;
+  height_cm: number;
+  weight_g: number;
+}
+
+function adminHeaders(actingId: number): Record<string, string> {
+  return { 'X-Acting-Player-Id': String(actingId) };
+}
 
 export const api = {
   register: (instanceHost: string, remoteUserId: string, displayName: string) =>
@@ -211,4 +303,38 @@ export const api = {
       bath_id: bathId,
       idempotency_key: newIdempotencyKey(),
     }),
+
+  // 管理者API(X-Acting-Player-Idヘッダ + adminロール)。
+  adminListItems: (actingId: number) =>
+    request<AdminItem[]>('GET', '/admin/items', undefined, adminHeaders(actingId)),
+  adminCreateItem: (
+    actingId: number,
+    item: { name: string; category: string; price: number; effect: EffectOp[] },
+  ) => request<AdminItem>('POST', '/admin/items', item, adminHeaders(actingId)),
+  adminUpdateItem: (
+    actingId: number,
+    id: number,
+    item: { name: string; category: string; price: number; effect: EffectOp[]; enabled: boolean },
+  ) => request<AdminItem>('PUT', `/admin/items/${id}`, item, adminHeaders(actingId)),
+  adminDeleteItem: (actingId: number, id: number) =>
+    request<{ deleted: boolean }>('DELETE', `/admin/items/${id}`, undefined, adminHeaders(actingId)),
+  adminListJobs: (actingId: number) =>
+    request<AdminJob[]>('GET', '/admin/jobs', undefined, adminHeaders(actingId)),
+  adminCreateJob: (actingId: number, job: JobPayload) =>
+    request<AdminJob>('POST', '/admin/jobs', job, adminHeaders(actingId)),
+  adminUpdateJob: (actingId: number, id: number, job: JobPayload) =>
+    request<AdminJob>('PUT', `/admin/jobs/${id}`, job, adminHeaders(actingId)),
+  adminDeleteJob: (actingId: number, id: number) =>
+    request<{ deleted: boolean }>('DELETE', `/admin/jobs/${id}`, undefined, adminHeaders(actingId)),
+  adminSimulate: (
+    actingId: number,
+    effect: EffectOp[],
+    state: { money: number; params: Record<string, { value: number; max: number }> },
+  ) => request<SimResult>('POST', '/admin/simulate', { effect, state }, adminHeaders(actingId)),
+  adminListPlayers: (actingId: number) =>
+    request<AdminPlayerSummary[]>('GET', '/admin/players', undefined, adminHeaders(actingId)),
+  adminUpdatePlayer: (actingId: number, id: number, payload: AdminPlayerPayload) =>
+    request<Player>('PUT', `/admin/players/${id}`, payload, adminHeaders(actingId)),
+  adminDeletePlayer: (actingId: number, id: number) =>
+    request<{ deleted: boolean }>('DELETE', `/admin/players/${id}`, undefined, adminHeaders(actingId)),
 };

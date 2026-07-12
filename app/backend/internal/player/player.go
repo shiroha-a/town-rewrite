@@ -235,6 +235,146 @@ func (s *Service) ListPublic(ctx context.Context) ([]PublicSummary, error) {
 	return out, rows.Err()
 }
 
+// AdminPlayerSummary is the admin listing view of a player (含む非公開情報)。
+type AdminPlayerSummary struct {
+	ID          int64
+	DisplayName string
+	Roles       []string
+	Money       int64
+	Job         string
+	JobLevel    int
+}
+
+// AdminList returns all active players with admin-relevant fields.
+func (s *Service) AdminList(ctx context.Context) ([]AdminPlayerSummary, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT p.id, p.display_name, ps.job, ps.job_level,
+		        COALESCE((SELECT array_agg(role ORDER BY role) FROM player_roles WHERE player_id = p.id), '{}')
+		 FROM players p JOIN player_status ps ON ps.player_id = p.id
+		 WHERE p.deleted_at IS NULL ORDER BY p.id`)
+	if err != nil {
+		return nil, fmt.Errorf("admin list players: %w", err)
+	}
+	out := []AdminPlayerSummary{}
+	for rows.Next() {
+		var a AdminPlayerSummary
+		if err := rows.Scan(&a.ID, &a.DisplayName, &a.Job, &a.JobLevel, &a.Roles); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan admin player: %w", err)
+		}
+		out = append(out, a)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		bal, err := s.ledger.Balance(ctx, ledger.PlayerAccount(out[i].ID))
+		if err != nil {
+			return nil, err
+		}
+		out[i].Money = bal
+	}
+	return out, nil
+}
+
+// AdminPlayerUpdate is the admin-editable player state. Money is a target value
+// applied through the ledger (not a mutable column); IsAdmin toggles the role.
+type AdminPlayerUpdate struct {
+	DisplayName  string
+	Money        int64
+	IsAdmin      bool
+	Params       Params
+	Energy       int
+	NouEnergy    int
+	Satiety      int
+	Job          string
+	JobLevel     int
+	JobExp       int
+	DiseaseIndex int
+	HeightCm     int
+	WeightG      int
+}
+
+// AdminUpdate applies admin edits to a player: status/params/name/role and a
+// money target (via a ledger adjustment to keep the double-entry invariant).
+func (s *Service) AdminUpdate(ctx context.Context, id int64, u AdminPlayerUpdate) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var exists bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM players WHERE id = $1 AND deleted_at IS NULL)`, id).Scan(&exists); err != nil {
+			return fmt.Errorf("check player: %w", err)
+		}
+		if !exists {
+			return ErrNotFound
+		}
+		if u.DisplayName != "" {
+			if _, err := tx.Exec(ctx, `UPDATE players SET display_name = $2 WHERE id = $1`, id, u.DisplayName); err != nil {
+				return fmt.Errorf("update name: %w", err)
+			}
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE player_status SET
+				energy = $2, nou_energy = $3, satiety = $4, job = $5, job_level = $6, job_exp = $7,
+				disease_index = $8, height_cm = $9, weight_g = $10,
+				kokugo = $11, suugaku = $12, rika = $13, syakai = $14, eigo = $15, ongaku = $16, bijutsu = $17,
+				looks = $18, tairyoku = $19, kenkou = $20, speed = $21, power = $22, wanryoku = $23, kyakuryoku = $24,
+				love = $25, omoshirosa = $26, updated_at = now()
+			WHERE player_id = $1`,
+			id, u.Energy, u.NouEnergy, u.Satiety, u.Job, u.JobLevel, u.JobExp, u.DiseaseIndex, u.HeightCm, u.WeightG,
+			u.Params.Kokugo, u.Params.Suugaku, u.Params.Rika, u.Params.Syakai, u.Params.Eigo, u.Params.Ongaku, u.Params.Bijutsu,
+			u.Params.Looks, u.Params.Tairyoku, u.Params.Kenkou, u.Params.Speed, u.Params.Power, u.Params.Wanryoku, u.Params.Kyakuryoku,
+			u.Params.Love, u.Params.Omoshirosa); err != nil {
+			return fmt.Errorf("update status: %w", err)
+		}
+		// パラメータ変化に伴いパワー上限を再計算(energy/nouは上限にクランプ)。
+		if err := RefreshPowerMax(ctx, tx, id); err != nil {
+			return err
+		}
+		// admin ロールの付与/剥奪。
+		if u.IsAdmin {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO player_roles (player_id, role) VALUES ($1, 'admin') ON CONFLICT DO NOTHING`, id); err != nil {
+				return fmt.Errorf("grant admin: %w", err)
+			}
+		} else {
+			if _, err := tx.Exec(ctx,
+				`DELETE FROM player_roles WHERE player_id = $1 AND role = 'admin'`, id); err != nil {
+				return fmt.Errorf("revoke admin: %w", err)
+			}
+		}
+		// お金は台帳で目標値に調整(system:admin_adjust との複式)。
+		var current int64
+		if err := tx.QueryRow(ctx,
+			`SELECT COALESCE(SUM(delta), 0) FROM ledger_entry WHERE account = $1`,
+			ledger.PlayerAccount(id)).Scan(&current); err != nil {
+			return fmt.Errorf("read money: %w", err)
+		}
+		if delta := u.Money - current; delta != 0 {
+			if err := s.ledger.PostTx(ctx, tx, "admin_adjust", "", []ledger.Entry{
+				{Account: ledger.PlayerAccount(id), Delta: delta},
+				{Account: ledger.SystemAccount("admin_adjust"), Delta: -delta},
+			}); err != nil {
+				return fmt.Errorf("adjust money: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
+// AdminSoftDelete marks a player as deleted (論理削除). Ledger history is kept.
+func (s *Service) AdminSoftDelete(ctx context.Context, id int64) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE players SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`, id)
+	if err != nil {
+		return fmt.Errorf("soft delete player: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // HasRole reports whether the player holds the given role.
 func (s *Service) HasRole(ctx context.Context, id int64, role string) (bool, error) {
 	var exists bool

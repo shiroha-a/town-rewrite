@@ -8,6 +8,7 @@ import (
 
 	"github.com/shiroha-a/town/internal/content"
 	"github.com/shiroha-a/town/internal/effects"
+	"github.com/shiroha-a/town/internal/player"
 )
 
 // requireAdmin is an INTERIM authorization check used until MiAuth provides the
@@ -70,6 +71,52 @@ func (s *Server) createItem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, it)
 }
 
+type updateItemReq struct {
+	Name     string          `json:"name"`
+	Category string          `json:"category"`
+	Price    int64           `json:"price"`
+	Effect   json.RawMessage `json:"effect"`
+	Enabled  bool            `json:"enabled"`
+}
+
+func (s *Server) updateItem(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req updateItemReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	it, err := s.content.UpdateItem(r.Context(), id, req.Name, req.Category, req.Price, req.Effect, req.Enabled)
+	if err != nil {
+		writeContentErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *Server) deleteItem(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := s.content.DeleteItem(r.Context(), id); err != nil {
+		writeContentErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+}
+
 func (s *Server) listItems(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return
@@ -82,27 +129,85 @@ func (s *Server) listItems(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
-type createJobReq struct {
-	Name         string          `json:"name"`
-	Requirements json.RawMessage `json:"requirements"`
-	Effect       json.RawMessage `json:"effect"`
+type jobReq struct {
+	Name          string          `json:"name"`
+	Requirements  json.RawMessage `json:"requirements"`
+	Effect        json.RawMessage `json:"effect"`
+	Salary        int64           `json:"salary"`
+	PayInterval   int             `json:"pay_interval"`
+	BonusRate     int             `json:"bonus_rate"`
+	RaiseRate     int             `json:"raise_rate"`
+	Rank          int             `json:"rank"`
+	RequireMaster string          `json:"require_master"`
+	BodyCost      int             `json:"body_cost"`
+	NouCost       int             `json:"nou_cost"`
+	Enabled       bool            `json:"enabled"`
+}
+
+func (req jobReq) toInput() content.JobInput {
+	return content.JobInput{
+		Name: req.Name, Requirements: req.Requirements, Effect: req.Effect,
+		Salary: req.Salary, PayInterval: req.PayInterval, BonusRate: req.BonusRate,
+		RaiseRate: req.RaiseRate, Rank: req.Rank, RequireMaster: req.RequireMaster,
+		BodyCost: req.BodyCost, NouCost: req.NouCost, Enabled: req.Enabled,
+	}
 }
 
 func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return
 	}
-	var req createJobReq
+	var req jobReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	j, err := s.content.CreateJob(r.Context(), req.Name, req.Requirements, req.Effect)
+	in := req.toInput()
+	in.Enabled = true // 新規作成は有効で作る
+	j, err := s.content.CreateJob(r.Context(), in)
 	if err != nil {
 		writeContentErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, j)
+}
+
+func (s *Server) updateJob(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req jobReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	j, err := s.content.UpdateJob(r.Context(), id, req.toInput())
+	if err != nil {
+		writeContentErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, j)
+}
+
+func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := s.content.DeleteJob(r.Context(), id); err != nil {
+		writeContentErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }
 
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
@@ -115,6 +220,109 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, jobs)
+}
+
+type adminPlayerSummaryResp struct {
+	ID          int64    `json:"id"`
+	DisplayName string   `json:"display_name"`
+	Roles       []string `json:"roles"`
+	Money       int64    `json:"money"`
+	Job         string   `json:"job"`
+	JobLevel    int      `json:"job_level"`
+}
+
+func (s *Server) adminListPlayers(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	players, err := s.players.AdminList(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]adminPlayerSummaryResp, 0, len(players))
+	for _, p := range players {
+		roles := p.Roles
+		if roles == nil {
+			roles = []string{}
+		}
+		out = append(out, adminPlayerSummaryResp{
+			ID: p.ID, DisplayName: p.DisplayName, Roles: roles, Money: p.Money, Job: p.Job, JobLevel: p.JobLevel,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+type adminPlayerReq struct {
+	DisplayName  string     `json:"display_name"`
+	Money        int64      `json:"money"`
+	IsAdmin      bool       `json:"is_admin"`
+	Params       paramsResp `json:"params"`
+	Energy       int        `json:"energy"`
+	NouEnergy    int        `json:"nou_energy"`
+	Satiety      int        `json:"satiety"`
+	Job          string     `json:"job"`
+	JobLevel     int        `json:"job_level"`
+	JobExp       int        `json:"job_exp"`
+	DiseaseIndex int        `json:"disease_index"`
+	HeightCm     int        `json:"height_cm"`
+	WeightG      int        `json:"weight_g"`
+}
+
+func (s *Server) adminUpdatePlayer(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req adminPlayerReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	err = s.players.AdminUpdate(r.Context(), id, player.AdminPlayerUpdate{
+		DisplayName: req.DisplayName, Money: req.Money, IsAdmin: req.IsAdmin,
+		Params: player.Params(req.Params),
+		Energy: req.Energy, NouEnergy: req.NouEnergy, Satiety: req.Satiety,
+		Job: req.Job, JobLevel: req.JobLevel, JobExp: req.JobExp,
+		DiseaseIndex: req.DiseaseIndex, HeightCm: req.HeightCm, WeightG: req.WeightG,
+	})
+	if errors.Is(err, player.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "player not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	p, err := s.players.Get(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toResp(p))
+}
+
+func (s *Server) adminDeletePlayer(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := s.players.AdminSoftDelete(r.Context(), id); errors.Is(err, player.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "player not found")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }
 
 type simulateReq struct {

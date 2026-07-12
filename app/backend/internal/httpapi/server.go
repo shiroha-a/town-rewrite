@@ -43,9 +43,16 @@ func NewServer(players *player.Service, actions *action.Service, contentSvc *con
 	// 管理者API(暫定認可: X-Acting-Player-Idヘッダのadminロール。将来MiAuthで置換)
 	mux.HandleFunc("POST /api/v1/admin/items", s.createItem)
 	mux.HandleFunc("GET /api/v1/admin/items", s.listItems)
+	mux.HandleFunc("PUT /api/v1/admin/items/{id}", s.updateItem)
+	mux.HandleFunc("DELETE /api/v1/admin/items/{id}", s.deleteItem)
 	mux.HandleFunc("POST /api/v1/admin/jobs", s.createJob)
 	mux.HandleFunc("GET /api/v1/admin/jobs", s.listJobs)
+	mux.HandleFunc("PUT /api/v1/admin/jobs/{id}", s.updateJob)
+	mux.HandleFunc("DELETE /api/v1/admin/jobs/{id}", s.deleteJob)
 	mux.HandleFunc("POST /api/v1/admin/simulate", s.simulate)
+	mux.HandleFunc("GET /api/v1/admin/players", s.adminListPlayers)
+	mux.HandleFunc("PUT /api/v1/admin/players/{id}", s.adminUpdatePlayer)
+	mux.HandleFunc("DELETE /api/v1/admin/players/{id}", s.adminDeletePlayer)
 	return recoverer(mux)
 }
 

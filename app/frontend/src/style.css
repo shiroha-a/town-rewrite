@@ -173,6 +173,21 @@ table.townmap td {
 .command-icons button:hover {
   outline: 2px solid #ff6600;
 }
+/* 管理者導線(アイコンではなくテキストボタン) */
+.command-icons button.admin-link {
+  background: #445566;
+  color: #fff;
+  border: 1px solid #223344;
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.command-icons button.admin-link:hover {
+  outline: 0;
+  background: #33475a;
+}
 /* 就労クールタイム中の仕事アイコン: グレーアウト+残り時間ラベル */
 .command-icons button.on-cooldown {
   position: relative;

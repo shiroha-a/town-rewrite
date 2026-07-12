@@ -60,6 +60,9 @@ function clickFacility(f: Facility) {
   if (f.ready) emit('navigate', f.key);
 }
 
+// 管理者のみ管理者画面への導線を出す。
+const isAdmin = computed(() => props.player.roles.includes('admin'));
+
 // コマンドアイコン列。仕事(go_work.gif)は学生以外(=転職済み)のときだけ出現する。
 const commands = computed(() => {
   const list = [{ key: 'reload', img: 'reload', alt: '更新' }];
@@ -188,6 +191,9 @@ const others: { label: string; key: ParamKey }[] = [
           </div>
 
           <div class="command-icons">
+            <button v-if="isAdmin" class="admin-link" title="管理者画面" @click="emit('navigate', 'admin')">
+              ⚙ 管理者
+            </button>
             <button
               v-for="cmd in commands"
               :key="cmd.key"

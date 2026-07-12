@@ -13,6 +13,7 @@ import FacilityMenuView from './components/FacilityMenuView.vue';
 import OnsenView from './components/OnsenView.vue';
 import HospitalView from './components/HospitalView.vue';
 import YakubaView from './components/YakubaView.vue';
+import AdminView from './components/AdminView.vue';
 import PlaceholderView from './components/PlaceholderView.vue';
 
 const player = ref<Player | null>(null);
@@ -115,6 +116,7 @@ const facilityTitles: Record<string, string> = {
     <OnsenView v-else-if="view === 'onsen'" :player="player" @update="onUpdate" @back="back" />
     <HospitalView v-else-if="view === 'hospital'" :player="player" @update="onUpdate" @back="back" />
     <YakubaView v-else-if="view === 'yakuba'" :player="player" @back="back" />
+    <AdminView v-else-if="view === 'admin'" :player="player" @back="back" />
     <PlaceholderView v-else :title="facilityTitles[view] ?? view" @back="back" />
   </template>
 </template>
