@@ -240,6 +240,19 @@ export interface AdminPlayerPayload {
   weight_g: number;
 }
 
+export interface GameSettings {
+  initial_money: number;
+  daily_interest_permille: number;
+  energy_recovery_sec: number;
+  nou_recovery_sec: number;
+  satiety_decay_sec: number;
+  condition_eval_interval_min: number;
+  work_interval_min: number;
+  debug_no_cooldown: boolean;
+  depart_daily_count: number;
+  syokudou_daily_count: number;
+}
+
 function adminHeaders(actingId: number): Record<string, string> {
   return { 'X-Acting-Player-Id': String(actingId) };
 }
@@ -337,4 +350,8 @@ export const api = {
     request<Player>('PUT', `/admin/players/${id}`, payload, adminHeaders(actingId)),
   adminDeletePlayer: (actingId: number, id: number) =>
     request<{ deleted: boolean }>('DELETE', `/admin/players/${id}`, undefined, adminHeaders(actingId)),
+  adminGetSettings: (actingId: number) =>
+    request<GameSettings>('GET', '/admin/settings', undefined, adminHeaders(actingId)),
+  adminUpdateSettings: (actingId: number, settings: GameSettings) =>
+    request<GameSettings>('PUT', '/admin/settings', settings, adminHeaders(actingId)),
 };

@@ -16,27 +16,29 @@ import (
 	"github.com/shiroha-a/town/internal/config"
 	"github.com/shiroha-a/town/internal/gametime"
 	"github.com/shiroha-a/town/internal/ledger"
+	"github.com/shiroha-a/town/internal/settings"
 )
 
 const leaderKey = "town:worker:leader"
 
 // Worker drives scheduled game progression.
 type Worker struct {
-	rdb    *redis.Client
-	pool   *pgxpool.Pool
-	ledger *ledger.Repo
-	cfg    *config.Config
-	logger *slog.Logger
-	loc    *time.Location
+	rdb      *redis.Client
+	pool     *pgxpool.Pool
+	ledger   *ledger.Repo
+	cfg      *config.Config
+	settings *settings.Store
+	logger   *slog.Logger
+	loc      *time.Location
 }
 
-func New(rdb *redis.Client, pool *pgxpool.Pool, led *ledger.Repo, cfg *config.Config, logger *slog.Logger) *Worker {
+func New(rdb *redis.Client, pool *pgxpool.Pool, led *ledger.Repo, cfg *config.Config, st *settings.Store, logger *slog.Logger) *Worker {
 	loc, err := time.LoadLocation(cfg.Game.Timezone)
 	if err != nil {
 		logger.Warn("invalid timezone, falling back to UTC", "timezone", cfg.Game.Timezone, "err", err)
 		loc = time.UTC
 	}
-	return &Worker{rdb: rdb, pool: pool, ledger: led, cfg: cfg, logger: logger, loc: loc}
+	return &Worker{rdb: rdb, pool: pool, ledger: led, cfg: cfg, settings: st, logger: logger, loc: loc}
 }
 
 // Run ticks until the context is cancelled.
@@ -75,17 +77,22 @@ func (w *Worker) tick(ctx context.Context) {
 	if !acquired {
 		return
 	}
+	// 管理者が実行時に変更した設定を毎tickで取り込む(webとは別プロセスのため)。
+	if err := w.settings.Reload(ctx); err != nil {
+		w.logger.Error("reload settings", "err", err)
+	}
+	cfg := w.settings.Get()
 	// 身体/頭脳パワーの自動回復と空腹値の減少(毎tick)。
-	if n, err := RecoverPower(ctx, w.pool, w.cfg.Game.EnergyRecoverySec, w.cfg.Game.NouRecoverySec); err != nil {
+	if n, err := RecoverPower(ctx, w.pool, cfg.EnergyRecoverySec, cfg.NouRecoverySec); err != nil {
 		w.logger.Error("recover power", "err", err)
 	} else if n > 0 {
 		w.logger.Info("power recovered", "players", n)
 	}
-	if _, err := DecaySatiety(ctx, w.pool, w.cfg.Game.SatietyDecaySec); err != nil {
+	if _, err := DecaySatiety(ctx, w.pool, cfg.SatietyDecaySec); err != nil {
 		w.logger.Error("decay satiety", "err", err)
 	}
 	// 病気指数のコンディション評価(評価間隔を過ぎたプレイヤーを1回ぶん評価)。
-	if n, err := EvaluateDisease(ctx, w.pool, w.cfg.Game.ConditionEvalIntervalMin); err != nil {
+	if n, err := EvaluateDisease(ctx, w.pool, cfg.ConditionEvalIntervalMin); err != nil {
 		w.logger.Error("evaluate disease", "err", err)
 	} else if n > 0 {
 		w.logger.Info("disease evaluated", "players", n)
@@ -121,7 +128,7 @@ func (w *Worker) runDailyIfNeeded(ctx context.Context, now time.Time) {
 			return nil // 本日分は実行済み
 		}
 		ran = true
-		interestAccounts, err = bank.AccrueInterest(ctx, tx, w.ledger, w.cfg.Game.DailyInterestPermille)
+		interestAccounts, err = bank.AccrueInterest(ctx, tx, w.ledger, w.settings.Get().DailyInterestPermille)
 		if err != nil {
 			return err
 		}

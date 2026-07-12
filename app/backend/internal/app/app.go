@@ -18,6 +18,7 @@ import (
 	"github.com/shiroha-a/town/internal/player"
 	"github.com/shiroha-a/town/internal/rediscli"
 	"github.com/shiroha-a/town/internal/rng"
+	"github.com/shiroha-a/town/internal/settings"
 	"github.com/shiroha-a/town/internal/worker"
 )
 
@@ -48,28 +49,43 @@ func Run(ctx context.Context, mode string, cfg *config.Config) error {
 		loc = time.UTC
 	}
 
+	// 実行時に編集可能なゲーム設定(初回はdefault.ymlからシードしDBに永続化)。
+	st, err := settings.NewStore(ctx, pool, settings.Game{
+		InitialMoney:             cfg.Game.InitialMoney,
+		DailyInterestPermille:    cfg.Game.DailyInterestPermille,
+		EnergyRecoverySec:        cfg.Game.EnergyRecoverySec,
+		NouRecoverySec:           cfg.Game.NouRecoverySec,
+		SatietyDecaySec:          cfg.Game.SatietyDecaySec,
+		ConditionEvalIntervalMin: cfg.Game.ConditionEvalIntervalMin,
+		WorkIntervalMin:          cfg.Game.WorkIntervalMin,
+		DebugNoCooldown:          cfg.Game.DebugNoCooldown,
+		DepartDailyCount:         cfg.Game.DepartDailyCount,
+		SyokudouDailyCount:       cfg.Game.SyokudouDailyCount,
+	})
+	if err != nil {
+		return fmt.Errorf("load settings: %w", err)
+	}
+
 	led := ledger.New(pool)
 	rnd := rng.New(cfg.Game.RNGSeed)
-	players := player.New(pool, led, rnd, cfg.Game.InitialMoney, cfg.Game.DebugNoCooldown)
-	actions := action.New(pool, led, players, rnd, loc, cfg.Game.DayBoundaryHour, cfg.Game.WorkIntervalMin,
-		cfg.Game.EnergyRecoverySec, cfg.Game.NouRecoverySec, cfg.Game.DebugNoCooldown,
-		cfg.Game.DepartDailyCount, cfg.Game.SyokudouDailyCount)
-	contentSvc := content.New(pool, loc, cfg.Game.DayBoundaryHour, cfg.Game.DepartDailyCount, cfg.Game.SyokudouDailyCount)
+	players := player.New(pool, led, rnd, st)
+	actions := action.New(pool, led, players, rnd, loc, cfg.Game.DayBoundaryHour, st)
+	contentSvc := content.New(pool, loc, cfg.Game.DayBoundaryHour, st)
 
 	switch mode {
 	case "web":
-		return runWeb(ctx, cfg, logger, players, actions, contentSvc)
+		return runWeb(ctx, cfg, logger, players, actions, contentSvc, st)
 	case "worker":
-		return worker.New(rdb, pool, led, cfg, logger).Run(ctx)
+		return worker.New(rdb, pool, led, cfg, st, logger).Run(ctx)
 	default:
 		return fmt.Errorf("unknown mode %q (want web|worker)", mode)
 	}
 }
 
-func runWeb(ctx context.Context, cfg *config.Config, logger *slog.Logger, players *player.Service, actions *action.Service, contentSvc *content.Service) error {
+func runWeb(ctx context.Context, cfg *config.Config, logger *slog.Logger, players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store) error {
 	srv := &http.Server{
 		Addr:              cfg.Server.HTTPAddr,
-		Handler:           httpapi.NewServer(players, actions, contentSvc),
+		Handler:           httpapi.NewServer(players, actions, contentSvc, st),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

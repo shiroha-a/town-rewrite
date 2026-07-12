@@ -20,6 +20,7 @@ import (
 	"github.com/shiroha-a/town/internal/ledger"
 	"github.com/shiroha-a/town/internal/player"
 	"github.com/shiroha-a/town/internal/rng"
+	"github.com/shiroha-a/town/internal/settings"
 )
 
 // statusColumns whitelists the parameter -> column mapping. Effect params are
@@ -78,48 +79,35 @@ const zaikoAdjust = 2
 
 // Service applies actions.
 type Service struct {
-	pool               *pgxpool.Pool
-	ledger             *ledger.Repo
-	players            *player.Service
-	rng                *rng.Rand
-	loc                *time.Location
-	dayBoundaryHour    int
-	workIntervalMin    int
-	energyRecinSec     int
-	nouRecinSec        int
-	debugNoCooldown    bool
-	departDailyCount   int
-	syokudouDailyCount int
+	pool            *pgxpool.Pool
+	ledger          *ledger.Repo
+	players         *player.Service
+	rng             *rng.Rand
+	loc             *time.Location
+	dayBoundaryHour int
+	settings        *settings.Store
 }
 
-func New(pool *pgxpool.Pool, led *ledger.Repo, players *player.Service, r *rng.Rand, loc *time.Location, dayBoundaryHour, workIntervalMin, energyRecoverySec, nouRecoverySec int, debugNoCooldown bool, departDailyCount, syokudouDailyCount int) *Service {
+func New(pool *pgxpool.Pool, led *ledger.Repo, players *player.Service, r *rng.Rand, loc *time.Location, dayBoundaryHour int, st *settings.Store) *Service {
 	if loc == nil {
 		loc = time.UTC
 	}
-	if energyRecoverySec <= 0 {
-		energyRecoverySec = 60
-	}
-	if nouRecoverySec <= 0 {
-		nouRecoverySec = 60
-	}
 	return &Service{
 		pool: pool, ledger: led, players: players, rng: r, loc: loc,
-		dayBoundaryHour: dayBoundaryHour, workIntervalMin: workIntervalMin,
-		energyRecinSec: energyRecoverySec, nouRecinSec: nouRecoverySec,
-		debugNoCooldown:  debugNoCooldown,
-		departDailyCount: departDailyCount, syokudouDailyCount: syokudouDailyCount,
+		dayBoundaryHour: dayBoundaryHour, settings: st,
 	}
 }
 
 // dailyMenuCond appends the "in today's rotation" filter to a load query when the
 // facility rotates daily (depart/syokudou). Returns the extra SQL and args.
 func (s *Service) dailyMenuCond(facility string, nextArg int) (string, []any) {
+	cfg := s.settings.Get()
 	var n int
 	switch facility {
 	case "":
-		n = s.departDailyCount
+		n = cfg.DepartDailyCount
 	case "syokudou":
-		n = s.syokudouDailyCount
+		n = cfg.SyokudouDailyCount
 	}
 	if n <= 0 {
 		return "", nil
@@ -229,7 +217,7 @@ func (s *Service) DoWork(ctx context.Context, playerID int64, idempotencyKey str
 			playerID).Scan(&nextAt); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("read work cooldown: %w", err)
 		}
-		if !s.debugNoCooldown && nextAt != nil && time.Now().Before(*nextAt) {
+		if !s.settings.Get().DebugNoCooldown && nextAt != nil && time.Now().Before(*nextAt) {
 			remain := int(time.Until(*nextAt).Minutes()) + 1
 			return &ConditionError{Message: fmt.Sprintf("まだ働けません。あと約%d分お待ちください。", remain)}
 		}
@@ -332,7 +320,7 @@ func (s *Service) DoWork(ctx context.Context, playerID int64, idempotencyKey str
 			 VALUES ($1, 'work', now() + make_interval(mins => $2))
 			 ON CONFLICT (player_id, facility)
 			 DO UPDATE SET next_available_at = now() + make_interval(mins => $2)`,
-			playerID, s.workIntervalMin); err != nil {
+			playerID, s.settings.Get().WorkIntervalMin); err != nil {
 			return fmt.Errorf("set work cooldown: %w", err)
 		}
 		// 結果画面用にサマリを控える。
@@ -517,6 +505,14 @@ func (s *Service) DoOnsen(ctx context.Context, playerID, bathID int64, idempoten
 			return fmt.Errorf("pay: %w", err)
 		}
 		// gain = floor(経過秒 / 回復秒 * 倍率) + 1、上限クランプ。回復時刻を現在に進める。
+		cfg := s.settings.Get()
+		energyRecSec, nouRecSec := cfg.EnergyRecoverySec, cfg.NouRecoverySec
+		if energyRecSec <= 0 {
+			energyRecSec = 60
+		}
+		if nouRecSec <= 0 {
+			nouRecSec = 60
+		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE player_status SET
 				energy = LEAST(energy_max,
@@ -527,7 +523,7 @@ func (s *Service) DoOnsen(ctx context.Context, playerID, bathID int64, idempoten
 				nou_recovered_at = now(),
 				updated_at = now()
 			WHERE player_id = $1`,
-			playerID, s.energyRecinSec, multiplier, s.nouRecinSec); err != nil {
+			playerID, energyRecSec, multiplier, nouRecSec); err != nil {
 			return fmt.Errorf("onsen recover: %w", err)
 		}
 		return nil
@@ -614,10 +610,10 @@ func (s *Service) DoUse(ctx context.Context, playerID, itemID int64, idempotency
 		return nil, err
 	}
 	return s.runAction(ctx, playerID, "use", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
-		if !s.debugNoCooldown && fillsSatiety && state.Params["satiety"].Value >= satietyMax {
+		if !s.settings.Get().DebugNoCooldown && fillsSatiety && state.Params["satiety"].Value >= satietyMax {
 			return &ConditionError{Message: "お腹がいっぱいです。今は食べられません。"}
 		}
-		if !s.debugNoCooldown && intervalMin > 0 {
+		if !s.settings.Get().DebugNoCooldown && intervalMin > 0 {
 			var lastUsed *time.Time
 			err := tx.QueryRow(ctx,
 				`SELECT last_used_at FROM player_items WHERE player_id = $1 AND item_id = $2`,
@@ -689,7 +685,7 @@ func (s *Service) DoEat(ctx context.Context, playerID, foodID int64, idempotency
 		return nil, err
 	}
 	return s.runAction(ctx, playerID, "eat", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
-		if !s.debugNoCooldown && state.Params["satiety"].Value >= satietyMax {
+		if !s.settings.Get().DebugNoCooldown && state.Params["satiety"].Value >= satietyMax {
 			return &ConditionError{Message: "お腹がいっぱいです。今は食べられません。"}
 		}
 		if state.Money < price {
@@ -755,7 +751,7 @@ func (s *Service) DoFacilityAction(ctx context.Context, playerID int64, facility
 			playerID, facility).Scan(&nextAt); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("read cooldown: %w", err)
 		}
-		if !s.debugNoCooldown && nextAt != nil && time.Now().Before(*nextAt) {
+		if !s.settings.Get().DebugNoCooldown && nextAt != nil && time.Now().Before(*nextAt) {
 			remain := int(time.Until(*nextAt).Minutes()) + 1
 			return &ConditionError{Message: fmt.Sprintf("まだ利用できません。あと約%d分お待ちください。", remain)}
 		}

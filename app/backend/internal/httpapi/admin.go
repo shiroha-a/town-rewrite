@@ -9,7 +9,31 @@ import (
 	"github.com/shiroha-a/town/internal/content"
 	"github.com/shiroha-a/town/internal/effects"
 	"github.com/shiroha-a/town/internal/player"
+	"github.com/shiroha-a/town/internal/settings"
 )
+
+func (s *Server) adminGetSettings(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	writeJSON(w, http.StatusOK, s.settings.Get())
+}
+
+func (s *Server) adminUpdateSettings(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	var g settings.Game
+	if err := json.NewDecoder(r.Body).Decode(&g); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := s.settings.Set(r.Context(), g); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.settings.Get())
+}
 
 // requireAdmin is an INTERIM authorization check used until MiAuth provides the
 // authenticated session. The acting player is passed via the X-Acting-Player-Id

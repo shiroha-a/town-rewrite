@@ -26,6 +26,7 @@ import (
 	"github.com/shiroha-a/town/internal/ledger"
 	"github.com/shiroha-a/town/internal/player"
 	"github.com/shiroha-a/town/internal/rng"
+	"github.com/shiroha-a/town/internal/settings"
 	"github.com/shiroha-a/town/internal/worker"
 
 	"github.com/jackc/pgx/v5"
@@ -108,17 +109,39 @@ func setup(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 	}
 
 	led := ledger.New(pool)
-	svc := player.New(pool, led, rng.New(1), 500000, false)
 	// 既存テストは日次ローテを無効(0=全件)にして全アイテムを購入可能に保つ。
 	// 日次ローテ自体は TestDailyShop が専用サービスで検証する。
-	actions := action.New(pool, led, svc, rng.New(2), time.UTC, 5, 0, 60, 60, false, 0, 0)
-	contentSvc := content.New(pool, time.UTC, 5, 0, 0)
-	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc))
+	st := newTestSettings(t, ctx, pool, settings.Game{
+		InitialMoney:      500000,
+		EnergyRecoverySec: 60,
+		NouRecoverySec:    60,
+		WorkIntervalMin:   0,
+		DebugNoCooldown:   false,
+	})
+	svc := player.New(pool, led, rng.New(1), st)
+	actions := action.New(pool, led, svc, rng.New(2), time.UTC, 5, st)
+	contentSvc := content.New(pool, time.UTC, 5, st)
+	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc, st))
 	t.Cleanup(func() {
 		srv.Close()
 		pool.Close()
 	})
 	return srv, pool
+}
+
+// newTestSettings builds a settings.Store seeded with the given values and forces
+// those exact values via Set (the app_settings row survives TRUNCATE, so Set
+// overrides whatever a prior test seeded).
+func newTestSettings(t *testing.T, ctx context.Context, pool *pgxpool.Pool, g settings.Game) *settings.Store {
+	t.Helper()
+	st, err := settings.NewStore(ctx, pool, g)
+	if err != nil {
+		t.Fatalf("settings: %v", err)
+	}
+	if err := st.Set(ctx, g); err != nil {
+		t.Fatalf("settings set: %v", err)
+	}
+	return st
 }
 
 func register(t *testing.T, base, host, uid string) playerResp {
@@ -1391,11 +1414,19 @@ func TestDailyShop(t *testing.T) {
 
 	led := ledger.New(pool)
 	rnd := rng.New(1)
-	psvc := player.New(pool, led, rnd, 500000, false)
 	// デパートは1日3件だけ品揃えするサービスで検証する。
 	const daily = 3
-	csvc := content.New(pool, time.UTC, 5, daily, daily)
-	asvc := action.New(pool, led, psvc, rnd, time.UTC, 5, 0, 60, 60, false, daily, daily)
+	st := newTestSettings(t, ctx, pool, settings.Game{
+		InitialMoney:       500000,
+		EnergyRecoverySec:  60,
+		NouRecoverySec:     60,
+		WorkIntervalMin:    0,
+		DepartDailyCount:   daily,
+		SyokudouDailyCount: daily,
+	})
+	psvc := player.New(pool, led, rnd, st)
+	csvc := content.New(pool, time.UTC, 5, st)
+	asvc := action.New(pool, led, psvc, rnd, time.UTC, 5, st)
 
 	items, err := csvc.ListShopItems(ctx)
 	if err != nil {

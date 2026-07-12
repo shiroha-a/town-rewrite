@@ -11,6 +11,7 @@ import {
   type SimResult,
   type AdminPlayerSummary,
   type AdminPlayerPayload,
+  type GameSettings,
 } from '../api';
 
 const props = defineProps<{ player: Player }>();
@@ -19,7 +20,7 @@ const emit = defineEmits<{ back: [] }>();
 const isAdmin = computed(() => props.player.roles.includes('admin'));
 
 // 各セクションの開閉。既定は折りたたみ(false)。
-const open = reactive({ item: false, job: false, user: false });
+const open = reactive({ item: false, job: false, user: false, settings: false });
 
 // 効果/条件で対象にできるパラメータ。
 const PARAM_OPTIONS = [
@@ -87,17 +88,46 @@ function fail(e: unknown) {
 }
 
 const players = ref<AdminPlayerSummary[]>([]);
+const settings = ref<GameSettings | null>(null);
 async function refresh() {
   if (!isAdmin.value) return;
   try {
     items.value = await api.adminListItems(props.player.id);
     jobs.value = await api.adminListJobs(props.player.id);
     players.value = await api.adminListPlayers(props.player.id);
+    settings.value = await api.adminGetSettings(props.player.id);
   } catch (e) {
     fail(e);
   }
 }
 onMounted(refresh);
+
+// サーバー設定(数値項目)の入力欄メタデータ。ラベルと簡単な補足を持つ。
+const SETTINGS_FIELDS: { key: keyof GameSettings; label: string; hint?: string }[] = [
+  { key: 'initial_money', label: '初期所持金', hint: '新規登録時に付与される金額(円)' },
+  { key: 'daily_interest_permille', label: '日次利息', hint: '貯金に対する1日あたりの利息(‰/千分率)' },
+  { key: 'energy_recovery_sec', label: '身体P回復間隔', hint: '身体パワーが1回復する秒数' },
+  { key: 'nou_recovery_sec', label: '頭脳P回復間隔', hint: '頭脳パワーが1回復する秒数' },
+  { key: 'satiety_decay_sec', label: '満腹度減少間隔', hint: '満腹度が1減少する秒数' },
+  { key: 'condition_eval_interval_min', label: '病気評価間隔', hint: '病気指数を再評価する間隔(分)' },
+  { key: 'work_interval_min', label: '仕事間隔', hint: '連続して働けるようになるまでの分数' },
+  { key: 'depart_daily_count', label: 'デパート日次件数', hint: '0で全件(日次ローテ無効)' },
+  { key: 'syokudou_daily_count', label: '食堂日次件数', hint: '0で全件(日次ローテ無効)' },
+];
+async function saveSettings() {
+  if (!settings.value) return;
+  busy.value = true;
+  message.value = '';
+  try {
+    settings.value = await api.adminUpdateSettings(props.player.id, settings.value);
+    message.value = 'サーバー設定を更新しました。';
+    kind.value = 'ok';
+  } catch (e) {
+    fail(e);
+  } finally {
+    busy.value = false;
+  }
+}
 
 // プレイヤー編集(頭脳/身体/その他の各パラメータ)。
 const DETAIL_PARAMS: { key: keyof Player['params']; label: string }[] = [
@@ -511,6 +541,33 @@ async function deleteEdit() {
             </section>
           </div>
         </section>
+
+        <!-- サーバー設定 -->
+        <section class="fold">
+          <button class="fold-head" @click="open.settings = !open.settings">
+            <span class="caret">{{ open.settings ? '▼' : '▶' }}</span> サーバー設定
+          </button>
+          <div v-if="open.settings" class="fold-body">
+            <section class="panel">
+              <h3>ゲーム設定<span class="hint"> ※変更は即時反映(ワーカーは次tickで反映)</span></h3>
+              <div v-if="settings" class="settings-grid">
+                <label v-for="f in SETTINGS_FIELDS" :key="f.key" class="setting">
+                  <span class="setting-label">{{ f.label }}</span>
+                  <input type="number" v-model.number="settings[f.key] as number" />
+                  <span v-if="f.hint" class="setting-hint">{{ f.hint }}</span>
+                </label>
+                <label class="setting chk-setting">
+                  <span class="setting-label">デバッグ: 間隔ゼロ</span>
+                  <span class="chk-line"><input type="checkbox" v-model="settings.debug_no_cooldown" /> 仕事/使用/食事などの間隔制限を無視</span>
+                </label>
+              </div>
+              <div class="actions">
+                <button class="btn primary" :disabled="busy || !settings" @click="saveSettings">保存</button>
+                <button class="btn" :disabled="busy" @click="refresh">再読込</button>
+              </div>
+            </section>
+          </div>
+        </section>
       </div>
     </template>
 
@@ -762,6 +819,40 @@ async function deleteEdit() {
 }
 .econ-grid .wide2 {
   grid-column: span 2;
+}
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+  margin: 4px 0 8px;
+}
+.settings-grid .setting {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 0;
+}
+.settings-grid .setting-label {
+  font-size: 12px;
+  color: #334;
+  font-weight: bold;
+}
+.settings-grid .setting input[type='number'] {
+  width: 110px;
+}
+.settings-grid .setting-hint {
+  font-size: 10px;
+  color: #889;
+  margin-top: 1px;
+}
+.settings-grid .chk-setting {
+  grid-column: span 2;
+}
+.settings-grid .chk-line {
+  font-size: 12px;
+  color: #445;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 .ops {
   border: 1px solid #e0e4ea;

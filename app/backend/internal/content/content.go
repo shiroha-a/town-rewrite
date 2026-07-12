@@ -16,6 +16,7 @@ import (
 
 	"github.com/shiroha-a/town/internal/effects"
 	"github.com/shiroha-a/town/internal/gametime"
+	"github.com/shiroha-a/town/internal/settings"
 )
 
 // ValidationError is a client-fixable problem with admin input (e.g. a
@@ -102,30 +103,27 @@ func validateJobInput(in *JobInput) (req, eff []byte, master any, err error) {
 
 // Service manages content rows.
 type Service struct {
-	pool               *pgxpool.Pool
-	loc                *time.Location
-	dayBoundaryHour    int
-	departDailyCount   int
-	syokudouDailyCount int
+	pool            *pgxpool.Pool
+	loc             *time.Location
+	dayBoundaryHour int
+	settings        *settings.Store
 }
 
-func New(pool *pgxpool.Pool, loc *time.Location, dayBoundaryHour, departDailyCount, syokudouDailyCount int) *Service {
+func New(pool *pgxpool.Pool, loc *time.Location, dayBoundaryHour int, st *settings.Store) *Service {
 	if loc == nil {
 		loc = time.UTC
 	}
-	return &Service{
-		pool: pool, loc: loc, dayBoundaryHour: dayBoundaryHour,
-		departDailyCount: departDailyCount, syokudouDailyCount: syokudouDailyCount,
-	}
+	return &Service{pool: pool, loc: loc, dayBoundaryHour: dayBoundaryHour, settings: st}
 }
 
 // dailyCountFor returns how many items to show today for a facility (0 = all).
 func (s *Service) dailyCountFor(facility string) int {
+	cfg := s.settings.Get()
 	switch facility {
 	case "":
-		return s.departDailyCount
+		return cfg.DepartDailyCount
 	case "syokudou":
-		return s.syokudouDailyCount
+		return cfg.SyokudouDailyCount
 	default:
 		return 0 // ジム/温泉などは日替わりなし
 	}

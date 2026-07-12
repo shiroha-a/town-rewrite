@@ -8,18 +8,20 @@ import (
 	"github.com/shiroha-a/town/internal/action"
 	"github.com/shiroha-a/town/internal/content"
 	"github.com/shiroha-a/town/internal/player"
+	"github.com/shiroha-a/town/internal/settings"
 )
 
 // Server holds the API dependencies.
 type Server struct {
-	players *player.Service
-	actions *action.Service
-	content *content.Service
+	players  *player.Service
+	actions  *action.Service
+	content  *content.Service
+	settings *settings.Store
 }
 
 // NewServer builds the HTTP handler for the REST API.
-func NewServer(players *player.Service, actions *action.Service, contentSvc *content.Service) http.Handler {
-	s := &Server{players: players, actions: actions, content: contentSvc}
+func NewServer(players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store) http.Handler {
+	s := &Server{players: players, actions: actions, content: contentSvc, settings: st}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("POST /api/v1/players", s.registerPlayer)
@@ -50,6 +52,8 @@ func NewServer(players *player.Service, actions *action.Service, contentSvc *con
 	mux.HandleFunc("PUT /api/v1/admin/jobs/{id}", s.updateJob)
 	mux.HandleFunc("DELETE /api/v1/admin/jobs/{id}", s.deleteJob)
 	mux.HandleFunc("POST /api/v1/admin/simulate", s.simulate)
+	mux.HandleFunc("GET /api/v1/admin/settings", s.adminGetSettings)
+	mux.HandleFunc("PUT /api/v1/admin/settings", s.adminUpdateSettings)
 	mux.HandleFunc("GET /api/v1/admin/players", s.adminListPlayers)
 	mux.HandleFunc("PUT /api/v1/admin/players/{id}", s.adminUpdatePlayer)
 	mux.HandleFunc("DELETE /api/v1/admin/players/{id}", s.adminDeletePlayer)

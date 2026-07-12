@@ -15,6 +15,7 @@ import (
 	"github.com/shiroha-a/town/internal/effects"
 	"github.com/shiroha-a/town/internal/ledger"
 	"github.com/shiroha-a/town/internal/rng"
+	"github.com/shiroha-a/town/internal/settings"
 )
 
 // Player is the aggregate returned to callers.
@@ -92,15 +93,14 @@ type Status struct {
 
 // Service is the player domain service.
 type Service struct {
-	pool            *pgxpool.Pool
-	ledger          *ledger.Repo
-	rng             *rng.Rand
-	initialMoney    int64
-	debugNoCooldown bool
+	pool     *pgxpool.Pool
+	ledger   *ledger.Repo
+	rng      *rng.Rand
+	settings *settings.Store
 }
 
-func New(pool *pgxpool.Pool, l *ledger.Repo, r *rng.Rand, initialMoney int64, debugNoCooldown bool) *Service {
-	return &Service{pool: pool, ledger: l, rng: r, initialMoney: initialMoney, debugNoCooldown: debugNoCooldown}
+func New(pool *pgxpool.Pool, l *ledger.Repo, r *rng.Rand, st *settings.Store) *Service {
+	return &Service{pool: pool, ledger: l, rng: r, settings: st}
 }
 
 // ErrNotFound is returned when a player does not exist.
@@ -167,9 +167,10 @@ func (s *Service) Register(ctx context.Context, instanceHost, remoteUserID, disp
 
 	if created {
 		ref := fmt.Sprintf("initial_grant:%d", id)
+		initialMoney := s.settings.Get().InitialMoney
 		if err := s.ledger.Post(ctx, "initial_grant", ref, []ledger.Entry{
-			{Account: ledger.SystemAccount("initial_grant"), Delta: -s.initialMoney},
-			{Account: ledger.PlayerAccount(id), Delta: s.initialMoney},
+			{Account: ledger.SystemAccount("initial_grant"), Delta: -initialMoney},
+			{Account: ledger.PlayerAccount(id), Delta: initialMoney},
 		}); err != nil {
 			return nil, fmt.Errorf("initial grant: %w", err)
 		}
@@ -432,7 +433,8 @@ func (s *Service) Get(ctx context.Context, id int64) (*Player, error) {
 	p.Status.Condition = cond.Display
 
 	// 就労クールタイム中なら再就労可能時刻を返す(経過済み/未就労はnil)。デバッグ時は常にnil。
-	if !s.debugNoCooldown {
+	debugNoCd := s.settings.Get().DebugNoCooldown
+	if !debugNoCd {
 		var workAt *time.Time
 		if err := s.pool.QueryRow(ctx,
 			`SELECT next_available_at FROM player_facility_cooldowns
@@ -496,7 +498,7 @@ func (s *Service) Get(ctx context.Context, id int64) (*Player, error) {
 		if err := items.Scan(&it.ItemID, &it.Name, &it.Quantity, &it.RemainingUses, &it.Sets, &effJSON, &it.IntervalMin, &it.NextAvailableAt); err != nil {
 			return nil, fmt.Errorf("scan item: %w", err)
 		}
-		if s.debugNoCooldown {
+		if debugNoCd {
 			it.NextAvailableAt = nil // デバッグ: クールタイム表示を無効化
 		}
 		if eff, err := effects.ParseEffect(effJSON); err == nil {
