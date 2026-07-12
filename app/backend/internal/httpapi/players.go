@@ -174,6 +174,55 @@ func (s *Server) shopItems(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+type publicSummaryResp struct {
+	ID          int64  `json:"id"`
+	DisplayName string `json:"display_name"`
+	Job         string `json:"job"`
+	JobLevel    int    `json:"job_level"`
+}
+
+// publicResp is a player's profile without private fields (money/identity/roles).
+type publicResp struct {
+	ID          int64      `json:"id"`
+	DisplayName string     `json:"display_name"`
+	Status      statusResp `json:"status"`
+	Params      paramsResp `json:"params"`
+}
+
+// listPlayers returns the public roster for the profile screen.
+func (s *Server) listPlayers(w http.ResponseWriter, r *http.Request) {
+	summaries, err := s.players.ListPublic(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]publicSummaryResp, 0, len(summaries))
+	for _, p := range summaries {
+		out = append(out, publicSummaryResp{ID: p.ID, DisplayName: p.DisplayName, Job: p.Job, JobLevel: p.JobLevel})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// playerProfile returns a player's public profile (no money/identity).
+func (s *Server) playerProfile(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	p, err := s.players.Get(r.Context(), id)
+	if errors.Is(err, player.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "player not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	full := toResp(p)
+	writeJSON(w, http.StatusOK, publicResp{ID: p.ID, DisplayName: p.DisplayName, Status: full.Status, Params: full.Params})
+}
+
 func (s *Server) getPlayer(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {

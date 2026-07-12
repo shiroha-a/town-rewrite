@@ -48,6 +48,7 @@ const facilities: Facility[] = [
   { key: 'onsen', img: 'onsen', alt: '温泉', col: 4, row: 7, ready: true },
   { key: 'hospital', img: 'hospital', alt: '中央病院', col: 12, row: 6, ready: true },
   { key: 'kentiku', img: 'kentiku', alt: '建設会社', col: 13, row: 4, ready: false },
+  { key: 'yakuba', img: 'yakuba', alt: '役場（住民名鑑）', col: 6, row: 7, ready: true },
   { key: 'prof', img: 'prof', alt: 'プロフィール', col: 14, row: 11, ready: false },
 ];
 const facilityAt = (col: number, row: number) => facilities.find((f) => f.col === col && f.row === row);

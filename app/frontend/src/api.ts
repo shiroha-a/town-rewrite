@@ -124,6 +124,21 @@ export function newIdempotencyKey(): string {
   return `k-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
+// 住民名鑑(公開一覧)の1件。
+export interface PublicSummary {
+  id: number;
+  display_name: string;
+  job: string;
+  job_level: number;
+}
+// 公開プロフィール(お金/身元などの非公開項目は含まない)。
+export interface PublicProfile {
+  id: number;
+  display_name: string;
+  status: Player['status'];
+  params: Params;
+}
+
 // 仕事1回の結果サマリ(給料・昇給・ボーナス・経験値)。
 export interface WorkResult {
   exp_gained: number;
@@ -145,6 +160,8 @@ export const api = {
       display_name: displayName,
     }),
   getPlayer: (id: number) => request<Player>('GET', `/players/${id}`),
+  listPlayers: () => request<PublicSummary[]>('GET', '/players'),
+  playerProfile: (id: number) => request<PublicProfile>('GET', `/players/${id}/profile`),
   shopItems: () => request<ShopItem[]>('GET', '/items'),
   facilityMenu: (facility: string) => request<ShopItem[]>('GET', `/facilities/${facility}/menu`),
   eat: (id: number, foodId: number) =>

@@ -205,6 +205,36 @@ func RefreshPowerMax(ctx context.Context, tx pgx.Tx, playerID int64) error {
 	return nil
 }
 
+// PublicSummary is the public listing view of a player (住民名鑑).
+type PublicSummary struct {
+	ID          int64
+	DisplayName string
+	Job         string
+	JobLevel    int
+}
+
+// ListPublic returns all active players with public summary fields, for the
+// profile/roster screen. Private fields (money, identity) are never included.
+func (s *Service) ListPublic(ctx context.Context) ([]PublicSummary, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT p.id, p.display_name, ps.job, ps.job_level
+		 FROM players p JOIN player_status ps ON ps.player_id = p.id
+		 WHERE p.deleted_at IS NULL ORDER BY p.id`)
+	if err != nil {
+		return nil, fmt.Errorf("list players: %w", err)
+	}
+	defer rows.Close()
+	out := []PublicSummary{}
+	for rows.Next() {
+		var ps PublicSummary
+		if err := rows.Scan(&ps.ID, &ps.DisplayName, &ps.Job, &ps.JobLevel); err != nil {
+			return nil, fmt.Errorf("scan player summary: %w", err)
+		}
+		out = append(out, ps)
+	}
+	return out, rows.Err()
+}
+
 // HasRole reports whether the player holds the given role.
 func (s *Service) HasRole(ctx context.Context, id int64, role string) (bool, error) {
 	var exists bool
