@@ -12,6 +12,7 @@ import {
   type AdminPlayerSummary,
   type AdminPlayerPayload,
   type GameSettings,
+  type TownFacility,
 } from '../api';
 
 const props = defineProps<{ player: Player }>();
@@ -20,7 +21,7 @@ const emit = defineEmits<{ back: [] }>();
 const isAdmin = computed(() => props.player.roles.includes('admin'));
 
 // 各セクションの開閉。既定は折りたたみ(false)。
-const open = reactive({ item: false, job: false, user: false, settings: false });
+const open = reactive({ item: false, job: false, user: false, settings: false, map: false });
 
 // 効果/条件で対象にできるパラメータ。
 const PARAM_OPTIONS = [
@@ -96,11 +97,104 @@ async function refresh() {
     jobs.value = await api.adminListJobs(props.player.id);
     players.value = await api.adminListPlayers(props.player.id);
     settings.value = await api.adminGetSettings(props.player.id);
+    townmap.value = await api.townMap();
+    selectedIdx.value = null;
   } catch (e) {
     fail(e);
   }
 }
 onMounted(refresh);
+
+// タウンマップ編集(ビジュアルエディタ)。グリッドは16列(1-16) × 12行(A-L, 0始まり)。
+const MAP_COLS = 16;
+const MAP_ROWS = 12;
+const mapCols = Array.from({ length: MAP_COLS }, (_, i) => i + 1);
+const mapRows = 'ABCDEFGHIJKL'.split('');
+const townmap = ref<TownFacility[]>([]);
+const selectedIdx = ref<number | null>(null);
+
+// 遷移先(key)のプリセット。実装済みルート + 準備中ビュー。
+const KEY_PRESETS: { key: string; label: string }[] = [
+  { key: 'depart', label: 'デパート' },
+  { key: 'bank', label: '銀行' },
+  { key: 'syokudou', label: '食堂' },
+  { key: 'gym', label: 'ジム' },
+  { key: 'onsen', label: '温泉' },
+  { key: 'hospital', label: '病院' },
+  { key: 'jobchange', label: '職業安定所' },
+  { key: 'yakuba', label: '役場' },
+  { key: 'work', label: '仕事場' },
+  { key: 'item', label: 'アイテム' },
+  { key: 'kabu', label: '株取引場(準備中)' },
+  { key: 'keiba', label: '競馬場(準備中)' },
+  { key: 'kentiku', label: '建設会社(準備中)' },
+  { key: 'prof', label: 'プロフィール(準備中)' },
+  { key: 'mail', label: 'メール(準備中)' },
+  { key: 'doukyo', label: 'キャラ作成(準備中)' },
+  { key: 'aisatu', label: 'あいさつ(準備中)' },
+];
+// 施設用に用意されているgif(public/img)。
+const IMG_PRESETS = [
+  'depart', 'bank', 'syokudou', 'gym', 'onsen', 'hospital', 'work', 'yakuba', 'kabu', 'keiba', 'kentiku', 'prof', 'mail',
+];
+
+const mapFacilityAt = (col: number, rowIdx: number) =>
+  townmap.value.findIndex((f) => f.col === col && f.row === rowIdx);
+const selectedFacility = computed(() =>
+  selectedIdx.value === null ? null : (townmap.value[selectedIdx.value] ?? null),
+);
+
+function clickCell(col: number, rowIdx: number) {
+  const idx = mapFacilityAt(col, rowIdx);
+  if (idx >= 0) {
+    // 施設セル: 選択(同じものを再クリックで選択解除)。
+    selectedIdx.value = selectedIdx.value === idx ? null : idx;
+    return;
+  }
+  // 空セル: 選択中の施設をそこへ移動(占有セルへは移動できない=1セル1施設)。
+  if (selectedIdx.value !== null) {
+    townmap.value[selectedIdx.value].col = col;
+    townmap.value[selectedIdx.value].row = rowIdx;
+  }
+}
+
+function firstFreeCell(): { col: number; row: number } | null {
+  for (let r = 0; r < MAP_ROWS; r++) {
+    for (let c = 1; c <= MAP_COLS; c++) {
+      if (mapFacilityAt(c, r) < 0) return { col: c, row: r };
+    }
+  }
+  return null;
+}
+function addFacility() {
+  const cell = firstFreeCell();
+  if (!cell) {
+    message.value = 'マップに空きセルがありません。';
+    kind.value = 'error';
+    return;
+  }
+  townmap.value.push({ key: 'depart', img: 'depart', alt: '新規施設', col: cell.col, row: cell.row, ready: true });
+  selectedIdx.value = townmap.value.length - 1;
+}
+function deleteFacility() {
+  if (selectedIdx.value === null) return;
+  townmap.value.splice(selectedIdx.value, 1);
+  selectedIdx.value = null;
+}
+async function saveTownMap() {
+  busy.value = true;
+  message.value = '';
+  try {
+    townmap.value = await api.adminUpdateTownMap(props.player.id, townmap.value);
+    selectedIdx.value = null;
+    message.value = 'タウンマップを更新しました。';
+    kind.value = 'ok';
+  } catch (e) {
+    fail(e);
+  } finally {
+    busy.value = false;
+  }
+}
 
 // サーバー設定(数値項目)の入力欄メタデータ。ラベルと簡単な補足を持つ。
 const SETTINGS_FIELDS: { key: keyof GameSettings; label: string; hint?: string }[] = [
@@ -568,6 +662,81 @@ async function deleteEdit() {
             </section>
           </div>
         </section>
+
+        <!-- タウンマップ -->
+        <section class="fold">
+          <button class="fold-head" @click="open.map = !open.map">
+            <span class="caret">{{ open.map ? '▼' : '▶' }}</span> タウンマップ（{{ townmap.length }}）
+          </button>
+          <div v-if="open.map" class="fold-body">
+            <section class="panel">
+              <h3>マップ編集<span class="hint"> ※施設をクリックで選択→空きセルをクリックで移動</span></h3>
+              <div class="map-editor">
+                <div class="map-scroll">
+                  <div class="map-grid">
+                    <div class="corner"></div>
+                    <div v-for="c in mapCols" :key="'h' + c" class="colhead">{{ c }}</div>
+                    <template v-for="(r, ri) in mapRows" :key="r">
+                      <div class="rowhead">{{ r }}</div>
+                      <div
+                        v-for="c in mapCols"
+                        :key="r + '-' + c"
+                        class="cell"
+                        :class="{
+                          occ: mapFacilityAt(c, ri) >= 0,
+                          sel: mapFacilityAt(c, ri) >= 0 && mapFacilityAt(c, ri) === selectedIdx,
+                          movable: mapFacilityAt(c, ri) < 0 && selectedIdx !== null,
+                        }"
+                        :title="mapFacilityAt(c, ri) >= 0 ? townmap[mapFacilityAt(c, ri)].alt : ''"
+                        @click="clickCell(c, ri)"
+                      >
+                        <img
+                          v-if="mapFacilityAt(c, ri) >= 0"
+                          :src="`/img/${townmap[mapFacilityAt(c, ri)].img}.gif`"
+                          width="24"
+                          height="24"
+                          :alt="townmap[mapFacilityAt(c, ri)].alt"
+                        />
+                      </div>
+                    </template>
+                  </div>
+                </div>
+
+                <div class="map-side">
+                  <div v-if="selectedFacility" class="sel-panel">
+                    <div class="ops-head">選択中の施設</div>
+                    <label>表示名<input v-model="selectedFacility.alt" /></label>
+                    <label>遷移先
+                      <select v-model="selectedFacility.key">
+                        <option v-for="k in KEY_PRESETS" :key="k.key" :value="k.key">{{ k.label }}</option>
+                      </select>
+                    </label>
+                    <label>画像
+                      <select v-model="selectedFacility.img">
+                        <option v-for="im in IMG_PRESETS" :key="im" :value="im">{{ im }}</option>
+                      </select>
+                    </label>
+                    <label class="chk"><input type="checkbox" v-model="selectedFacility.ready" /> 有効（オフで準備中=クリック不可）</label>
+                    <div class="sel-prev">
+                      位置: {{ mapRows[selectedFacility.row] }}{{ selectedFacility.col }}
+                      <img :src="`/img/${selectedFacility.img}.gif`" width="28" height="28" alt="" />
+                    </div>
+                    <button class="btn danger mini" @click="deleteFacility">この施設を削除</button>
+                  </div>
+                  <div v-else class="sel-empty muted">
+                    施設をクリックすると編集できます。<br />
+                    「＋施設を追加」で新しい施設を配置できます。
+                  </div>
+                </div>
+              </div>
+              <div class="actions">
+                <button class="btn" @click="addFacility">＋施設を追加</button>
+                <button class="btn primary" :disabled="busy" @click="saveTownMap">保存</button>
+                <button class="btn" :disabled="busy" @click="refresh">再読込</button>
+              </div>
+            </section>
+          </div>
+        </section>
       </div>
     </template>
 
@@ -853,6 +1022,99 @@ async function deleteEdit() {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+/* マップを上、選択パネルを下に縦積み。マップは固定サイズのセルで確実に描画し、
+   万一パネルより広い場合のみ横スクロール(はみ出しは防ぐ)。 */
+.map-editor {
+  display: block;
+}
+.map-scroll {
+  overflow-x: auto;
+  margin-bottom: 8px;
+}
+.map-grid {
+  display: grid;
+  grid-template-columns: 18px repeat(16, 24px);
+  grid-auto-rows: 24px;
+  gap: 1px;
+  background: #c8cfd8;
+  border: 1px solid #c8cfd8;
+  width: max-content;
+}
+.map-grid .corner,
+.map-grid .colhead,
+.map-grid .rowhead {
+  /* style.cssのグローバル .colhead/.rowhead(旧マップ用: width 32px/14px)が
+     漏れて列がずれるため、明示的にトラック幅へリセットする。 */
+  width: auto;
+  height: auto;
+  background: #e7ecf2;
+  font-size: 9px;
+  color: #667;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.map-grid .cell {
+  background: #eef2f7;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.map-grid .cell.occ {
+  background: #fff;
+}
+.map-grid .cell.movable {
+  background: #e3f0ff;
+}
+.map-grid .cell.movable:hover {
+  background: #cfe4ff;
+}
+.map-grid .cell.sel {
+  outline: 2px solid #ff6600;
+  outline-offset: -2px;
+  background: #fff3e8;
+  z-index: 1;
+}
+.map-grid .cell img {
+  display: block;
+  width: 20px;
+  height: 20px;
+}
+.map-side {
+  width: 100%;
+  max-width: 460px;
+}
+.sel-panel {
+  border: 1px solid #e0e4ea;
+  padding: 8px;
+  background: #fafbfc;
+}
+.sel-panel label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+.sel-panel label input[type='text'],
+.sel-panel label input:not([type]),
+.sel-panel label select {
+  width: 100%;
+  box-sizing: border-box;
+}
+.sel-prev {
+  font-size: 12px;
+  color: #445;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+}
+.sel-empty {
+  border: 1px dashed #d0d5dd;
+  padding: 10px;
+  font-size: 12px;
+  line-height: 1.6;
 }
 .ops {
   border: 1px solid #e0e4ea;

@@ -10,7 +10,30 @@ import (
 	"github.com/shiroha-a/town/internal/effects"
 	"github.com/shiroha-a/town/internal/player"
 	"github.com/shiroha-a/town/internal/settings"
+	"github.com/shiroha-a/town/internal/townmap"
 )
+
+// townMap returns the current town map. Public: every player needs it to render
+// the main screen.
+func (s *Server) townMap(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.townmap.Get())
+}
+
+func (s *Server) adminUpdateTownMap(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	var fs []townmap.Facility
+	if err := json.NewDecoder(r.Body).Decode(&fs); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := s.townmap.Set(r.Context(), fs); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.townmap.Get())
+}
 
 func (s *Server) adminGetSettings(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {

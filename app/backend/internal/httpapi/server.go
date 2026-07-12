@@ -9,6 +9,7 @@ import (
 	"github.com/shiroha-a/town/internal/content"
 	"github.com/shiroha-a/town/internal/player"
 	"github.com/shiroha-a/town/internal/settings"
+	"github.com/shiroha-a/town/internal/townmap"
 )
 
 // Server holds the API dependencies.
@@ -17,17 +18,19 @@ type Server struct {
 	actions  *action.Service
 	content  *content.Service
 	settings *settings.Store
+	townmap  *townmap.Store
 }
 
 // NewServer builds the HTTP handler for the REST API.
-func NewServer(players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store) http.Handler {
-	s := &Server{players: players, actions: actions, content: contentSvc, settings: st}
+func NewServer(players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store) http.Handler {
+	s := &Server{players: players, actions: actions, content: contentSvc, settings: st, townmap: tmap}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("POST /api/v1/players", s.registerPlayer)
 	mux.HandleFunc("GET /api/v1/players", s.listPlayers)
 	mux.HandleFunc("GET /api/v1/players/{id}", s.getPlayer)
 	mux.HandleFunc("GET /api/v1/players/{id}/profile", s.playerProfile)
+	mux.HandleFunc("GET /api/v1/townmap", s.townMap)
 	mux.HandleFunc("GET /api/v1/items", s.shopItems)
 	mux.HandleFunc("GET /api/v1/facilities/{facility}/menu", s.facilityMenu)
 	mux.HandleFunc("POST /api/v1/players/{id}/eat", s.eat)
@@ -54,6 +57,7 @@ func NewServer(players *player.Service, actions *action.Service, contentSvc *con
 	mux.HandleFunc("POST /api/v1/admin/simulate", s.simulate)
 	mux.HandleFunc("GET /api/v1/admin/settings", s.adminGetSettings)
 	mux.HandleFunc("PUT /api/v1/admin/settings", s.adminUpdateSettings)
+	mux.HandleFunc("PUT /api/v1/admin/townmap", s.adminUpdateTownMap)
 	mux.HandleFunc("GET /api/v1/admin/players", s.adminListPlayers)
 	mux.HandleFunc("PUT /api/v1/admin/players/{id}", s.adminUpdatePlayer)
 	mux.HandleFunc("DELETE /api/v1/admin/players/{id}", s.adminDeletePlayer)

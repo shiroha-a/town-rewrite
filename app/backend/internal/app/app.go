@@ -19,6 +19,7 @@ import (
 	"github.com/shiroha-a/town/internal/rediscli"
 	"github.com/shiroha-a/town/internal/rng"
 	"github.com/shiroha-a/town/internal/settings"
+	"github.com/shiroha-a/town/internal/townmap"
 	"github.com/shiroha-a/town/internal/worker"
 )
 
@@ -66,6 +67,12 @@ func Run(ctx context.Context, mode string, cfg *config.Config) error {
 		return fmt.Errorf("load settings: %w", err)
 	}
 
+	// 実行時に編集可能な街マップ(初回は既定の施設配置をシード)。webのみ使用。
+	tmap, err := townmap.NewStore(ctx, pool, townmap.Default())
+	if err != nil {
+		return fmt.Errorf("load town map: %w", err)
+	}
+
 	led := ledger.New(pool)
 	rnd := rng.New(cfg.Game.RNGSeed)
 	players := player.New(pool, led, rnd, st)
@@ -74,7 +81,7 @@ func Run(ctx context.Context, mode string, cfg *config.Config) error {
 
 	switch mode {
 	case "web":
-		return runWeb(ctx, cfg, logger, players, actions, contentSvc, st)
+		return runWeb(ctx, cfg, logger, players, actions, contentSvc, st, tmap)
 	case "worker":
 		return worker.New(rdb, pool, led, cfg, st, logger).Run(ctx)
 	default:
@@ -82,10 +89,10 @@ func Run(ctx context.Context, mode string, cfg *config.Config) error {
 	}
 }
 
-func runWeb(ctx context.Context, cfg *config.Config, logger *slog.Logger, players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store) error {
+func runWeb(ctx context.Context, cfg *config.Config, logger *slog.Logger, players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store) error {
 	srv := &http.Server{
 		Addr:              cfg.Server.HTTPAddr,
-		Handler:           httpapi.NewServer(players, actions, contentSvc, st),
+		Handler:           httpapi.NewServer(players, actions, contentSvc, st, tmap),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

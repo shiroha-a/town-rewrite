@@ -27,6 +27,7 @@ import (
 	"github.com/shiroha-a/town/internal/player"
 	"github.com/shiroha-a/town/internal/rng"
 	"github.com/shiroha-a/town/internal/settings"
+	"github.com/shiroha-a/town/internal/townmap"
 	"github.com/shiroha-a/town/internal/worker"
 
 	"github.com/jackc/pgx/v5"
@@ -121,7 +122,12 @@ func setup(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 	svc := player.New(pool, led, rng.New(1), st)
 	actions := action.New(pool, led, svc, rng.New(2), time.UTC, 5, st)
 	contentSvc := content.New(pool, time.UTC, 5, st)
-	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc, st))
+	tmap, err := townmap.NewStore(ctx, pool, townmap.Default())
+	if err != nil {
+		pool.Close()
+		t.Fatalf("townmap: %v", err)
+	}
+	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc, st, tmap))
 	t.Cleanup(func() {
 		srv.Close()
 		pool.Close()
@@ -1465,5 +1471,106 @@ func TestDailyShop(t *testing.T) {
 		}
 	} else {
 		t.Log("プールが小さく品揃え外の商品が無いためbuy-out検証はスキップ")
+	}
+}
+
+func adminPut(t *testing.T, base, path string, actingID int64, body any) (int, []byte) {
+	t.Helper()
+	b, _ := json.Marshal(body)
+	req, err := http.NewRequest(http.MethodPut, base+path, bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if actingID > 0 {
+		req.Header.Set("X-Acting-Player-Id", strconv.FormatInt(actingID, 10))
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, data
+}
+
+// TestTownMap covers the town map API: GET is public, PUT is admin-only, updates
+// persist and are validated (grid bounds / one-facility-per-cell).
+func TestTownMap(t *testing.T) {
+	srv, _ := setup(t)
+
+	admin := register(t, srv.URL, "misskey.example", "root") // 最初=admin
+	user := register(t, srv.URL, "misskey.example", "alice") // 一般
+
+	// GETは公開。既定の施設配置(12件)が返る。
+	resp, err := http.Get(srv.URL + "/api/v1/townmap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []townmap.Facility
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(got) != len(townmap.Default()) {
+		t.Fatalf("default map size = %d, want %d", len(got), len(townmap.Default()))
+	}
+
+	// 認可: ヘッダ無し=401、非admin=403。
+	if code, _ := adminPut(t, srv.URL, "/api/v1/admin/townmap", 0, got); code != http.StatusUnauthorized {
+		t.Errorf("no-header PUT status = %d, want 401", code)
+	}
+	if code, _ := adminPut(t, srv.URL, "/api/v1/admin/townmap", user.ID, got); code != http.StatusForbidden {
+		t.Errorf("non-admin PUT status = %d, want 403", code)
+	}
+
+	// adminが銀行を(1,0)へ移動して保存。
+	updated := make([]townmap.Facility, len(got))
+	copy(updated, got)
+	for i := range updated {
+		if updated[i].Key == "bank" {
+			updated[i].Col = 1
+			updated[i].Row = 0
+		}
+	}
+	if code, body := adminPut(t, srv.URL, "/api/v1/admin/townmap", admin.ID, updated); code != http.StatusOK {
+		t.Fatalf("admin PUT status = %d, body = %s", code, body)
+	}
+
+	// 永続化を確認: 再GETで銀行が(1,0)。
+	resp2, err := http.Get(srv.URL + "/api/v1/townmap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var after []townmap.Facility
+	if err := json.NewDecoder(resp2.Body).Decode(&after); err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	var bankOK bool
+	for _, f := range after {
+		if f.Key == "bank" {
+			if f.Col != 1 || f.Row != 0 {
+				t.Errorf("bank moved to (%d,%d), want (1,0)", f.Col, f.Row)
+			}
+			bankOK = true
+		}
+	}
+	if !bankOK {
+		t.Error("bank facility missing after update")
+	}
+
+	// 検証: 座標重複は400で拒否。
+	dup := []townmap.Facility{
+		{Key: "bank", Img: "bank", Alt: "銀行", Col: 5, Row: 5, Ready: true},
+		{Key: "gym", Img: "gym", Alt: "ジム", Col: 5, Row: 5, Ready: true},
+	}
+	if code, _ := adminPut(t, srv.URL, "/api/v1/admin/townmap", admin.ID, dup); code != http.StatusBadRequest {
+		t.Errorf("duplicate-cell PUT status = %d, want 400", code)
+	}
+	// 検証: 範囲外の列も400。
+	oob := []townmap.Facility{{Key: "bank", Img: "bank", Col: 99, Row: 0}}
+	if code, _ := adminPut(t, srv.URL, "/api/v1/admin/townmap", admin.ID, oob); code != http.StatusBadRequest {
+		t.Errorf("out-of-range PUT status = %d, want 400", code)
 	}
 }

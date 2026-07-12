@@ -253,6 +253,15 @@ export interface GameSettings {
   syokudou_daily_count: number;
 }
 
+export interface TownFacility {
+  key: string;
+  img: string;
+  alt: string;
+  col: number;
+  row: number;
+  ready: boolean;
+}
+
 function adminHeaders(actingId: number): Record<string, string> {
   return { 'X-Acting-Player-Id': String(actingId) };
 }
@@ -267,6 +276,7 @@ export const api = {
   getPlayer: (id: number) => request<Player>('GET', `/players/${id}`),
   listPlayers: () => request<PublicSummary[]>('GET', '/players'),
   playerProfile: (id: number) => request<PublicProfile>('GET', `/players/${id}/profile`),
+  townMap: () => request<TownFacility[]>('GET', '/townmap'),
   shopItems: () => request<ShopItem[]>('GET', '/items'),
   facilityMenu: (facility: string) => request<ShopItem[]>('GET', `/facilities/${facility}/menu`),
   eat: (id: number, foodId: number) =>
@@ -354,4 +364,6 @@ export const api = {
     request<GameSettings>('GET', '/admin/settings', undefined, adminHeaders(actingId)),
   adminUpdateSettings: (actingId: number, settings: GameSettings) =>
     request<GameSettings>('PUT', '/admin/settings', settings, adminHeaders(actingId)),
+  adminUpdateTownMap: (actingId: number, facilities: TownFacility[]) =>
+    request<TownFacility[]>('PUT', '/admin/townmap', facilities, adminHeaders(actingId)),
 };

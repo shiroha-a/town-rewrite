@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue';
-import type { Player, Params } from '../api';
+import { api, type Player, type Params, type TownFacility } from '../api';
 import { satietyLabel } from '../params';
 
 const props = defineProps<{ player: Player }>();
@@ -28,35 +28,24 @@ const nouColor = computed(() => barColor(nouPct.value));
 // 体重はg保持なので表示はkg小数第1位に整形する。
 const weightKg = computed(() => (props.player.status.weight_g / 1000).toFixed(1));
 
-// 街マップに置く施設(レガシーのgifを使用)。職業安定所(work.gif)で転職する。
-interface Facility {
-  key: string;
-  img: string;
-  alt: string;
-  col: number;
-  row: number;
-  ready: boolean;
-}
-const facilities: Facility[] = [
-  { key: 'kabu', img: 'kabu', alt: '株取引場', col: 2, row: 3, ready: false },
-  { key: 'depart', img: 'depart', alt: '中央デパート', col: 8, row: 3, ready: true },
-  { key: 'bank', img: 'bank', alt: '銀行', col: 6, row: 4, ready: true },
-  { key: 'syokudou', img: 'syokudou', alt: 'セントラル食堂', col: 9, row: 5, ready: true },
-  { key: 'gym', img: 'gym', alt: 'ジム', col: 11, row: 9, ready: true },
-  { key: 'keiba', img: 'keiba', alt: '競馬場', col: 13, row: 9, ready: false },
-  { key: 'jobchange', img: 'work', alt: '職業安定所', col: 2, row: 6, ready: true },
-  { key: 'onsen', img: 'onsen', alt: '温泉', col: 4, row: 7, ready: true },
-  { key: 'hospital', img: 'hospital', alt: '中央病院', col: 12, row: 6, ready: true },
-  { key: 'kentiku', img: 'kentiku', alt: '建設会社', col: 13, row: 4, ready: false },
-  { key: 'yakuba', img: 'yakuba', alt: '役場（住民名鑑）', col: 6, row: 7, ready: true },
-  { key: 'prof', img: 'prof', alt: 'プロフィール', col: 14, row: 11, ready: false },
-];
-const facilityAt = (col: number, row: number) => facilities.find((f) => f.col === col && f.row === row);
+// 街マップに置く施設。配置は管理者が編集可能で、起動時にAPIから取得する。
+// 職業安定所(work.gif)で転職する。
+const facilities = ref<TownFacility[]>([]);
+const facilityAt = (col: number, row: number) => facilities.value.find((f) => f.col === col && f.row === row);
 
 const cols = Array.from({ length: 16 }, (_, i) => i + 1);
 const rows = 'ABCDEFGHIJKL'.split('');
 
-function clickFacility(f: Facility) {
+onMounted(async () => {
+  try {
+    facilities.value = await api.townMap();
+  } catch {
+    // マップ取得に失敗しても他機能は使えるよう空配置で継続する。
+    facilities.value = [];
+  }
+});
+
+function clickFacility(f: TownFacility) {
   if (f.ready) emit('navigate', f.key);
 }
 
