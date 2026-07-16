@@ -377,6 +377,21 @@ export interface AttendanceBoard {
   ranking: AttendanceRank[];
 }
 
+export interface EventOutcome {
+  name: string;
+  message: string;
+  good: boolean;
+  money_delta: number;
+  params: Record<string, number> | null;
+  disease_delta: number;
+  weight_g: number;
+  special: string;
+}
+export interface EventRollResp {
+  player: Player;
+  event: EventOutcome | null;
+}
+
 function adminHeaders(actingId: number): Record<string, string> {
   return { 'X-Acting-Player-Id': String(actingId) };
 }
@@ -431,6 +446,10 @@ export const api = {
   attendanceBoard: () => request<AttendanceBoard>('GET', '/attendance'),
   attendanceCheckin: (id: number) =>
     request<{ recorded: boolean }>('POST', `/players/${id}/attendance/checkin`),
+  eventRoll: (id: number) =>
+    request<EventRollResp>('POST', `/players/${id}/events/roll`, {
+      idempotency_key: newIdempotencyKey(),
+    }),
   keibaRace: (id: number) => request<KeibaRaceResp>('GET', `/players/${id}/keiba`),
   keibaBet: (id: number, raceId: number, bets: number[]) =>
     request<KeibaBetResp>('POST', `/players/${id}/keiba/bet`, {

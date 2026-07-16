@@ -300,6 +300,25 @@ table.townmap td {
 .mail-notice:hover {
   background: #ffe0e0;
 }
+/* ランダムイベント通知バー(クリックで閉じる) */
+.event-notice {
+  margin-bottom: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: bold;
+  cursor: pointer;
+  border: 1px solid;
+}
+.event-notice.good {
+  background: #eaffea;
+  border-color: #8c8;
+  color: #060;
+}
+.event-notice.bad {
+  background: #ffecec;
+  border-color: #d88;
+  color: #c00;
+}
 
 /* ステータスパネル */
 .status {

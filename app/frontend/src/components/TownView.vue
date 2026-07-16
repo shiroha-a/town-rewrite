@@ -57,7 +57,20 @@ onMounted(async () => {
   }
   // 街を開いた=来訪として足あとに記帳する(1日1回)。
   api.attendanceCheckin(props.player.id).catch(() => {});
+  // 街を開いた時にランダムイベントを抽選する(発生したら通知しステータス再取得)。
+  api
+    .eventRoll(props.player.id)
+    .then((res) => {
+      if (res.event) {
+        eventNotice.value = { message: res.event.message, good: res.event.good };
+        emit('reload');
+      }
+    })
+    .catch(() => {});
 });
+
+// ランダムイベントの通知(発生時のみ)。
+const eventNotice = ref<{ message: string; good: boolean } | null>(null);
 
 // 街トップのチャット窓に表示する最新のあいさつ。
 const greetings = ref<import('../api').Greeting[]>([]);
@@ -182,6 +195,10 @@ const others: { label: string; key: ParamKey }[] = [
   <button v-if="unreadMail > 0" class="mail-notice" @click="emit('navigate', 'mail')">
     ★受信箱に{{ unreadMail }}通の新しいメッセージが届いています！
   </button>
+
+  <div v-if="eventNotice" :class="['event-notice', eventNotice.good ? 'good' : 'bad']" @click="eventNotice = null">
+    ★イベント発生！ {{ eventNotice.message }}
+  </div>
 
   <div class="town">
     <!-- 左カラム: 街マップ -->

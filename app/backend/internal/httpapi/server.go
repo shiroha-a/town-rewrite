@@ -58,6 +58,7 @@ func NewServer(players *player.Service, actions *action.Service, contentSvc *con
 	mux.HandleFunc("DELETE /api/v1/admin/greetings/{gid}", s.deleteGreeting)
 	mux.HandleFunc("GET /api/v1/attendance", s.attendanceBoard)
 	mux.HandleFunc("POST /api/v1/players/{id}/attendance/checkin", s.attendanceCheckin)
+	mux.HandleFunc("POST /api/v1/players/{id}/events/roll", s.eventRoll)
 	mux.HandleFunc("GET /api/v1/items", s.shopItems)
 	mux.HandleFunc("GET /api/v1/facilities/{facility}/menu", s.facilityMenu)
 	mux.HandleFunc("POST /api/v1/players/{id}/eat", s.eat)

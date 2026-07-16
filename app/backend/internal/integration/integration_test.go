@@ -2247,3 +2247,61 @@ func TestAttendance(t *testing.T) {
 		t.Errorf("alice not in ranking")
 	}
 }
+
+// TestEvent covers random events: rolling repeatedly fires events, effects apply
+// through the ledger (zero-sum preserved), and rolls are rate-limited.
+func TestEvent(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	led := ledger.New(pool)
+	alice := register(t, srv.URL, "misskey.example", "alice")
+	// 慈善イベントの受け皿として別プレイヤーも用意。
+	register(t, srv.URL, "misskey.example", "bob")
+
+	roll := func(key string) (int, bool) {
+		b, _ := json.Marshal(map[string]any{"idempotency_key": key})
+		resp, err := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/events/roll", "application/json", bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var r struct {
+			Event *struct {
+				Name string `json:"name"`
+			} `json:"event"`
+		}
+		json.NewDecoder(resp.Body).Decode(&r)
+		return resp.StatusCode, r.Event != nil
+	}
+
+	events := 0
+	for i := 0; i < 180; i++ {
+		// レート制限を解除して毎回抽選させる。
+		if _, err := pool.Exec(ctx, `DELETE FROM player_facility_cooldowns WHERE player_id=$1 AND facility='event_roll'`, alice.ID); err != nil {
+			t.Fatal(err)
+		}
+		code, fired := roll(fmt.Sprintf("ev-%d", i))
+		if code != http.StatusOK {
+			t.Fatalf("roll status = %d", code)
+		}
+		if fired {
+			events++
+		}
+	}
+	if events == 0 {
+		t.Errorf("no events fired in 180 rolls")
+	}
+	// 台帳ゼロ和(お金系イベント・慈善を含む)を維持。
+	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
+		t.Errorf("ledger zero-sum broken: %d", sum)
+	}
+
+	// レート制限: cooldownを解除して1回roll(cooldownセット)→直後のrollは抽選されない。
+	if _, err := pool.Exec(ctx, `DELETE FROM player_facility_cooldowns WHERE player_id=$1 AND facility='event_roll'`, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	roll("rate-1")
+	if _, fired := roll("rate-2"); fired {
+		t.Errorf("second roll within interval fired an event (rate limit not applied)")
+	}
+}

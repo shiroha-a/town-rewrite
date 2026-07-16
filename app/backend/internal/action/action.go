@@ -18,6 +18,7 @@ import (
 
 	"github.com/shiroha-a/town/internal/condition"
 	"github.com/shiroha-a/town/internal/effects"
+	"github.com/shiroha-a/town/internal/event"
 	"github.com/shiroha-a/town/internal/gametime"
 	"github.com/shiroha-a/town/internal/greeting"
 	"github.com/shiroha-a/town/internal/keiba"
@@ -1245,6 +1246,118 @@ func (s *Service) DoGreet(ctx context.Context, playerID int64, category, body, c
 		return nil
 	})
 	return p, result, err
+}
+
+// eventRollInterval rate-limits random-event rolls per player (anti-spam).
+const eventRollInterval = 15 * time.Second
+
+// DoEventRoll rolls for a random event (legacy event.pl event_happen), applying
+// its money/parameter/disease/weight effects. Rolls are rate-limited to one per
+// eventRollInterval per player. A nil result means no event fired (rate-limited
+// or the 11/12 no-fire outcome).
+func (s *Service) DoEventRoll(ctx context.Context, playerID int64, idempotencyKey string) (*player.Player, *event.Outcome, error) {
+	var result *event.Outcome
+	p, err := s.runAction(ctx, playerID, "event_roll", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		if !s.settings.Get().DebugNoCooldown {
+			var nextAt *time.Time
+			if err := tx.QueryRow(ctx,
+				`SELECT next_available_at FROM player_facility_cooldowns WHERE player_id = $1 AND facility = 'event_roll'`,
+				playerID).Scan(&nextAt); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("read event cooldown: %w", err)
+			}
+			if nextAt != nil && time.Now().Before(*nextAt) {
+				return nil // レート制限中: 抽選しない
+			}
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO player_facility_cooldowns (player_id, facility, next_available_at)
+				 VALUES ($1, 'event_roll', now() + make_interval(secs => $2))
+				 ON CONFLICT (player_id, facility) DO UPDATE SET next_available_at = now() + make_interval(secs => $2)`,
+				playerID, eventRollInterval.Seconds()); err != nil {
+				return fmt.Errorf("set event cooldown: %w", err)
+			}
+		}
+
+		occurred, o := event.Roll(s.rng, state.Money, state.Params["speed"].Value)
+		if !occurred {
+			return nil
+		}
+		if err := s.applyEventOutcome(ctx, tx, playerID, state, o); err != nil {
+			return err
+		}
+		result = &o
+		return nil
+	})
+	return p, result, err
+}
+
+// applyEventOutcome persists one event's effects: money via the ledger, params
+// via the effect engine, disease/weight directly, and the special charity /
+// confiscate side effects.
+func (s *Service) applyEventOutcome(ctx context.Context, tx pgx.Tx, playerID int64, state effects.State, o event.Outcome) error {
+	switch o.Special {
+	case "charity":
+		// ログイン中に関係なく、自分以外のランダムなプレイヤーの貯金へ1万円贈る。
+		var recipient int64
+		err := tx.QueryRow(ctx,
+			`SELECT id FROM players WHERE id <> $1 AND deleted_at IS NULL ORDER BY random() LIMIT 1`, playerID).Scan(&recipient)
+		if errors.Is(err, pgx.ErrNoRows) {
+			o.MoneyDelta = 0 // 相手がいなければ何もしない
+		} else if err != nil {
+			return fmt.Errorf("charity recipient: %w", err)
+		} else if state.Money >= 10000 {
+			if err := s.ledger.PostTx(ctx, tx, "event_charity", "", []ledger.Entry{
+				{Account: ledger.PlayerAccount(playerID), Delta: -10000},
+				{Account: ledger.SavingsAccount(recipient), Delta: 10000},
+			}); err != nil {
+				return fmt.Errorf("charity: %w", err)
+			}
+		} else {
+			o.MoneyDelta = 0 // 持ち金不足なら贈らない
+		}
+	case "confiscate":
+		// 所持品からランダムに1個(数量-1)。無ければ何もしない。
+		if _, err := tx.Exec(ctx,
+			`UPDATE player_items SET quantity = quantity - 1
+			 WHERE (player_id, item_id) = (
+			   SELECT player_id, item_id FROM player_items
+			   WHERE player_id = $1 AND quantity > 0 ORDER BY random() LIMIT 1)`, playerID); err != nil {
+			return fmt.Errorf("confiscate: %w", err)
+		}
+	default:
+		if o.MoneyDelta != 0 {
+			if err := s.ledger.PostTx(ctx, tx, "event_money", "", []ledger.Entry{
+				{Account: ledger.PlayerAccount(playerID), Delta: o.MoneyDelta},
+				{Account: ledger.SystemAccount("event"), Delta: -o.MoneyDelta},
+			}); err != nil {
+				return fmt.Errorf("event money: %w", err)
+			}
+		}
+	}
+
+	if len(o.Params) > 0 {
+		eff := effects.Effect{Ops: make([]effects.Op, 0, len(o.Params))}
+		for k, v := range o.Params {
+			eff.Ops = append(eff.Ops, effects.Op{Kind: "add_param", Param: k, Amount: int64(v)})
+		}
+		if err := s.applyEffect(ctx, tx, playerID, "event", eff, state); err != nil {
+			return err
+		}
+	}
+	if o.DiseaseDelta != 0 {
+		if _, err := tx.Exec(ctx,
+			`UPDATE player_status SET disease_index = GREATEST(-200, disease_index + $2) WHERE player_id = $1`,
+			playerID, o.DiseaseDelta); err != nil {
+			return fmt.Errorf("event disease: %w", err)
+		}
+	}
+	if o.WeightG != 0 {
+		if _, err := tx.Exec(ctx,
+			`UPDATE player_status SET weight_g = GREATEST(1000, weight_g + $2) WHERE player_id = $1`,
+			playerID, o.WeightG); err != nil {
+			return fmt.Errorf("event weight: %w", err)
+		}
+	}
+	return nil
 }
 
 // jobEconomy holds a job's take-requirements and pay/level rules (design 17.5).
