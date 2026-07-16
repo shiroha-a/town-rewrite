@@ -127,6 +127,12 @@ func setup(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 		pool.Close()
 		t.Fatalf("townmap: %v", err)
 	}
+	// town_map行はTRUNCATE対象外で前回実行のシードが残るため、現在のDefault()へ強制的に
+	// 正規化して決定論にする(settingsのnewTestSettingsと同じ考え方)。
+	if err := tmap.Set(ctx, townmap.Default()); err != nil {
+		pool.Close()
+		t.Fatalf("townmap set: %v", err)
+	}
 	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc, st, tmap))
 	t.Cleanup(func() {
 		srv.Close()
@@ -1572,5 +1578,88 @@ func TestTownMap(t *testing.T) {
 	oob := []townmap.Facility{{Key: "bank", Img: "bank", Col: 99, Row: 0}}
 	if code, _ := adminPut(t, srv.URL, "/api/v1/admin/townmap", admin.ID, oob); code != http.StatusBadRequest {
 		t.Errorf("out-of-range PUT status = %d, want 400", code)
+	}
+}
+
+// TestSchool covers the school: attending a course raises brain params and
+// consumes money + brain power, is limited to once per game day, and rejects
+// insufficient brain power.
+func TestSchool(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	// 学校メニューから日本語講座(国語+10 / 頭脳-7 / 14000円)を取得。
+	resp, err := http.Get(srv.URL + "/api/v1/facilities/school/menu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var menu []struct {
+		ID    int64  `json:"id"`
+		Name  string `json:"name"`
+		Price int64  `json:"price"`
+	}
+	json.NewDecoder(resp.Body).Decode(&menu)
+	resp.Body.Close()
+	var courseID, coursePrice int64
+	for _, m := range menu {
+		if m.Name == "日本語講座" {
+			courseID, coursePrice = m.ID, m.Price
+		}
+	}
+	if courseID == 0 {
+		t.Fatal("日本語講座 not in school menu")
+	}
+
+	alice := register(t, srv.URL, "misskey.example", "alice")
+	// 頭脳科目と頭脳パワーを既知値に固定。nou_energy_maxも上げないと効果適用時に
+	// 上限クランプされるため合わせて設定する。
+	if _, err := pool.Exec(ctx,
+		`UPDATE player_status SET kokugo=50,suugaku=50,rika=50,syakai=50,eigo=50,ongaku=50,bijutsu=50,nou_energy=50,nou_energy_max=100 WHERE player_id=$1`,
+		alice.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// 受講: 国語 50→60, 頭脳 50→43, 代金 -14000。
+	body, _ := json.Marshal(map[string]any{"course_id": courseID, "idempotency_key": "sch-1"})
+	resp, _ = http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/school/attend",
+		"application/json", bytes.NewReader(body))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("attend status = %d", resp.StatusCode)
+	}
+	var p playerResp
+	json.NewDecoder(resp.Body).Decode(&p)
+	resp.Body.Close()
+	if p.Money != 500000-coursePrice {
+		t.Errorf("money = %d, want %d", p.Money, 500000-coursePrice)
+	}
+	var kokugo, nou int
+	pool.QueryRow(ctx, `SELECT kokugo, nou_energy FROM player_status WHERE player_id=$1`, alice.ID).Scan(&kokugo, &nou)
+	if kokugo != 60 {
+		t.Errorf("kokugo = %d, want 60", kokugo)
+	}
+	if nou != 43 {
+		t.Errorf("nou_energy = %d, want 43", nou)
+	}
+
+	// 同日2回目は 422(1日1回)。
+	body, _ = json.Marshal(map[string]any{"course_id": courseID, "idempotency_key": "sch-2"})
+	resp, _ = http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/school/attend",
+		"application/json", bytes.NewReader(body))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("second attend status = %d, want 422", resp.StatusCode)
+	}
+
+	// 頭脳パワー不足は 422。
+	bob := register(t, srv.URL, "misskey.example", "bob")
+	if _, err := pool.Exec(ctx, `UPDATE player_status SET nou_energy=3 WHERE player_id=$1`, bob.ID); err != nil {
+		t.Fatal(err)
+	}
+	body, _ = json.Marshal(map[string]any{"course_id": courseID, "idempotency_key": "sch-3"})
+	resp, _ = http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(bob.ID, 10)+"/school/attend",
+		"application/json", bytes.NewReader(body))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("insufficient-brain status = %d, want 422", resp.StatusCode)
 	}
 }

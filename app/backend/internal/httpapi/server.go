@@ -37,6 +37,7 @@ func NewServer(players *player.Service, actions *action.Service, contentSvc *con
 	mux.HandleFunc("POST /api/v1/players/{id}/hospital/treat", s.hospitalTreat)
 	mux.HandleFunc("POST /api/v1/players/{id}/onsen/bathe", s.onsenBathe)
 	mux.HandleFunc("POST /api/v1/players/{id}/facilities/{facility}/use", s.facilityUse)
+	mux.HandleFunc("POST /api/v1/players/{id}/school/attend", s.schoolAttend)
 	mux.HandleFunc("GET /api/v1/jobs", s.jobs)
 	mux.HandleFunc("POST /api/v1/players/{id}/work", s.work)
 	mux.HandleFunc("POST /api/v1/players/{id}/job", s.changeJob)

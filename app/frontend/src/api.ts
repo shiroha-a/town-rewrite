@@ -284,6 +284,11 @@ export const api = {
       food_id: foodId,
       idempotency_key: newIdempotencyKey(),
     }),
+  schoolAttend: (id: number, courseId: number) =>
+    request<Player>('POST', `/players/${id}/school/attend`, {
+      course_id: courseId,
+      idempotency_key: newIdempotencyKey(),
+    }),
   facilityUse: (id: number, facility: string, menuId: number) =>
     request<Player>('POST', `/players/${id}/facilities/${facility}/use`, {
       menu_id: menuId,

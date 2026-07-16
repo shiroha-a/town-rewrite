@@ -805,6 +805,62 @@ func (s *Service) loadFacilityMenuItem(ctx context.Context, facility string, men
 	return price, eff, intervalMin, nil
 }
 
+// nextDayBoundary returns the wall-clock instant of the next game-day rollover
+// (used for once-per-game-day facilities like the school). The game day rolls
+// over at dayBoundaryHour local time.
+func (s *Service) nextDayBoundary(now time.Time) time.Time {
+	start := gametime.Date(now, s.loc, s.dayBoundaryHour) // 当日ゲーム日の 00:00(loc)
+	return start.AddDate(0, 0, 1).Add(time.Duration(s.dayBoundaryHour) * time.Hour)
+}
+
+// DoSchool attends a school course: raises brain parameters once per game day,
+// consuming money and brain power (nou_energy). Legacy: command.pl sub do_school.
+// The daily limit reuses player_facility_cooldowns by setting next_available_at
+// to the next game-day boundary.
+func (s *Service) DoSchool(ctx context.Context, playerID, courseID int64, idempotencyKey string) (*player.Player, error) {
+	price, eff, _, err := s.loadFacilityMenuItem(ctx, "school", courseID)
+	if err != nil {
+		return nil, err
+	}
+	return s.runAction(ctx, playerID, "school", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		// 1日1回(ゲーム日境界でリセット)。前回受講時に次境界をcooldownへ入れているため、
+		// それが未来なら本日分は受講済み。
+		var nextAt *time.Time
+		if err := tx.QueryRow(ctx,
+			`SELECT next_available_at FROM player_facility_cooldowns WHERE player_id = $1 AND facility = 'school'`,
+			playerID).Scan(&nextAt); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("read school cooldown: %w", err)
+		}
+		if !s.settings.Get().DebugNoCooldown && nextAt != nil && time.Now().Before(*nextAt) {
+			return &ConditionError{Message: "今日の受講は終了しています。受講できるのは1日1回です。"}
+		}
+		if param, short := eff.InsufficientParam(state); short {
+			return &ConditionError{Message: paramShortMessage(param)}
+		}
+		if state.Money < price {
+			return &ConditionError{Message: "お金が足りません。"}
+		}
+		if err := s.ledger.PostTx(ctx, tx, "school", "", []ledger.Entry{
+			{Account: ledger.PlayerAccount(playerID), Delta: -price},
+			{Account: ledger.SystemAccount("school_sink"), Delta: price},
+		}); err != nil {
+			return fmt.Errorf("pay school: %w", err)
+		}
+		if err := s.applyEffect(ctx, tx, playerID, "school", eff, state); err != nil {
+			return err
+		}
+		next := s.nextDayBoundary(time.Now())
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO player_facility_cooldowns (player_id, facility, next_available_at)
+			 VALUES ($1, 'school', $2)
+			 ON CONFLICT (player_id, facility) DO UPDATE SET next_available_at = $2`,
+			playerID, next); err != nil {
+			return fmt.Errorf("set school cooldown: %w", err)
+		}
+		return nil
+	})
+}
+
 // jobEconomy holds a job's take-requirements and pay/level rules (design 17.5).
 type jobEconomy struct {
 	conds         effects.Conditions

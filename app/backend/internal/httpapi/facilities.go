@@ -26,6 +26,31 @@ type eatReq struct {
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
+type schoolReq struct {
+	CourseID       int64  `json:"course_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// schoolAttend attends a school course (raises brain params, once per game day).
+func (s *Server) schoolAttend(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req schoolReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.CourseID <= 0 {
+		writeError(w, http.StatusBadRequest, "course_id is required")
+		return
+	}
+	p, err := s.actions.DoSchool(r.Context(), id, req.CourseID, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
 // eat eats a food from the 食堂 menu.
 func (s *Server) eat(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
