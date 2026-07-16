@@ -16,10 +16,16 @@ import (
 	"github.com/shiroha-a/town/internal/config"
 	"github.com/shiroha-a/town/internal/gametime"
 	"github.com/shiroha-a/town/internal/ledger"
+	"github.com/shiroha-a/town/internal/rng"
 	"github.com/shiroha-a/town/internal/settings"
+	"github.com/shiroha-a/town/internal/stock"
 )
 
 const leaderKey = "town:worker:leader"
+
+// stockVolatilityG is the volatility divisor for the stock price engine
+// (legacy: online players + 1). Higher = rarer, gentler moves.
+const stockVolatilityG = 20
 
 // Worker drives scheduled game progression.
 type Worker struct {
@@ -30,6 +36,7 @@ type Worker struct {
 	settings *settings.Store
 	logger   *slog.Logger
 	loc      *time.Location
+	rng      *rng.Rand
 }
 
 func New(rdb *redis.Client, pool *pgxpool.Pool, led *ledger.Repo, cfg *config.Config, st *settings.Store, logger *slog.Logger) *Worker {
@@ -38,7 +45,7 @@ func New(rdb *redis.Client, pool *pgxpool.Pool, led *ledger.Repo, cfg *config.Co
 		logger.Warn("invalid timezone, falling back to UTC", "timezone", cfg.Game.Timezone, "err", err)
 		loc = time.UTC
 	}
-	return &Worker{rdb: rdb, pool: pool, ledger: led, cfg: cfg, settings: st, logger: logger, loc: loc}
+	return &Worker{rdb: rdb, pool: pool, ledger: led, cfg: cfg, settings: st, logger: logger, loc: loc, rng: rng.New(time.Now().UnixNano())}
 }
 
 // Run ticks until the context is cancelled.
@@ -96,6 +103,12 @@ func (w *Worker) tick(ctx context.Context) {
 		w.logger.Error("evaluate disease", "err", err)
 	} else if n > 0 {
 		w.logger.Info("disease evaluated", "players", n)
+	}
+	// 株価変動(event.pl相当)。毎tickで確率的に評価し、動いたら記録する。
+	if moved, err := stock.MovePrices(ctx, w.pool, w.rng, stockVolatilityG); err != nil {
+		w.logger.Error("stock move", "err", err)
+	} else if moved {
+		w.logger.Info("stock prices moved")
 	}
 	w.runDailyIfNeeded(ctx, time.Now())
 }

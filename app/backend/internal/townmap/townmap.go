@@ -35,7 +35,7 @@ type Facility struct {
 // used to be hardcoded in TownView.vue.
 func Default() []Facility {
 	return []Facility{
-		{Key: "kabu", Img: "kabu", Alt: "株取引場", Col: 2, Row: 3, Ready: false},
+		{Key: "kabu", Img: "kabu", Alt: "株取引場", Col: 2, Row: 3, Ready: true},
 		{Key: "depart", Img: "depart", Alt: "中央デパート", Col: 8, Row: 3, Ready: true},
 		{Key: "bank", Img: "bank", Alt: "銀行", Col: 6, Row: 4, Ready: true},
 		{Key: "syokudou", Img: "syokudou", Alt: "セントラル食堂", Col: 9, Row: 5, Ready: true},

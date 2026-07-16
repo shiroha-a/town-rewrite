@@ -43,6 +43,22 @@ onMounted(async () => {
     // マップ取得に失敗しても他機能は使えるよう空配置で継続する。
     facilities.value = [];
   }
+  try {
+    const s = await api.stocks();
+    stockPrices.value = s.prices;
+  } catch {
+    stockPrices.value = [];
+  }
+});
+
+// 株価ティッカー(街トップの帯)。全銘柄の現在株価を表示する。
+const stockPrices = ref<{ symbol: string; price: number }[]>([]);
+const tickerText = computed(() => {
+  if (!stockPrices.value.length) return '株価情報を取得中…';
+  const wide = 'ＡＢＣＤＥ';
+  return stockPrices.value
+    .map((s, i) => `${wide[i] ?? s.symbol}株 ${s.price.toLocaleString('ja-JP')}円`)
+    .join('，');
 });
 
 function clickFacility(f: TownFacility) {
@@ -167,7 +183,7 @@ const others: { label: string; key: ParamKey }[] = [
           </tbody>
         </table>
       </div>
-      <div class="ticker">Ａ株 円，Ｂ株 円，Ｃ株 円，Ｄ株 円，Ｅ株 円</div>
+      <div class="ticker">{{ tickerText }}</div>
     </div>
 
     <!-- 右カラム: 街情報 + コマンド + ステータス -->

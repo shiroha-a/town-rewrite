@@ -21,6 +21,7 @@ import (
 	"github.com/shiroha-a/town/internal/player"
 	"github.com/shiroha-a/town/internal/rng"
 	"github.com/shiroha-a/town/internal/settings"
+	"github.com/shiroha-a/town/internal/stock"
 )
 
 // statusColumns whitelists the parameter -> column mapping. Effect params are
@@ -859,6 +860,143 @@ func (s *Service) DoSchool(ctx context.Context, playerID, courseID int64, idempo
 		}
 		return nil
 	})
+}
+
+// ErrBadStock is returned for an unknown symbol or non-positive quantity.
+var ErrBadStock = errors.New("invalid stock symbol or quantity")
+
+// DoBuyStock buys qty shares of a symbol at the current shared price. Money moves
+// through the ledger; there are no fees (legacy). Per-symbol cap is 200 shares.
+// Note: legacy also gated on bank>=cost (a likely bug); we gate on money only.
+func (s *Service) DoBuyStock(ctx context.Context, playerID int64, symbol string, qty int, idempotencyKey string) (*player.Player, error) {
+	if !stock.ValidSymbol(symbol) || qty <= 0 {
+		return nil, ErrBadStock
+	}
+	return s.runAction(ctx, playerID, "stock_buy", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		var price int64
+		if err := tx.QueryRow(ctx, `SELECT price FROM stock_price WHERE symbol = $1`, symbol).Scan(&price); err != nil {
+			return fmt.Errorf("read price: %w", err)
+		}
+		var shares int
+		var costTotal int64
+		err := tx.QueryRow(ctx,
+			`SELECT shares, cost_total FROM player_stock WHERE player_id = $1 AND symbol = $2`,
+			playerID, symbol).Scan(&shares, &costTotal)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("read holding: %w", err)
+		}
+		if shares+qty > stock.MaxShares {
+			return &ConditionError{Message: fmt.Sprintf("この銘柄の保有上限(%d株)を超えています。", stock.MaxShares)}
+		}
+		cost := price * int64(qty)
+		if state.Money < cost {
+			return &ConditionError{Message: "持ち金が足りません。"}
+		}
+		// refは空。冪等性はrunActionのidempotencyKeyが担う(refに銘柄名を使うと
+		// 別取引が同一refで衝突しno-opになるため)。
+		if err := s.ledger.PostTx(ctx, tx, "stock_buy", "", []ledger.Entry{
+			{Account: ledger.PlayerAccount(playerID), Delta: -cost},
+			{Account: ledger.SystemAccount("stock_market"), Delta: cost},
+		}); err != nil {
+			return fmt.Errorf("pay: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO player_stock (player_id, symbol, shares, cost_total, inv_total, ret_total)
+			 VALUES ($1, $2, $3, $4, $4, 0)
+			 ON CONFLICT (player_id, symbol) DO UPDATE SET
+			   shares = player_stock.shares + $3,
+			   cost_total = player_stock.cost_total + $4,
+			   inv_total = player_stock.inv_total + $4`,
+			playerID, symbol, qty, cost); err != nil {
+			return fmt.Errorf("upsert holding: %w", err)
+		}
+		return s.logStockTrade(ctx, tx, playerID,
+			fmt.Sprintf("%s株を%d株購入(@%d円 計%d円)", symbol, qty, price, cost))
+	})
+}
+
+// DoSellStock sells qty shares of a symbol at the current price. Cost basis is
+// reduced proportionally; when the position hits zero the cost basis clears.
+func (s *Service) DoSellStock(ctx context.Context, playerID int64, symbol string, qty int, idempotencyKey string) (*player.Player, error) {
+	if !stock.ValidSymbol(symbol) || qty <= 0 {
+		return nil, ErrBadStock
+	}
+	return s.runAction(ctx, playerID, "stock_sell", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		var price int64
+		if err := tx.QueryRow(ctx, `SELECT price FROM stock_price WHERE symbol = $1`, symbol).Scan(&price); err != nil {
+			return fmt.Errorf("read price: %w", err)
+		}
+		var shares int
+		var costTotal int64
+		err := tx.QueryRow(ctx,
+			`SELECT shares, cost_total FROM player_stock WHERE player_id = $1 AND symbol = $2`,
+			playerID, symbol).Scan(&shares, &costTotal)
+		if errors.Is(err, pgx.ErrNoRows) || shares < qty {
+			return &ConditionError{Message: "保有株数が足りません。"}
+		}
+		if err != nil {
+			return fmt.Errorf("read holding: %w", err)
+		}
+		proceeds := price * int64(qty)
+		costReduce := costTotal * int64(qty) / int64(shares) // 平均原価ぶんを比例で減らす
+		newShares := shares - qty
+		newCost := costTotal - costReduce
+		if newShares == 0 {
+			newCost = 0
+		}
+		if err := s.ledger.PostTx(ctx, tx, "stock_sell", "", []ledger.Entry{
+			{Account: ledger.SystemAccount("stock_market"), Delta: -proceeds},
+			{Account: ledger.PlayerAccount(playerID), Delta: proceeds},
+		}); err != nil {
+			return fmt.Errorf("payout: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE player_stock SET shares = $3, cost_total = $4, ret_total = ret_total + $5
+			 WHERE player_id = $1 AND symbol = $2`,
+			playerID, symbol, newShares, newCost, proceeds); err != nil {
+			return fmt.Errorf("update holding: %w", err)
+		}
+		return s.logStockTrade(ctx, tx, playerID,
+			fmt.Sprintf("%s株を%d株売却(@%d円 計%d円)", symbol, qty, price, proceeds))
+	})
+}
+
+// DoSettleStock liquidates all holdings at current prices, pays the player, and
+// clears their positions (legacy command=del 精算).
+func (s *Service) DoSettleStock(ctx context.Context, playerID int64, idempotencyKey string) (*player.Player, error) {
+	return s.runAction(ctx, playerID, "stock_settle", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		var total int64
+		if err := tx.QueryRow(ctx,
+			`SELECT COALESCE(SUM(sp.price * ps.shares), 0)
+			 FROM player_stock ps JOIN stock_price sp ON sp.symbol = ps.symbol
+			 WHERE ps.player_id = $1 AND ps.shares > 0`, playerID).Scan(&total); err != nil {
+			return fmt.Errorf("sum holdings: %w", err)
+		}
+		if total > 0 {
+			if err := s.ledger.PostTx(ctx, tx, "stock_settle", "", []ledger.Entry{
+				{Account: ledger.SystemAccount("stock_market"), Delta: -total},
+				{Account: ledger.PlayerAccount(playerID), Delta: total},
+			}); err != nil {
+				return fmt.Errorf("payout: %w", err)
+			}
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM player_stock WHERE player_id = $1`, playerID); err != nil {
+			return fmt.Errorf("clear holdings: %w", err)
+		}
+		return s.logStockTrade(ctx, tx, playerID, fmt.Sprintf("%d円の精算を行いました。", total))
+	})
+}
+
+// logStockTrade appends a trade message and trims the player's history.
+func (s *Service) logStockTrade(ctx context.Context, tx pgx.Tx, playerID int64, msg string) error {
+	if _, err := tx.Exec(ctx, `INSERT INTO stock_trade_log (player_id, message) VALUES ($1, $2)`, playerID, msg); err != nil {
+		return fmt.Errorf("log trade: %w", err)
+	}
+	_, err := tx.Exec(ctx,
+		`DELETE FROM stock_trade_log WHERE player_id = $1 AND id NOT IN (
+		   SELECT id FROM stock_trade_log WHERE player_id = $1 ORDER BY id DESC LIMIT $2)`,
+		playerID, stock.TradeLogKeep)
+	return err
 }
 
 // jobEconomy holds a job's take-requirements and pay/level rules (design 17.5).

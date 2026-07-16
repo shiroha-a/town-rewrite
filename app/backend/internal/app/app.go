@@ -19,6 +19,7 @@ import (
 	"github.com/shiroha-a/town/internal/rediscli"
 	"github.com/shiroha-a/town/internal/rng"
 	"github.com/shiroha-a/town/internal/settings"
+	"github.com/shiroha-a/town/internal/stock"
 	"github.com/shiroha-a/town/internal/townmap"
 	"github.com/shiroha-a/town/internal/worker"
 )
@@ -78,10 +79,11 @@ func Run(ctx context.Context, mode string, cfg *config.Config) error {
 	players := player.New(pool, led, rnd, st)
 	actions := action.New(pool, led, players, rnd, loc, cfg.Game.DayBoundaryHour, st)
 	contentSvc := content.New(pool, loc, cfg.Game.DayBoundaryHour, st)
+	stockSvc := stock.New(pool)
 
 	switch mode {
 	case "web":
-		return runWeb(ctx, cfg, logger, players, actions, contentSvc, st, tmap)
+		return runWeb(ctx, cfg, logger, players, actions, contentSvc, st, tmap, stockSvc)
 	case "worker":
 		return worker.New(rdb, pool, led, cfg, st, logger).Run(ctx)
 	default:
@@ -89,10 +91,10 @@ func Run(ctx context.Context, mode string, cfg *config.Config) error {
 	}
 }
 
-func runWeb(ctx context.Context, cfg *config.Config, logger *slog.Logger, players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store) error {
+func runWeb(ctx context.Context, cfg *config.Config, logger *slog.Logger, players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store, stockSvc *stock.Service) error {
 	srv := &http.Server{
 		Addr:              cfg.Server.HTTPAddr,
-		Handler:           httpapi.NewServer(players, actions, contentSvc, st, tmap),
+		Handler:           httpapi.NewServer(players, actions, contentSvc, st, tmap, stockSvc),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

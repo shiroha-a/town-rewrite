@@ -9,6 +9,7 @@ import (
 	"github.com/shiroha-a/town/internal/content"
 	"github.com/shiroha-a/town/internal/player"
 	"github.com/shiroha-a/town/internal/settings"
+	"github.com/shiroha-a/town/internal/stock"
 	"github.com/shiroha-a/town/internal/townmap"
 )
 
@@ -19,11 +20,12 @@ type Server struct {
 	content  *content.Service
 	settings *settings.Store
 	townmap  *townmap.Store
+	stock    *stock.Service
 }
 
 // NewServer builds the HTTP handler for the REST API.
-func NewServer(players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store) http.Handler {
-	s := &Server{players: players, actions: actions, content: contentSvc, settings: st, townmap: tmap}
+func NewServer(players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store, stockSvc *stock.Service) http.Handler {
+	s := &Server{players: players, actions: actions, content: contentSvc, settings: st, townmap: tmap, stock: stockSvc}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("POST /api/v1/players", s.registerPlayer)
@@ -31,6 +33,11 @@ func NewServer(players *player.Service, actions *action.Service, contentSvc *con
 	mux.HandleFunc("GET /api/v1/players/{id}", s.getPlayer)
 	mux.HandleFunc("GET /api/v1/players/{id}/profile", s.playerProfile)
 	mux.HandleFunc("GET /api/v1/townmap", s.townMap)
+	mux.HandleFunc("GET /api/v1/stocks", s.stocks)
+	mux.HandleFunc("GET /api/v1/players/{id}/stocks", s.playerStocks)
+	mux.HandleFunc("POST /api/v1/players/{id}/stocks/buy", s.stockBuy)
+	mux.HandleFunc("POST /api/v1/players/{id}/stocks/sell", s.stockSell)
+	mux.HandleFunc("POST /api/v1/players/{id}/stocks/settle", s.stockSettle)
 	mux.HandleFunc("GET /api/v1/items", s.shopItems)
 	mux.HandleFunc("GET /api/v1/facilities/{facility}/menu", s.facilityMenu)
 	mux.HandleFunc("POST /api/v1/players/{id}/eat", s.eat)

@@ -262,6 +262,31 @@ export interface TownFacility {
   ready: boolean;
 }
 
+export interface StockPrice {
+  symbol: string;
+  price: number;
+}
+export interface StockHolding {
+  symbol: string;
+  price: number;
+  shares: number;
+  value: number;
+  cost_total: number;
+  avg_cost: number;
+  unrealized: number;
+  inv_total: number;
+  ret_total: number;
+  net: number;
+}
+export interface StocksResp {
+  prices: StockPrice[];
+  event_log: string[];
+}
+export interface PlayerStocksResp {
+  holdings: StockHolding[];
+  history: string[];
+}
+
 function adminHeaders(actingId: number): Record<string, string> {
   return { 'X-Acting-Player-Id': String(actingId) };
 }
@@ -277,6 +302,24 @@ export const api = {
   listPlayers: () => request<PublicSummary[]>('GET', '/players'),
   playerProfile: (id: number) => request<PublicProfile>('GET', `/players/${id}/profile`),
   townMap: () => request<TownFacility[]>('GET', '/townmap'),
+  stocks: () => request<StocksResp>('GET', '/stocks'),
+  playerStocks: (id: number) => request<PlayerStocksResp>('GET', `/players/${id}/stocks`),
+  stockBuy: (id: number, symbol: string, quantity: number) =>
+    request<Player>('POST', `/players/${id}/stocks/buy`, {
+      symbol,
+      quantity,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  stockSell: (id: number, symbol: string, quantity: number) =>
+    request<Player>('POST', `/players/${id}/stocks/sell`, {
+      symbol,
+      quantity,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  stockSettle: (id: number) =>
+    request<Player>('POST', `/players/${id}/stocks/settle`, {
+      idempotency_key: newIdempotencyKey(),
+    }),
   shopItems: () => request<ShopItem[]>('GET', '/items'),
   facilityMenu: (facility: string) => request<ShopItem[]>('GET', `/facilities/${facility}/menu`),
   eat: (id: number, foodId: number) =>

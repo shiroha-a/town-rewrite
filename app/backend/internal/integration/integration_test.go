@@ -27,6 +27,7 @@ import (
 	"github.com/shiroha-a/town/internal/player"
 	"github.com/shiroha-a/town/internal/rng"
 	"github.com/shiroha-a/town/internal/settings"
+	"github.com/shiroha-a/town/internal/stock"
 	"github.com/shiroha-a/town/internal/townmap"
 	"github.com/shiroha-a/town/internal/worker"
 
@@ -133,7 +134,7 @@ func setup(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 		pool.Close()
 		t.Fatalf("townmap set: %v", err)
 	}
-	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc, st, tmap))
+	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc, st, tmap, stock.New(pool)))
 	t.Cleanup(func() {
 		srv.Close()
 		pool.Close()
@@ -1726,5 +1727,126 @@ func TestKyushitu(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Errorf("second attend status = %d, want 422", resp.StatusCode)
+	}
+}
+
+func stockPost(t *testing.T, base string, id int64, path string, body map[string]any) playerResp {
+	t.Helper()
+	b, _ := json.Marshal(body)
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(id, 10)+path, "application/json", bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("%s status=%d body=%s", path, resp.StatusCode, data)
+	}
+	var p playerResp
+	json.NewDecoder(resp.Body).Decode(&p)
+	return p
+}
+
+func stockPostCode(t *testing.T, base string, id int64, path string, body map[string]any) int {
+	t.Helper()
+	b, _ := json.Marshal(body)
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(id, 10)+path, "application/json", bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+// TestStock covers stock trading: buy/sell/settle move money via the ledger,
+// the 200-share cap and insufficient-funds are rejected, and the ledger stays
+// zero-sum. Prices are static here (no worker), so round-trips return to start.
+func TestStock(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	led := ledger.New(pool)
+	alice := register(t, srv.URL, "misskey.example", "alice") // 500000円
+
+	// 公開の株価: 5銘柄すべて25000。
+	resp, err := http.Get(srv.URL + "/api/v1/stocks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sd struct {
+		Prices []struct {
+			Symbol string `json:"symbol"`
+			Price  int64  `json:"price"`
+		} `json:"prices"`
+	}
+	json.NewDecoder(resp.Body).Decode(&sd)
+	resp.Body.Close()
+	if len(sd.Prices) != 5 {
+		t.Fatalf("prices = %d, want 5", len(sd.Prices))
+	}
+	for _, p := range sd.Prices {
+		if p.Price != 25000 {
+			t.Errorf("%s price = %d, want 25000", p.Symbol, p.Price)
+		}
+	}
+
+	// A株を10株購入(250000円)。
+	p := stockPost(t, srv.URL, alice.ID, "/stocks/buy", map[string]any{"symbol": "A", "quantity": 10, "idempotency_key": "sb1"})
+	if p.Money != 250000 {
+		t.Errorf("money after buy = %d, want 250000", p.Money)
+	}
+
+	// 保有: A=10株。
+	resp, _ = http.Get(srv.URL + "/api/v1/players/" + strconv.FormatInt(alice.ID, 10) + "/stocks")
+	var hd struct {
+		Holdings []struct {
+			Symbol string `json:"symbol"`
+			Shares int    `json:"shares"`
+		} `json:"holdings"`
+	}
+	json.NewDecoder(resp.Body).Decode(&hd)
+	resp.Body.Close()
+	var aShares int
+	for _, h := range hd.Holdings {
+		if h.Symbol == "A" {
+			aShares = h.Shares
+		}
+	}
+	if aShares != 10 {
+		t.Errorf("A shares = %d, want 10", aShares)
+	}
+
+	// A株を4株売却(100000円)。250000+100000=350000。
+	p = stockPost(t, srv.URL, alice.ID, "/stocks/sell", map[string]any{"symbol": "A", "quantity": 4, "idempotency_key": "ss1"})
+	if p.Money != 350000 {
+		t.Errorf("money after sell = %d, want 350000", p.Money)
+	}
+
+	// 保有上限: 残6株 +200 = 206 > 200 → 422。
+	if code := stockPostCode(t, srv.URL, alice.ID, "/stocks/buy", map[string]any{"symbol": "A", "quantity": 200, "idempotency_key": "sb2"}); code != http.StatusUnprocessableEntity {
+		t.Errorf("over-cap buy code = %d, want 422", code)
+	}
+	// 持ち金不足: B株100株=250万 > 350000 → 422。
+	if code := stockPostCode(t, srv.URL, alice.ID, "/stocks/buy", map[string]any{"symbol": "B", "quantity": 100, "idempotency_key": "sb3"}); code != http.StatusUnprocessableEntity {
+		t.Errorf("insufficient buy code = %d, want 422", code)
+	}
+	// 不正銘柄 → 400。
+	if code := stockPostCode(t, srv.URL, alice.ID, "/stocks/buy", map[string]any{"symbol": "Z", "quantity": 1, "idempotency_key": "sb4"}); code != http.StatusBadRequest {
+		t.Errorf("bad-symbol buy code = %d, want 400", code)
+	}
+
+	// 精算: 残A6株を時価清算(150000円)。350000+150000=500000で元に戻る。
+	p = stockPost(t, srv.URL, alice.ID, "/stocks/settle", map[string]any{"idempotency_key": "settle1"})
+	if p.Money != 500000 {
+		t.Errorf("money after settle = %d, want 500000", p.Money)
+	}
+	// 精算後は保有ゼロ。
+	var held int
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM player_stock WHERE player_id=$1`, alice.ID).Scan(&held)
+	if held != 0 {
+		t.Errorf("holdings rows after settle = %d, want 0", held)
+	}
+	// 台帳ゼロ和を維持。
+	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
+		t.Errorf("ledger zero-sum broken: %d", sum)
 	}
 }
