@@ -139,6 +139,23 @@ table.townmap td {
   border: 1px solid #cfcfcf;
   margin-top: 4px;
 }
+.left-links {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.left-links .link-btn {
+  border: 0;
+  background: transparent;
+  color: #336699;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+.left-links .link-btn:hover {
+  color: #cc3300;
+}
 /* 街トップのチャット窓(あいさつの最新表示) */
 .chat-head {
   display: block;

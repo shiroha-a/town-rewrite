@@ -360,6 +360,23 @@ export interface GreetResp {
   result: GreetResult;
 }
 
+export interface AttendanceMember {
+  id: number;
+  name: string;
+  cells: string[]; // present | absent | blank(dates と同順)
+}
+export interface AttendanceRank {
+  name: string;
+  present: number;
+  days: number;
+  rate: number;
+}
+export interface AttendanceBoard {
+  dates: string[];
+  members: AttendanceMember[];
+  ranking: AttendanceRank[];
+}
+
 function adminHeaders(actingId: number): Record<string, string> {
   return { 'X-Acting-Player-Id': String(actingId) };
 }
@@ -411,6 +428,9 @@ export const api = {
       janken,
       idempotency_key: newIdempotencyKey(),
     }),
+  attendanceBoard: () => request<AttendanceBoard>('GET', '/attendance'),
+  attendanceCheckin: (id: number) =>
+    request<{ recorded: boolean }>('POST', `/players/${id}/attendance/checkin`),
   keibaRace: (id: number) => request<KeibaRaceResp>('GET', `/players/${id}/keiba`),
   keibaBet: (id: number, raceId: number, bets: number[]) =>
     request<KeibaBetResp>('POST', `/players/${id}/keiba/bet`, {

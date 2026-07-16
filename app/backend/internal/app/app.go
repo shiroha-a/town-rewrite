@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/shiroha-a/town/internal/action"
+	"github.com/shiroha-a/town/internal/attendance"
 	"github.com/shiroha-a/town/internal/config"
 	"github.com/shiroha-a/town/internal/content"
 	"github.com/shiroha-a/town/internal/db"
@@ -86,10 +87,11 @@ func Run(ctx context.Context, mode string, cfg *config.Config) error {
 	keibaSvc := keiba.New(pool, rng.New(0)) // レース生成用に独立した(非決定的)乱数源
 	mailSvc := mail.New(pool, loc, cfg.Game.DayBoundaryHour)
 	greetingSvc := greeting.New(pool)
+	attendanceSvc := attendance.New(pool, loc, cfg.Game.DayBoundaryHour)
 
 	switch mode {
 	case "web":
-		return runWeb(ctx, cfg, logger, players, actions, contentSvc, st, tmap, stockSvc, keibaSvc, mailSvc, greetingSvc)
+		return runWeb(ctx, cfg, logger, players, actions, contentSvc, st, tmap, stockSvc, keibaSvc, mailSvc, greetingSvc, attendanceSvc)
 	case "worker":
 		return worker.New(rdb, pool, led, cfg, st, logger).Run(ctx)
 	default:
@@ -97,10 +99,10 @@ func Run(ctx context.Context, mode string, cfg *config.Config) error {
 	}
 }
 
-func runWeb(ctx context.Context, cfg *config.Config, logger *slog.Logger, players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store, stockSvc *stock.Service, keibaSvc *keiba.Service, mailSvc *mail.Service, greetingSvc *greeting.Service) error {
+func runWeb(ctx context.Context, cfg *config.Config, logger *slog.Logger, players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store, stockSvc *stock.Service, keibaSvc *keiba.Service, mailSvc *mail.Service, greetingSvc *greeting.Service, attendanceSvc *attendance.Service) error {
 	srv := &http.Server{
 		Addr:              cfg.Server.HTTPAddr,
-		Handler:           httpapi.NewServer(players, actions, contentSvc, st, tmap, stockSvc, keibaSvc, mailSvc, greetingSvc),
+		Handler:           httpapi.NewServer(players, actions, contentSvc, st, tmap, stockSvc, keibaSvc, mailSvc, greetingSvc, attendanceSvc),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

@@ -55,6 +55,8 @@ onMounted(async () => {
   } catch {
     greetings.value = [];
   }
+  // 街を開いた=来訪として足あとに記帳する(1日1回)。
+  api.attendanceCheckin(props.player.id).catch(() => {});
 });
 
 // 街トップのチャット窓に表示する最新のあいさつ。
@@ -214,6 +216,10 @@ const others: { label: string; key: ParamKey }[] = [
         </table>
       </div>
       <div class="ticker">{{ tickerText }}</div>
+      <div class="left-links">
+        <button class="link-btn" @click="emit('navigate', 'ashiato')">足あと帳</button>
+        <button class="link-btn" @click="emit('navigate', 'yakuba')">役場(住民名鑑)</button>
+      </div>
     </div>
 
     <!-- 右カラム: 街情報 + コマンド + ステータス -->

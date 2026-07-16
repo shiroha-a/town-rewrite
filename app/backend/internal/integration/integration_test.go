@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/shiroha-a/town/internal/action"
+	"github.com/shiroha-a/town/internal/attendance"
 	"github.com/shiroha-a/town/internal/bank"
 	"github.com/shiroha-a/town/internal/content"
 	"github.com/shiroha-a/town/internal/db"
@@ -137,7 +138,7 @@ func setup(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 		pool.Close()
 		t.Fatalf("townmap set: %v", err)
 	}
-	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc, st, tmap, stock.New(pool), keiba.New(pool, rng.New(7)), mail.New(pool, time.UTC, 5), greeting.New(pool)))
+	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc, st, tmap, stock.New(pool), keiba.New(pool, rng.New(7)), mail.New(pool, time.UTC, 5), greeting.New(pool), attendance.New(pool, time.UTC, 5)))
 	t.Cleanup(func() {
 		srv.Close()
 		pool.Close()
@@ -2143,5 +2144,106 @@ func TestGreeting(t *testing.T) {
 	// 台帳ゼロ和。
 	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
 		t.Errorf("ledger zero-sum broken: %d", sum)
+	}
+}
+
+// TestAttendance covers the visitor book: check-in is once per game day, the
+// board marks present/absent/blank correctly relative to registration, and the
+// ranking computes the attendance rate.
+func TestAttendance(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	alice := register(t, srv.URL, "misskey.example", "alice")
+
+	checkin := func() bool {
+		resp, err := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/attendance/checkin", "application/json", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var r struct {
+			Recorded bool `json:"recorded"`
+		}
+		json.NewDecoder(resp.Body).Decode(&r)
+		return r.Recorded
+	}
+
+	// 当日初回=記帳、2回目=記帳なし。
+	if !checkin() {
+		t.Errorf("first checkin: recorded = false, want true")
+	}
+	if checkin() {
+		t.Errorf("second checkin: recorded = true, want false")
+	}
+
+	// 登録日を5ゲーム日前へ遡らせ、過去2日分の出席を投入(setupと同じ UTC/境界5)。
+	// created_atは正午にして、gametime.Dateが境界(5時)で前日へ食い込まないようにする。
+	today := gametime.Date(time.Now(), time.UTC, 5)
+	if _, err := pool.Exec(ctx, `UPDATE players SET created_at = $1 WHERE id = $2`, today.AddDate(0, 0, -5).Add(12*time.Hour), alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, off := range []int{1, 2} {
+		if _, err := pool.Exec(ctx, `INSERT INTO attendance (player_id, day) VALUES ($1, $2) ON CONFLICT DO NOTHING`, alice.ID, today.AddDate(0, 0, -off)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// ボード取得。
+	resp, err := http.Get(srv.URL + "/api/v1/attendance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var board struct {
+		Dates   []string `json:"dates"`
+		Members []struct {
+			ID    int64    `json:"id"`
+			Name  string   `json:"name"`
+			Cells []string `json:"cells"`
+		} `json:"members"`
+		Ranking []struct {
+			Name    string `json:"name"`
+			Present int    `json:"present"`
+			Days    int    `json:"days"`
+			Rate    int    `json:"rate"`
+		} `json:"ranking"`
+	}
+	json.NewDecoder(resp.Body).Decode(&board)
+	resp.Body.Close()
+
+	if len(board.Dates) != 14 {
+		t.Fatalf("dates = %d, want 14", len(board.Dates))
+	}
+	var am *struct {
+		ID    int64    `json:"id"`
+		Name  string   `json:"name"`
+		Cells []string `json:"cells"`
+	}
+	for i := range board.Members {
+		if board.Members[i].ID == alice.ID {
+			am = &board.Members[i]
+		}
+	}
+	if am == nil {
+		t.Fatal("alice not in board")
+	}
+	// i=0,1,2 出席 / i=3,4,5 欠席(登録日以降で未出席) / i>=6 未登録(登録日より前)。
+	want := map[int]string{0: "present", 1: "present", 2: "present", 3: "absent", 5: "absent", 6: "blank", 13: "blank"}
+	for i, w := range want {
+		if am.Cells[i] != w {
+			t.Errorf("cell[%d] = %q, want %q", i, am.Cells[i], w)
+		}
+	}
+	// ランキング: alice applicable=6, present=3, rate=50。
+	var found bool
+	for _, r := range board.Ranking {
+		if r.Name == "alice" {
+			found = true
+			if r.Present != 3 || r.Days != 6 || r.Rate != 50 {
+				t.Errorf("rank alice = present %d days %d rate %d, want 3/6/50", r.Present, r.Days, r.Rate)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("alice not in ranking")
 	}
 }
