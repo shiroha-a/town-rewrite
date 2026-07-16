@@ -1360,6 +1360,143 @@ func (s *Service) applyEventOutcome(ctx context.Context, tx pgx.Tx, playerID int
 	return nil
 }
 
+const (
+	shopSetupFee             = 500000 // 商店の開設費(簡略化した建築費)
+	offerDailyPairLimit      = 20000  // 同一相手へのさい銭 上限/日
+	offerDailyRecipientLimit = 100000 // 相手が受け取れるさい銭 合計上限/日
+)
+
+// DoOpenShop opens a shop for the player, charging the setup fee. Legacy: 建設会社
+// を簡略化(建物・内装・地価は省略し固定の開設費)。
+func (s *Service) DoOpenShop(ctx context.Context, playerID int64, name, idempotencyKey string) (*player.Player, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "商店"
+	}
+	return s.runAction(ctx, playerID, "shop_open", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM shops WHERE owner_id = $1)`, playerID).Scan(&exists); err != nil {
+			return err
+		}
+		if exists {
+			return &ConditionError{Message: "すでに商店を開いています。"}
+		}
+		if state.Money < shopSetupFee {
+			return &ConditionError{Message: fmt.Sprintf("開設費(%d円)が足りません。", shopSetupFee)}
+		}
+		if err := s.ledger.PostTx(ctx, tx, "shop_open", "", []ledger.Entry{
+			{Account: ledger.PlayerAccount(playerID), Delta: -shopSetupFee},
+			{Account: ledger.SystemAccount("shop_setup"), Delta: shopSetupFee},
+		}); err != nil {
+			return fmt.Errorf("fee: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO shops (owner_id, name) VALUES ($1, $2)`, playerID, name); err != nil {
+			return fmt.Errorf("open shop: %w", err)
+		}
+		return nil
+	})
+}
+
+// DoBuyFromShop buys qty of a listed item from another player's shop. Payment
+// goes to the owner's savings and the item transfers to the buyer. Legacy:
+// buy_syouhin(個人店)— 売上が家主に入る中核。
+func (s *Service) DoBuyFromShop(ctx context.Context, buyerID, ownerID, itemID int64, qty int, idempotencyKey string) (*player.Player, error) {
+	if qty <= 0 {
+		qty = 1
+	}
+	if buyerID == ownerID {
+		return nil, &ConditionError{Message: "自分の店では買えません。"}
+	}
+	return s.runAction(ctx, buyerID, "shop_buy", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		var price int64
+		var stock int
+		err := tx.QueryRow(ctx, `SELECT price, stock FROM shop_listings WHERE owner_id = $1 AND item_id = $2`, ownerID, itemID).Scan(&price, &stock)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &ConditionError{Message: "その商品はありません。"}
+		}
+		if err != nil {
+			return fmt.Errorf("listing: %w", err)
+		}
+		if stock < qty {
+			return &ConditionError{Message: "在庫が足りません。"}
+		}
+		var durability, maxSets int
+		if err := tx.QueryRow(ctx, `SELECT GREATEST(1, durability), max_sets FROM content_items WHERE id = $1`, itemID).Scan(&durability, &maxSets); err != nil {
+			return fmt.Errorf("item: %w", err)
+		}
+		cost := price * int64(qty)
+		if state.Money < cost {
+			return &ConditionError{Message: "お金が足りません。"}
+		}
+		add := durability * qty
+		var current int
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(remaining_uses, 0) FROM player_items WHERE player_id = $1 AND item_id = $2`, buyerID, itemID).Scan(&current); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if maxSets > 0 && current+add > maxSets*durability {
+			return &ConditionError{Message: fmt.Sprintf("これ以上は持てません(最大%dセット)。", maxSets)}
+		}
+		// 代金は店主の貯金(普通口座)へ。
+		if err := s.ledger.PostTx(ctx, tx, "shop_buy", "", []ledger.Entry{
+			{Account: ledger.PlayerAccount(buyerID), Delta: -cost},
+			{Account: ledger.SavingsAccount(ownerID), Delta: cost},
+		}); err != nil {
+			return fmt.Errorf("pay: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE shop_listings SET stock = stock - $3 WHERE owner_id = $1 AND item_id = $2`, ownerID, itemID, qty); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO player_items (player_id, item_id, quantity, remaining_uses) VALUES ($1, $2, $3, $4)
+			 ON CONFLICT (player_id, item_id) DO UPDATE SET quantity = player_items.quantity + $3,
+			   remaining_uses = player_items.remaining_uses + $4, updated_at = now()`,
+			buyerID, itemID, qty, add); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+// DoOffer gives an offering (さい銭) to another player's savings, enforcing the
+// daily per-pair and per-recipient limits. Legacy: saisensuru.
+func (s *Service) DoOffer(ctx context.Context, fromID, toID, amount int64, idempotencyKey string) (*player.Player, error) {
+	if amount <= 0 {
+		return nil, &ConditionError{Message: "金額が不正です。"}
+	}
+	if fromID == toID {
+		return nil, &ConditionError{Message: "自分にさい銭はできません。"}
+	}
+	return s.runAction(ctx, fromID, "offer", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		if state.Money < amount {
+			return &ConditionError{Message: "お金が足りません。"}
+		}
+		dayStart := gametime.Date(time.Now(), s.loc, s.dayBoundaryHour).Add(time.Duration(s.dayBoundaryHour) * time.Hour)
+		var pairSum, recipSum int64
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(SUM(amount), 0) FROM offering_log WHERE from_id = $1 AND to_id = $2 AND created_at >= $3`, fromID, toID, dayStart).Scan(&pairSum); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(SUM(amount), 0) FROM offering_log WHERE to_id = $1 AND created_at >= $2`, toID, dayStart).Scan(&recipSum); err != nil {
+			return err
+		}
+		if pairSum+amount > offerDailyPairLimit {
+			return &ConditionError{Message: fmt.Sprintf("同じ相手へは1日%d円までです。", offerDailyPairLimit)}
+		}
+		if recipSum+amount > offerDailyRecipientLimit {
+			return &ConditionError{Message: fmt.Sprintf("その相手が受け取れるのは1日%d円までです。", offerDailyRecipientLimit)}
+		}
+		if err := s.ledger.PostTx(ctx, tx, "offer", "", []ledger.Entry{
+			{Account: ledger.PlayerAccount(fromID), Delta: -amount},
+			{Account: ledger.SavingsAccount(toID), Delta: amount},
+		}); err != nil {
+			return fmt.Errorf("offer: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO offering_log (from_id, to_id, amount) VALUES ($1, $2, $3)`, fromID, toID, amount); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
 // jobEconomy holds a job's take-requirements and pay/level rules (design 17.5).
 type jobEconomy struct {
 	conds         effects.Conditions

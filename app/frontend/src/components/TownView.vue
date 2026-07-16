@@ -234,6 +234,7 @@ const others: { label: string; key: ParamKey }[] = [
       </div>
       <div class="ticker">{{ tickerText }}</div>
       <div class="left-links">
+        <button class="link-btn" @click="emit('navigate', 'shopping')">商店街</button>
         <button class="link-btn" @click="emit('navigate', 'ashiato')">足あと帳</button>
         <button class="link-btn" @click="emit('navigate', 'yakuba')">役場(住民名鑑)</button>
       </div>

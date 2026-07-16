@@ -392,6 +392,28 @@ export interface EventRollResp {
   event: EventOutcome | null;
 }
 
+export interface ShopSummary {
+  owner_id: number;
+  owner_name: string;
+  name: string;
+  listings: number;
+}
+export interface ShopListing {
+  item_id: number;
+  item_name: string;
+  category: string;
+  price: number;
+  stock: number;
+  money: number;
+  params: Record<string, number>;
+}
+export interface ShopDetail {
+  owner_id: number;
+  owner_name: string;
+  name: string;
+  listings: ShopListing[];
+}
+
 function adminHeaders(actingId: number): Record<string, string> {
   return { 'X-Acting-Player-Id': String(actingId) };
 }
@@ -441,6 +463,29 @@ export const api = {
       body,
       color,
       janken,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  listShops: () => request<ShopSummary[]>('GET', '/shops'),
+  getShop: (ownerId: number) => request<ShopDetail>('GET', `/shops/${ownerId}`),
+  shopOpen: (id: number, name: string) =>
+    request<Player>('POST', `/players/${id}/shop/open`, { name, idempotency_key: newIdempotencyKey() }),
+  shopStock: (id: number, itemId: number, quantity: number, price: number) =>
+    request<{ ok: boolean }>('POST', `/players/${id}/shop/stock`, { item_id: itemId, quantity, price }),
+  shopUnstock: (id: number, itemId: number, quantity: number) =>
+    request<{ ok: boolean }>('POST', `/players/${id}/shop/unstock`, { item_id: itemId, quantity }),
+  shopPrice: (id: number, itemId: number, price: number) =>
+    request<{ ok: boolean }>('POST', `/players/${id}/shop/price`, { item_id: itemId, price }),
+  shopBuy: (id: number, ownerId: number, itemId: number, quantity: number) =>
+    request<Player>('POST', `/players/${id}/shop/buy`, {
+      owner_id: ownerId,
+      item_id: itemId,
+      quantity,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  shopOffer: (id: number, ownerId: number, amount: number) =>
+    request<Player>('POST', `/players/${id}/shop/offer`, {
+      owner_id: ownerId,
+      amount,
       idempotency_key: newIdempotencyKey(),
     }),
   attendanceBoard: () => request<AttendanceBoard>('GET', '/attendance'),
