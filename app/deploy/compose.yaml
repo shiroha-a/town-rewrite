@@ -3,6 +3,7 @@ name: town-rewrite
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: town
       POSTGRES_PASSWORD: town
@@ -21,6 +22,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
       # ホストの6379は使用中のため56379で公開
       - "56379:6379"
@@ -33,6 +35,7 @@ services:
   web:
     build:
       context: ../backend
+    restart: unless-stopped
     command: ["web"]
     environment:
       TOWN_DATABASE_URL: "postgres://town:town@postgres:5432/town?sslmode=disable"
@@ -49,6 +52,7 @@ services:
   worker:
     build:
       context: ../backend
+    restart: unless-stopped
     command: ["worker"]
     environment:
       TOWN_DATABASE_URL: "postgres://town:town@postgres:5432/town?sslmode=disable"
@@ -59,5 +63,29 @@ services:
       redis:
         condition: service_healthy
 
+  # フロントエンド(Vite開発サーバ)。ソースをマウントしHMRを効かせつつ docker compose で
+  # 常時起動する。/api は web(:8090)へプロキシ。ブラウザからは :5173 でアクセス。
+  frontend:
+    image: node:22-alpine
+    restart: unless-stopped
+    working_dir: /app
+    command: sh -c "npm install --include=dev && npm run dev -- --host 0.0.0.0"
+    environment:
+      # Vite の /api プロキシ先(Dockerネットワーク内の web サービス)
+      TOWN_API_TARGET: "http://web:8090"
+      # テストサーバーは全ホスト許可(Tailscale等のホスト名でもアクセス可)
+      TOWN_ALLOWED_HOSTS: "all"
+      # bind mount 上のファイル変更を確実に検知するためポーリング監視にする
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "400"
+    volumes:
+      - ../frontend:/app
+      - frontend_node_modules:/app/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      - web
+
 volumes:
   pgdata:
+  frontend_node_modules:
