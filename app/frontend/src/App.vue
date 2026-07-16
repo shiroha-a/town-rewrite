@@ -114,6 +114,16 @@ const facilityTitles: Record<string, string> = {
       @update="onUpdate"
       @back="back"
     />
+    <FacilityMenuView
+      v-else-if="view === 'kyushitu'"
+      :player="player"
+      facility="kyushitu"
+      title="教室"
+      lead="今日も張り切って鍛えましょう。"
+      use-label="受講し"
+      @update="onUpdate"
+      @back="back"
+    />
     <OnsenView v-else-if="view === 'onsen'" :player="player" @update="onUpdate" @back="back" />
     <HospitalView v-else-if="view === 'hospital'" :player="player" @update="onUpdate" @back="back" />
     <SchoolView v-else-if="view === 'school'" :player="player" @update="onUpdate" @back="back" />

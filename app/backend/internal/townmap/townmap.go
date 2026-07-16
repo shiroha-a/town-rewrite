@@ -45,6 +45,7 @@ func Default() []Facility {
 		{Key: "onsen", Img: "onsen", Alt: "温泉", Col: 4, Row: 7, Ready: true},
 		{Key: "hospital", Img: "hospital", Alt: "中央病院", Col: 12, Row: 6, Ready: true},
 		{Key: "school", Img: "school", Alt: "学校", Col: 10, Row: 7, Ready: true},
+		{Key: "kyushitu", Img: "school", Alt: "教室", Col: 8, Row: 9, Ready: true},
 		{Key: "kentiku", Img: "kentiku", Alt: "建設会社", Col: 13, Row: 4, Ready: false},
 		{Key: "yakuba", Img: "yakuba", Alt: "役場（住民名鑑）", Col: 6, Row: 7, Ready: true},
 		{Key: "prof", Img: "prof", Alt: "プロフィール", Col: 14, Row: 11, Ready: false},

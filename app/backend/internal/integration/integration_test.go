@@ -1663,3 +1663,68 @@ func TestSchool(t *testing.T) {
 		t.Errorf("insufficient-brain status = %d, want 422", resp.StatusCode)
 	}
 }
+
+// TestKyushitu covers the classroom: it uses the generic facility path with an
+// all-parameter effect and a per-course cooldown. Guards the seed data + routing.
+func TestKyushitu(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+
+	// フラフラダンス(全パラメータ+1 / 身体-2 頭脳-2 / 10000円 / 間隔2分)を取得。
+	resp, err := http.Get(srv.URL + "/api/v1/facilities/kyushitu/menu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var menu []struct {
+		ID    int64  `json:"id"`
+		Name  string `json:"name"`
+		Price int64  `json:"price"`
+	}
+	json.NewDecoder(resp.Body).Decode(&menu)
+	resp.Body.Close()
+	var courseID, coursePrice int64
+	for _, m := range menu {
+		if m.Name == "フラフラダンス" {
+			courseID, coursePrice = m.ID, m.Price
+		}
+	}
+	if courseID == 0 {
+		t.Fatal("フラフラダンス not in kyushitu menu")
+	}
+
+	alice := register(t, srv.URL, "misskey.example", "alice")
+	// 身体/頭脳パワーを既知の高値に固定(消費と上限クランプを回避)。
+	if _, err := pool.Exec(ctx,
+		`UPDATE player_status SET energy=50,energy_max=100,nou_energy=50,nou_energy_max=100,kokugo=10 WHERE player_id=$1`,
+		alice.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// 受講: 国語 10→11, 代金 -10000。
+	body, _ := json.Marshal(map[string]any{"menu_id": courseID, "idempotency_key": "kyu-1"})
+	resp, _ = http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/facilities/kyushitu/use",
+		"application/json", bytes.NewReader(body))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("attend status = %d", resp.StatusCode)
+	}
+	var p playerResp
+	json.NewDecoder(resp.Body).Decode(&p)
+	resp.Body.Close()
+	if p.Money != 500000-coursePrice {
+		t.Errorf("money = %d, want %d", p.Money, 500000-coursePrice)
+	}
+	var kokugo int
+	pool.QueryRow(ctx, `SELECT kokugo FROM player_status WHERE player_id=$1`, alice.ID).Scan(&kokugo)
+	if kokugo != 11 {
+		t.Errorf("kokugo = %d, want 11", kokugo)
+	}
+
+	// クールタイム内の再受講は 422。
+	body, _ = json.Marshal(map[string]any{"menu_id": courseID, "idempotency_key": "kyu-2"})
+	resp, _ = http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/facilities/kyushitu/use",
+		"application/json", bytes.NewReader(body))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("second attend status = %d, want 422", resp.StatusCode)
+	}
+}
