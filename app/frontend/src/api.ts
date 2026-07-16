@@ -317,6 +317,27 @@ export interface KeibaBetResp {
   result: KeibaResult;
 }
 
+export interface MailMessage {
+  id: number;
+  direction: string;
+  counterpart_id: number | null;
+  counterpart_name: string;
+  body: string;
+  sent_at: string;
+  saved: boolean;
+  unread: boolean;
+}
+export interface MailContact {
+  id: number;
+  name: string;
+}
+export interface Mailbox {
+  received: MailMessage[];
+  sent: MailMessage[];
+  address_book: MailContact[];
+  unread: number;
+}
+
 function adminHeaders(actingId: number): Record<string, string> {
   return { 'X-Acting-Player-Id': String(actingId) };
 }
@@ -350,6 +371,14 @@ export const api = {
     request<Player>('POST', `/players/${id}/stocks/settle`, {
       idempotency_key: newIdempotencyKey(),
     }),
+  getMail: (id: number) => request<Mailbox>('GET', `/players/${id}/mail`),
+  getMailUnread: (id: number) => request<{ unread: number }>('GET', `/players/${id}/mail/unread`),
+  mailSend: (id: number, recipientId: number, body: string) =>
+    request<{ ok: boolean }>('POST', `/players/${id}/mail/send`, { recipient_id: recipientId, body }),
+  mailDelete: (id: number, msgId: number) =>
+    request<{ ok: boolean }>('DELETE', `/players/${id}/mail/${msgId}`),
+  mailSave: (id: number, msgId: number, saved: boolean) =>
+    request<{ ok: boolean }>('PUT', `/players/${id}/mail/${msgId}/save`, { saved }),
   keibaRace: (id: number) => request<KeibaRaceResp>('GET', `/players/${id}/keiba`),
   keibaBet: (id: number, raceId: number, bets: number[]) =>
     request<KeibaBetResp>('POST', `/players/${id}/keiba/bet`, {

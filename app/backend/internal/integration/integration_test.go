@@ -25,6 +25,7 @@ import (
 	"github.com/shiroha-a/town/internal/httpapi"
 	"github.com/shiroha-a/town/internal/keiba"
 	"github.com/shiroha-a/town/internal/ledger"
+	"github.com/shiroha-a/town/internal/mail"
 	"github.com/shiroha-a/town/internal/player"
 	"github.com/shiroha-a/town/internal/rng"
 	"github.com/shiroha-a/town/internal/settings"
@@ -135,7 +136,7 @@ func setup(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 		pool.Close()
 		t.Fatalf("townmap set: %v", err)
 	}
-	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc, st, tmap, stock.New(pool), keiba.New(pool, rng.New(7))))
+	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc, st, tmap, stock.New(pool), keiba.New(pool, rng.New(7)), mail.New(pool, time.UTC, 5)))
 	t.Cleanup(func() {
 		srv.Close()
 		pool.Close()
@@ -1882,10 +1883,13 @@ func TestKeiba(t *testing.T) {
 
 	betPost := func(raceID int64, bets []int, key string) (int, []byte) {
 		b, _ := json.Marshal(map[string]any{"race_id": raceID, "bets": bets, "idempotency_key": key})
-		r, _ := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/keiba/bet", "application/json", bytes.NewReader(b))
-		defer r.Body.Close()
-		data, _ := io.ReadAll(r.Body)
-		return r.StatusCode, data
+		resp, err := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/keiba/bet", "application/json", bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, data
 	}
 
 	// 1頭に1枚(500円)賭ける。所持金 = 500000 - invested + payout。
@@ -1934,5 +1938,97 @@ func TestKeiba(t *testing.T) {
 	// 台帳ゼロ和を維持。
 	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
 		t.Errorf("ledger zero-sum broken: %d", sum)
+	}
+}
+
+// TestMail covers messaging: send delivers to both boxes, unread notification
+// works, save/delete mutate the owner's box, and self-send/empty are rejected.
+func TestMail(t *testing.T) {
+	srv, _ := setup(t)
+	alice := register(t, srv.URL, "misskey.example", "alice")
+	bob := register(t, srv.URL, "misskey.example", "bob")
+
+	post := func(id int64, path string, body map[string]any) int {
+		b, _ := json.Marshal(body)
+		resp, err := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(id, 10)+path, "application/json", bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	getMail := func(id int64) mail.Mailbox {
+		resp, err := http.Get(srv.URL + "/api/v1/players/" + strconv.FormatInt(id, 10) + "/mail")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var mb mail.Mailbox
+		json.NewDecoder(resp.Body).Decode(&mb)
+		return mb
+	}
+
+	// alice→bob 送信。
+	if code := post(alice.ID, "/mail/send", map[string]any{"recipient_id": bob.ID, "body": "やあボブ"}); code != http.StatusOK {
+		t.Fatalf("send status = %d", code)
+	}
+	// 自分宛は 422。
+	if code := post(alice.ID, "/mail/send", map[string]any{"recipient_id": alice.ID, "body": "x"}); code != http.StatusUnprocessableEntity {
+		t.Errorf("self-send status = %d, want 422", code)
+	}
+	// 空本文は 422。
+	if code := post(alice.ID, "/mail/send", map[string]any{"recipient_id": bob.ID, "body": "  "}); code != http.StatusUnprocessableEntity {
+		t.Errorf("empty-body status = %d, want 422", code)
+	}
+
+	// bobの未読は1(mailを開く前)。
+	resp, _ := http.Get(srv.URL + "/api/v1/players/" + strconv.FormatInt(bob.ID, 10) + "/mail/unread")
+	var ur struct {
+		Unread int `json:"unread"`
+	}
+	json.NewDecoder(resp.Body).Decode(&ur)
+	resp.Body.Close()
+	if ur.Unread != 1 {
+		t.Errorf("bob unread = %d, want 1", ur.Unread)
+	}
+
+	// bobの受信箱: 1件、差出人alice、未読。
+	bobMb := getMail(bob.ID)
+	if len(bobMb.Received) != 1 || bobMb.Received[0].CounterpartName != "alice" || !bobMb.Received[0].Unread {
+		t.Fatalf("bob inbox = %+v", bobMb.Received)
+	}
+	if bobMb.Unread != 1 {
+		t.Errorf("bob mailbox unread = %d, want 1", bobMb.Unread)
+	}
+	// aliceの送信箱: 1件、宛先bob。
+	aliceMb := getMail(alice.ID)
+	if len(aliceMb.Sent) != 1 || aliceMb.Sent[0].CounterpartName != "bob" {
+		t.Fatalf("alice sent = %+v", aliceMb.Sent)
+	}
+
+	// mailを開いた後は未読0(MarkChecked済み)。
+	resp, _ = http.Get(srv.URL + "/api/v1/players/" + strconv.FormatInt(bob.ID, 10) + "/mail/unread")
+	json.NewDecoder(resp.Body).Decode(&ur)
+	resp.Body.Close()
+	if ur.Unread != 0 {
+		t.Errorf("bob unread after open = %d, want 0", ur.Unread)
+	}
+
+	// 保存トグル → 削除。
+	msgID := bobMb.Received[0].ID
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/players/"+strconv.FormatInt(bob.ID, 10)+"/mail/"+strconv.FormatInt(msgID, 10)+"/save", bytes.NewReader([]byte(`{"saved":true}`)))
+	resp, _ = http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("save status = %d", resp.StatusCode)
+	}
+	req, _ = http.NewRequest(http.MethodDelete, srv.URL+"/api/v1/players/"+strconv.FormatInt(bob.ID, 10)+"/mail/"+strconv.FormatInt(msgID, 10), nil)
+	resp, _ = http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("delete status = %d", resp.StatusCode)
+	}
+	if len(getMail(bob.ID).Received) != 0 {
+		t.Errorf("bob inbox not empty after delete")
 	}
 }

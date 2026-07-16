@@ -164,6 +164,7 @@ table.townmap td {
   border: 1px solid #cfcfcf;
 }
 .command-icons button {
+  position: relative;
   border: 0;
   background: transparent;
   padding: 0;
@@ -212,6 +213,40 @@ table.townmap td {
   background: rgba(255, 255, 255, 0.85);
   padding: 1px 2px;
   border-radius: 2px;
+}
+/* メール未読バッジ(コマンドアイコン右上) */
+.command-icons button .cmd-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  padding: 0 3px;
+  font-size: 10px;
+  line-height: 14px;
+  text-align: center;
+  color: #fff;
+  background: #cc3300;
+  border-radius: 8px;
+}
+/* 新着メール通知バー */
+.mail-notice {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 6px;
+  padding: 6px 10px;
+  background: #fff0f0;
+  border: 1px solid #e0a0a0;
+  color: #cc2200;
+  font-size: 12px;
+  font-weight: bold;
+  text-align: left;
+  cursor: pointer;
+}
+.mail-notice:hover {
+  background: #ffe0e0;
 }
 
 /* ステータスパネル */

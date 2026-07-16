@@ -15,6 +15,7 @@ import HospitalView from './components/HospitalView.vue';
 import SchoolView from './components/SchoolView.vue';
 import KabuView from './components/KabuView.vue';
 import KeibaView from './components/KeibaView.vue';
+import MailView from './components/MailView.vue';
 import YakubaView from './components/YakubaView.vue';
 import AdminView from './components/AdminView.vue';
 import PlaceholderView from './components/PlaceholderView.vue';
@@ -131,6 +132,7 @@ const facilityTitles: Record<string, string> = {
     <SchoolView v-else-if="view === 'school'" :player="player" @update="onUpdate" @back="back" />
     <KabuView v-else-if="view === 'kabu'" :player="player" @update="onUpdate" @back="back" />
     <KeibaView v-else-if="view === 'keiba'" :player="player" @update="onUpdate" @back="back" />
+    <MailView v-else-if="view === 'mail'" :player="player" @back="back" />
     <YakubaView v-else-if="view === 'yakuba'" :player="player" @back="back" />
     <AdminView v-else-if="view === 'admin'" :player="player" @back="back" />
     <PlaceholderView v-else :title="facilityTitles[view] ?? view" @back="back" />

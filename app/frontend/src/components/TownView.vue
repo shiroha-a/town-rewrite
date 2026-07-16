@@ -49,7 +49,20 @@ onMounted(async () => {
   } catch {
     stockPrices.value = [];
   }
+  refreshUnread();
 });
+
+// 新着メール通知。街トップ表示時とポーリングで未読数を取得する。
+const unreadMail = ref(0);
+async function refreshUnread() {
+  try {
+    unreadMail.value = (await api.getMailUnread(props.player.id)).unread;
+  } catch {
+    unreadMail.value = 0;
+  }
+}
+// 親のポーリング(player更新)に合わせて未読も更新する。
+watch(() => props.player, refreshUnread);
 
 // 株価ティッカー(街トップの帯)。全銘柄の現在株価を表示する。
 const stockPrices = ref<{ symbol: string; price: number }[]>([]);
@@ -156,6 +169,10 @@ const others: { label: string; key: ParamKey }[] = [
     <span class="name">{{ player.display_name }}</span>★
   </div>
 
+  <button v-if="unreadMail > 0" class="mail-notice" @click="emit('navigate', 'mail')">
+    ★受信箱に{{ unreadMail }}通の新しいメッセージが届いています！
+  </button>
+
   <div class="town">
     <!-- 左カラム: 街マップ -->
     <div class="col-left">
@@ -209,6 +226,7 @@ const others: { label: string; key: ParamKey }[] = [
             >
               <img :src="`/img/${cmd.img}.gif`" width="32" height="32" :alt="cmd.alt" />
               <span v-if="cmd.key === 'work' && workCooldown" class="cmd-cooldown">{{ workCooldown }}</span>
+              <span v-if="cmd.key === 'mail' && unreadMail > 0" class="cmd-badge">{{ unreadMail }}</span>
             </button>
           </div>
 
