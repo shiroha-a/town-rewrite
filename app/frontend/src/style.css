@@ -139,6 +139,41 @@ table.townmap td {
   border: 1px solid #cfcfcf;
   margin-top: 4px;
 }
+/* 街トップのチャット窓(あいさつの最新表示) */
+.chat-head {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: #ff6600;
+  font-size: 12px;
+  margin-bottom: 2px;
+  cursor: pointer;
+  padding: 0;
+}
+.chat-head:hover {
+  text-decoration: underline;
+}
+.chat-feed {
+  background: #fff;
+  border: 1px solid #cfcfcf;
+  padding: 3px 6px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  line-height: 1.6;
+  max-height: 96px;
+  overflow-y: auto;
+}
+.chat-feed .chat-line {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-feed .cn {
+  color: #333399;
+  font-weight: bold;
+}
 
 /* 右カラム: 街情報ヘッダ */
 .town-info {

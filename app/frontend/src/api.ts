@@ -338,6 +338,28 @@ export interface Mailbox {
   unread: number;
 }
 
+export interface Greeting {
+  id: number;
+  user_id: number | null;
+  user_name: string;
+  category: string;
+  body: string;
+  color: string;
+  janken: string;
+  posted_at: string;
+}
+export interface GreetResult {
+  reward: number;
+  jackpot: boolean;
+  janken: string;
+  janken_pc: string;
+  fine: boolean;
+}
+export interface GreetResp {
+  player: Player;
+  result: GreetResult;
+}
+
 function adminHeaders(actingId: number): Record<string, string> {
   return { 'X-Acting-Player-Id': String(actingId) };
 }
@@ -379,6 +401,16 @@ export const api = {
     request<{ ok: boolean }>('DELETE', `/players/${id}/mail/${msgId}`),
   mailSave: (id: number, msgId: number, saved: boolean) =>
     request<{ ok: boolean }>('PUT', `/players/${id}/mail/${msgId}/save`, { saved }),
+  greetings: (limit?: number) =>
+    request<Greeting[]>('GET', `/greetings${limit ? `?limit=${limit}` : ''}`),
+  postGreeting: (id: number, category: string, body: string, color: string, janken: string) =>
+    request<GreetResp>('POST', `/players/${id}/greetings`, {
+      category,
+      body,
+      color,
+      janken,
+      idempotency_key: newIdempotencyKey(),
+    }),
   keibaRace: (id: number) => request<KeibaRaceResp>('GET', `/players/${id}/keiba`),
   keibaBet: (id: number, raceId: number, bets: number[]) =>
     request<KeibaBetResp>('POST', `/players/${id}/keiba/bet`, {
@@ -474,6 +506,8 @@ export const api = {
     request<Player>('PUT', `/admin/players/${id}`, payload, adminHeaders(actingId)),
   adminDeletePlayer: (actingId: number, id: number) =>
     request<{ deleted: boolean }>('DELETE', `/admin/players/${id}`, undefined, adminHeaders(actingId)),
+  adminDeleteGreeting: (actingId: number, id: number) =>
+    request<{ deleted: boolean }>('DELETE', `/admin/greetings/${id}`, undefined, adminHeaders(actingId)),
   adminGetSettings: (actingId: number) =>
     request<GameSettings>('GET', '/admin/settings', undefined, adminHeaders(actingId)),
   adminUpdateSettings: (actingId: number, settings: GameSettings) =>

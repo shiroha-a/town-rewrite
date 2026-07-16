@@ -8,7 +8,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -17,6 +19,7 @@ import (
 	"github.com/shiroha-a/town/internal/condition"
 	"github.com/shiroha-a/town/internal/effects"
 	"github.com/shiroha-a/town/internal/gametime"
+	"github.com/shiroha-a/town/internal/greeting"
 	"github.com/shiroha-a/town/internal/keiba"
 	"github.com/shiroha-a/town/internal/ledger"
 	"github.com/shiroha-a/town/internal/player"
@@ -1098,6 +1101,147 @@ func (s *Service) DoKeibaBet(ctx context.Context, playerID, raceID int64, bets [
 			Steps:       race.Steps,
 			Lineup:      lineup,
 		}
+		return nil
+	})
+	return p, result, err
+}
+
+// GreetResult is the outcome of posting a greeting (reward/janken/fine).
+type GreetResult struct {
+	Reward   int64  `json:"reward"`    // 得た報酬(宣伝は負、管理人は0)
+	Jackpot  bool   `json:"jackpot"`   // 大当たり(base==7)
+	Janken   string `json:"janken"`    // 勝ち/負け/あいこ/""
+	JankenPC string `json:"janken_pc"` // PCの手 グー/チョキ/パー/""
+	Fine     bool   `json:"fine"`      // NG罰金
+}
+
+// ErrBadGreet is returned for invalid greeting input.
+var ErrBadGreet = errors.New("invalid greeting")
+
+var colorRe = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+
+var jankenHands = map[string]int{"gu": 0, "choki": 1, "pa": 2}
+var jankenNames = []string{"グー", "チョキ", "パー"}
+
+// DoGreet posts a greeting to the town board and applies its game effects:
+// a random reward for normal posts (jackpot on base==7, doubled/halved by a
+// rock-paper-scissors result), a 20000 charge for 宣伝, and a 30000 fine for NG
+// words. Legacy: event.pl sub aisatu (command=aisatu_do).
+func (s *Service) DoGreet(ctx context.Context, playerID int64, category, body, color, janken, idempotencyKey string) (*player.Player, *GreetResult, error) {
+	body = strings.TrimSpace(body)
+	if body == "" || len([]rune(body)) > greeting.MaxBodyRunes {
+		return nil, nil, ErrBadGreet
+	}
+	if color == "" {
+		color = "#333333"
+	}
+	if !colorRe.MatchString(color) {
+		return nil, nil, ErrBadGreet
+	}
+	// NGワードは本文をマスクし罰金フラグを立てる。
+	fine := false
+	for _, ng := range greeting.NGWords {
+		if strings.Contains(body, ng) {
+			body = strings.ReplaceAll(body, ng, "NG")
+			fine = true
+		}
+	}
+
+	var result *GreetResult
+	p, err := s.runAction(ctx, playerID, "greeting", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		var name string
+		if err := tx.QueryRow(ctx, `SELECT display_name FROM players WHERE id = $1`, playerID).Scan(&name); err != nil {
+			return fmt.Errorf("player: %w", err)
+		}
+		res := &GreetResult{Fine: fine}
+
+		switch category {
+		case greeting.CatAdmin:
+			var isAdmin bool
+			if err := tx.QueryRow(ctx,
+				`SELECT EXISTS(SELECT 1 FROM player_roles WHERE player_id = $1 AND role = 'admin')`, playerID).Scan(&isAdmin); err != nil {
+				return fmt.Errorf("role: %w", err)
+			}
+			if !isAdmin {
+				return &ConditionError{Message: "管理人枠は管理者のみ投稿できます。"}
+			}
+			color = "#ff0000"
+		case greeting.CatAd:
+			if state.Money < greeting.AdRevCost {
+				return &ConditionError{Message: "宣伝費の2万円が足りません。"}
+			}
+			if err := s.ledger.PostTx(ctx, tx, "greeting_ad", "", []ledger.Entry{
+				{Account: ledger.PlayerAccount(playerID), Delta: -greeting.AdRevCost},
+				{Account: ledger.SystemAccount("chat"), Delta: greeting.AdRevCost},
+			}); err != nil {
+				return fmt.Errorf("ad charge: %w", err)
+			}
+			res.Reward = -greeting.AdRevCost
+			color = "#0000ff"
+		default:
+			// ジャンケン(手が指定されていれば)で報酬倍率を決める。
+			mult := 1.0
+			if janken != "" && janken != "none" {
+				pc := s.rng.IntN(3)
+				res.JankenPC = jankenNames[pc]
+				me := jankenHands[janken]
+				if janken == "omakase" {
+					me = s.rng.IntN(3)
+				}
+				switch {
+				case me == pc:
+					res.Janken = "あいこ"
+				case (me+1)%3 == pc:
+					res.Janken = "勝ち"
+					mult = 2.0
+				default:
+					res.Janken = "負け"
+					mult = 0.5
+				}
+			}
+			base := int64(s.rng.IntN(10) + 1)
+			var gain int64
+			if base == 7 {
+				gain = base + int64(s.rng.IntN(10000)+5000)
+				res.Jackpot = true
+			} else {
+				gain = base + int64(s.rng.IntN(2000)+1000)
+			}
+			gain = int64(float64(gain) * mult)
+			if gain > 0 {
+				if err := s.ledger.PostTx(ctx, tx, "greeting_reward", "", []ledger.Entry{
+					{Account: ledger.SystemAccount("chat"), Delta: -gain},
+					{Account: ledger.PlayerAccount(playerID), Delta: gain},
+				}); err != nil {
+					return fmt.Errorf("reward: %w", err)
+				}
+			}
+			res.Reward = gain
+		}
+
+		if fine {
+			if err := s.ledger.PostTx(ctx, tx, "greeting_fine", "", []ledger.Entry{
+				{Account: ledger.PlayerAccount(playerID), Delta: -greeting.NGFine},
+				{Account: ledger.SystemAccount("chat"), Delta: greeting.NGFine},
+			}); err != nil {
+				return fmt.Errorf("fine: %w", err)
+			}
+			res.Reward -= greeting.NGFine
+		}
+
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO greetings (user_id, user_name, category, body, color, janken)
+			 VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''))`,
+			playerID, name, category, body, color, res.Janken); err != nil {
+			return fmt.Errorf("insert greeting: %w", err)
+		}
+		// 最新Keep件に切り詰める。
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM greetings WHERE id NOT IN (SELECT id FROM greetings ORDER BY id DESC LIMIT $1)`,
+			greeting.Keep); err != nil {
+			return fmt.Errorf("trim greetings: %w", err)
+		}
+		result = res
 		return nil
 	})
 	return p, result, err

@@ -7,6 +7,7 @@ import (
 
 	"github.com/shiroha-a/town/internal/action"
 	"github.com/shiroha-a/town/internal/content"
+	"github.com/shiroha-a/town/internal/greeting"
 	"github.com/shiroha-a/town/internal/keiba"
 	"github.com/shiroha-a/town/internal/mail"
 	"github.com/shiroha-a/town/internal/player"
@@ -25,11 +26,12 @@ type Server struct {
 	stock    *stock.Service
 	keiba    *keiba.Service
 	mail     *mail.Service
+	greeting *greeting.Service
 }
 
 // NewServer builds the HTTP handler for the REST API.
-func NewServer(players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store, stockSvc *stock.Service, keibaSvc *keiba.Service, mailSvc *mail.Service) http.Handler {
-	s := &Server{players: players, actions: actions, content: contentSvc, settings: st, townmap: tmap, stock: stockSvc, keiba: keibaSvc, mail: mailSvc}
+func NewServer(players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store, stockSvc *stock.Service, keibaSvc *keiba.Service, mailSvc *mail.Service, greetingSvc *greeting.Service) http.Handler {
+	s := &Server{players: players, actions: actions, content: contentSvc, settings: st, townmap: tmap, stock: stockSvc, keiba: keibaSvc, mail: mailSvc, greeting: greetingSvc}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("POST /api/v1/players", s.registerPlayer)
@@ -49,6 +51,9 @@ func NewServer(players *player.Service, actions *action.Service, contentSvc *con
 	mux.HandleFunc("POST /api/v1/players/{id}/mail/send", s.mailSend)
 	mux.HandleFunc("DELETE /api/v1/players/{id}/mail/{msgId}", s.mailDelete)
 	mux.HandleFunc("PUT /api/v1/players/{id}/mail/{msgId}/save", s.mailSave)
+	mux.HandleFunc("GET /api/v1/greetings", s.greetings)
+	mux.HandleFunc("POST /api/v1/players/{id}/greetings", s.postGreeting)
+	mux.HandleFunc("DELETE /api/v1/admin/greetings/{gid}", s.deleteGreeting)
 	mux.HandleFunc("GET /api/v1/items", s.shopItems)
 	mux.HandleFunc("GET /api/v1/facilities/{facility}/menu", s.facilityMenu)
 	mux.HandleFunc("POST /api/v1/players/{id}/eat", s.eat)

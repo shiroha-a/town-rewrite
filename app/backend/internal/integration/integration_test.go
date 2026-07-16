@@ -22,6 +22,7 @@ import (
 	"github.com/shiroha-a/town/internal/content"
 	"github.com/shiroha-a/town/internal/db"
 	"github.com/shiroha-a/town/internal/gametime"
+	"github.com/shiroha-a/town/internal/greeting"
 	"github.com/shiroha-a/town/internal/httpapi"
 	"github.com/shiroha-a/town/internal/keiba"
 	"github.com/shiroha-a/town/internal/ledger"
@@ -136,7 +137,7 @@ func setup(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 		pool.Close()
 		t.Fatalf("townmap set: %v", err)
 	}
-	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc, st, tmap, stock.New(pool), keiba.New(pool, rng.New(7)), mail.New(pool, time.UTC, 5)))
+	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc, st, tmap, stock.New(pool), keiba.New(pool, rng.New(7)), mail.New(pool, time.UTC, 5), greeting.New(pool)))
 	t.Cleanup(func() {
 		srv.Close()
 		pool.Close()
@@ -2030,5 +2031,117 @@ func TestMail(t *testing.T) {
 	}
 	if len(getMail(bob.ID).Received) != 0 {
 		t.Errorf("bob inbox not empty after delete")
+	}
+}
+
+// TestGreeting covers the town chat: normal posts earn money (money reconciles to
+// the reported reward), 宣伝 charges 20000, 管理人 is admin-only, NG words are
+// fined and masked, over-length is rejected, and admin can delete. Ledger stays
+// zero-sum.
+func TestGreeting(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	led := ledger.New(pool)
+	admin := register(t, srv.URL, "misskey.example", "root") // 最初=admin
+	alice := register(t, srv.URL, "misskey.example", "alice")
+
+	type greetResp struct {
+		Player struct {
+			Money int64 `json:"money"`
+		} `json:"player"`
+		Result struct {
+			Reward  int64 `json:"reward"`
+			Fine    bool  `json:"fine"`
+			Jackpot bool  `json:"jackpot"`
+		} `json:"result"`
+	}
+	post := func(id int64, body map[string]any) (int, greetResp) {
+		b, _ := json.Marshal(body)
+		resp, err := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(id, 10)+"/greetings", "application/json", bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var gr greetResp
+		json.NewDecoder(resp.Body).Decode(&gr)
+		return resp.StatusCode, gr
+	}
+
+	// 通常投稿: 報酬 > 0、所持金 = 500000 + reward。
+	code, gr := post(alice.ID, map[string]any{"category": "あいさつ", "body": "こんにちは", "color": "#333333", "idempotency_key": "g1"})
+	if code != http.StatusOK {
+		t.Fatalf("post status = %d", code)
+	}
+	if gr.Result.Reward <= 0 {
+		t.Errorf("reward = %d, want > 0", gr.Result.Reward)
+	}
+	if gr.Player.Money != 500000+gr.Result.Reward {
+		t.Errorf("money = %d, want %d", gr.Player.Money, 500000+gr.Result.Reward)
+	}
+
+	// 宣伝: -20000円。
+	_, gr = post(alice.ID, map[string]any{"category": "宣伝", "body": "私の店へどうぞ", "color": "#0000ff", "idempotency_key": "g2"})
+	if gr.Result.Reward != -20000 {
+		t.Errorf("ad reward = %d, want -20000", gr.Result.Reward)
+	}
+
+	// 管理人枠は非adminだと422。
+	if code, _ := post(alice.ID, map[string]any{"category": "管理人", "body": "お知らせ", "idempotency_key": "g3"}); code != http.StatusUnprocessableEntity {
+		t.Errorf("non-admin 管理人 status = %d, want 422", code)
+	}
+	// adminはOK。
+	if code, _ := post(admin.ID, map[string]any{"category": "管理人", "body": "お知らせ", "idempotency_key": "g4"}); code != http.StatusOK {
+		t.Errorf("admin 管理人 status = %d, want 200", code)
+	}
+
+	// NGワードは罰金(fine=true)。
+	_, gr = post(alice.ID, map[string]any{"category": "雑談", "body": "このぼけ", "idempotency_key": "g5"})
+	if !gr.Result.Fine {
+		t.Errorf("NG word not fined")
+	}
+
+	// 60字超は400。
+	long := ""
+	for i := 0; i < 61; i++ {
+		long += "あ"
+	}
+	if code, _ := post(alice.ID, map[string]any{"category": "雑談", "body": long, "idempotency_key": "g6"}); code != http.StatusBadRequest {
+		t.Errorf("over-length status = %d, want 400", code)
+	}
+
+	// 一覧取得。
+	resp, _ := http.Get(srv.URL + "/api/v1/greetings")
+	var list []struct {
+		ID   int64  `json:"id"`
+		Body string `json:"body"`
+	}
+	json.NewDecoder(resp.Body).Decode(&list)
+	resp.Body.Close()
+	if len(list) < 4 {
+		t.Errorf("greetings = %d, want >= 4", len(list))
+	}
+	// NG本文がマスクされている。
+	var ngMasked bool
+	for _, g := range list {
+		if g.Body == "このNG" {
+			ngMasked = true
+		}
+	}
+	if !ngMasked {
+		t.Errorf("NG word not masked in stored body")
+	}
+
+	// admin削除。
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/v1/admin/greetings/"+strconv.FormatInt(list[0].ID, 10), nil)
+	req.Header.Set("X-Acting-Player-Id", strconv.FormatInt(admin.ID, 10))
+	resp, _ = http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("admin delete status = %d, want 200", resp.StatusCode)
+	}
+
+	// 台帳ゼロ和。
+	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
+		t.Errorf("ledger zero-sum broken: %d", sum)
 	}
 }

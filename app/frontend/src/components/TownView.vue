@@ -50,7 +50,15 @@ onMounted(async () => {
     stockPrices.value = [];
   }
   refreshUnread();
+  try {
+    greetings.value = await api.greetings(6);
+  } catch {
+    greetings.value = [];
+  }
 });
+
+// 街トップのチャット窓に表示する最新のあいさつ。
+const greetings = ref<import('../api').Greeting[]>([]);
 
 // 新着メール通知。街トップ表示時とポーリングで未読数を取得する。
 const unreadMail = ref(0);
@@ -177,7 +185,12 @@ const others: { label: string; key: ParamKey }[] = [
     <!-- 左カラム: 街マップ -->
     <div class="col-left">
       <div class="mapwrap">
-        <div style="color: #ff6600; font-size: 12px; margin-bottom: 2px">●チャット</div>
+        <button class="chat-head" @click="emit('navigate', 'aisatu')">●チャット(あいさつ)</button>
+        <div v-if="greetings.length" class="chat-feed">
+          <div v-for="g in greetings" :key="g.id" class="chat-line">
+            <span class="cn">{{ g.user_name }}</span>：<span :style="{ color: g.color }">{{ g.body }}</span>
+          </div>
+        </div>
         <table class="townmap">
           <tbody>
             <tr>
