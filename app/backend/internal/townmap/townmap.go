@@ -40,7 +40,7 @@ func Default() []Facility {
 		{Key: "bank", Img: "bank", Alt: "銀行", Col: 6, Row: 4, Ready: true},
 		{Key: "syokudou", Img: "syokudou", Alt: "セントラル食堂", Col: 9, Row: 5, Ready: true},
 		{Key: "gym", Img: "gym", Alt: "ジム", Col: 11, Row: 9, Ready: true},
-		{Key: "keiba", Img: "keiba", Alt: "競馬場", Col: 13, Row: 9, Ready: false},
+		{Key: "keiba", Img: "keiba", Alt: "競馬場", Col: 13, Row: 9, Ready: true},
 		{Key: "jobchange", Img: "work", Alt: "職業安定所", Col: 2, Row: 6, Ready: true},
 		{Key: "onsen", Img: "onsen", Alt: "温泉", Col: 4, Row: 7, Ready: true},
 		{Key: "hospital", Img: "hospital", Alt: "中央病院", Col: 12, Row: 6, Ready: true},

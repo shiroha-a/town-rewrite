@@ -17,6 +17,7 @@ import (
 	"github.com/shiroha-a/town/internal/condition"
 	"github.com/shiroha-a/town/internal/effects"
 	"github.com/shiroha-a/town/internal/gametime"
+	"github.com/shiroha-a/town/internal/keiba"
 	"github.com/shiroha-a/town/internal/ledger"
 	"github.com/shiroha-a/town/internal/player"
 	"github.com/shiroha-a/town/internal/rng"
@@ -997,6 +998,109 @@ func (s *Service) logStockTrade(ctx context.Context, tx pgx.Tx, playerID int64, 
 		   SELECT id FROM stock_trade_log WHERE player_id = $1 ORDER BY id DESC LIMIT $2)`,
 		playerID, stock.TradeLogKeep)
 	return err
+}
+
+// KeibaBetResult is the outcome of a horse-race bet, returned alongside the
+// updated player.
+type KeibaBetResult struct {
+	WinnerIndex int           `json:"winner_index"`
+	WinnerName  string        `json:"winner_name"`
+	WinnerOdds  int           `json:"winner_odds"`
+	Payout      int64         `json:"payout"`   // 払戻金
+	Invested    int64         `json:"invested"` // 総購入額
+	Steps       [][]int       `json:"steps"`    // 各馬の歩幅列(アニメ用)
+	Lineup      []keiba.Horse `json:"lineup"`
+}
+
+// ErrBadBet is returned for a malformed or stale bet.
+var ErrBadBet = errors.New("invalid or stale keiba bet")
+
+// DoKeibaBet places bets on the player's pending race, runs the server-side
+// simulation, pays out winnings and updates the ranking. bets holds tickets per
+// horse index (length keiba.Runners). Legacy: keiba.cgi command=start.
+func (s *Service) DoKeibaBet(ctx context.Context, playerID, raceID int64, bets []int, idempotencyKey string) (*player.Player, *KeibaBetResult, error) {
+	if len(bets) != keiba.Runners {
+		return nil, nil, ErrBadBet
+	}
+	total, horsesBet := 0, 0
+	for _, t := range bets {
+		if t < 0 {
+			return nil, nil, ErrBadBet
+		}
+		total += t
+		if t > 0 {
+			horsesBet++
+		}
+	}
+
+	var result *KeibaBetResult
+	p, err := s.runAction(ctx, playerID, "keiba_bet", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		storedRace, lineup, err := keiba.LoadRace(ctx, tx, playerID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &ConditionError{Message: "レース情報がありません。画面を開き直してください。"}
+		}
+		if err != nil {
+			return fmt.Errorf("load race: %w", err)
+		}
+		if storedRace != raceID {
+			return &ConditionError{Message: "レース情報が古くなっています。画面を開き直してください。"}
+		}
+		if total == 0 {
+			return &ConditionError{Message: "馬券が購入されていません。"}
+		}
+		if horsesBet > keiba.MaxHorsesBet {
+			return &ConditionError{Message: fmt.Sprintf("%d頭までしか賭けられません。", keiba.MaxHorsesBet)}
+		}
+		if total > keiba.MaxTickets {
+			return &ConditionError{Message: fmt.Sprintf("一度に購入できる馬券は%d枚までです。", keiba.MaxTickets)}
+		}
+		cost := int64(total) * keiba.TicketPrice
+		if state.Money < cost {
+			return &ConditionError{Message: "お金が足りません。"}
+		}
+		if err := s.ledger.PostTx(ctx, tx, "keiba_bet", "", []ledger.Entry{
+			{Account: ledger.PlayerAccount(playerID), Delta: -cost},
+			{Account: ledger.SystemAccount("keiba"), Delta: cost},
+		}); err != nil {
+			return fmt.Errorf("pay: %w", err)
+		}
+
+		race := keiba.Simulate(lineup, s.rng)
+		win := race.WinnerIndex
+		var payout int64
+		if bets[win] > 0 {
+			payout = int64(lineup[win].Odds) * int64(bets[win]) * keiba.TicketPrice
+		}
+		if payout > 0 {
+			if err := s.ledger.PostTx(ctx, tx, "keiba_payout", "", []ledger.Entry{
+				{Account: ledger.SystemAccount("keiba"), Delta: -payout},
+				{Account: ledger.PlayerAccount(playerID), Delta: payout},
+			}); err != nil {
+				return fmt.Errorf("payout: %w", err)
+			}
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO keiba_ranking (player_id, invested, won, last_played)
+			 VALUES ($1, $2, $3, now())
+			 ON CONFLICT (player_id) DO UPDATE SET
+			   invested = keiba_ranking.invested + $2,
+			   won = keiba_ranking.won + $3,
+			   last_played = now()`,
+			playerID, cost, payout); err != nil {
+			return fmt.Errorf("rank: %w", err)
+		}
+		result = &KeibaBetResult{
+			WinnerIndex: win,
+			WinnerName:  lineup[win].Name,
+			WinnerOdds:  lineup[win].Odds,
+			Payout:      payout,
+			Invested:    cost,
+			Steps:       race.Steps,
+			Lineup:      lineup,
+		}
+		return nil
+	})
+	return p, result, err
 }
 
 // jobEconomy holds a job's take-requirements and pay/level rules (design 17.5).

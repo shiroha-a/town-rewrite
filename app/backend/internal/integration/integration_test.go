@@ -23,6 +23,7 @@ import (
 	"github.com/shiroha-a/town/internal/db"
 	"github.com/shiroha-a/town/internal/gametime"
 	"github.com/shiroha-a/town/internal/httpapi"
+	"github.com/shiroha-a/town/internal/keiba"
 	"github.com/shiroha-a/town/internal/ledger"
 	"github.com/shiroha-a/town/internal/player"
 	"github.com/shiroha-a/town/internal/rng"
@@ -134,7 +135,7 @@ func setup(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 		pool.Close()
 		t.Fatalf("townmap set: %v", err)
 	}
-	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc, st, tmap, stock.New(pool)))
+	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc, st, tmap, stock.New(pool), keiba.New(pool, rng.New(7))))
 	t.Cleanup(func() {
 		srv.Close()
 		pool.Close()
@@ -1845,6 +1846,91 @@ func TestStock(t *testing.T) {
 	if held != 0 {
 		t.Errorf("holdings rows after settle = %d, want 0", held)
 	}
+	// 台帳ゼロ和を維持。
+	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
+		t.Errorf("ledger zero-sum broken: %d", sum)
+	}
+}
+
+// TestKeiba covers horse racing: a race is generated, bets deduct/pay through the
+// ledger (money reconciles to invested/payout), and validation rejects stale
+// races, >2 horses, and >200 tickets. The ledger stays zero-sum.
+func TestKeiba(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	led := ledger.New(pool)
+	alice := register(t, srv.URL, "misskey.example", "alice") // 500000円
+
+	// レース取得。
+	resp, err := http.Get(srv.URL + "/api/v1/players/" + strconv.FormatInt(alice.ID, 10) + "/keiba")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rd struct {
+		RaceID int64 `json:"race_id"`
+		Lineup []struct {
+			Name string `json:"name"`
+			Odds int    `json:"odds"`
+		} `json:"lineup"`
+		Ranking []any `json:"ranking"`
+	}
+	json.NewDecoder(resp.Body).Decode(&rd)
+	resp.Body.Close()
+	if len(rd.Lineup) != 6 {
+		t.Fatalf("lineup = %d, want 6", len(rd.Lineup))
+	}
+
+	betPost := func(raceID int64, bets []int, key string) (int, []byte) {
+		b, _ := json.Marshal(map[string]any{"race_id": raceID, "bets": bets, "idempotency_key": key})
+		r, _ := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/keiba/bet", "application/json", bytes.NewReader(b))
+		defer r.Body.Close()
+		data, _ := io.ReadAll(r.Body)
+		return r.StatusCode, data
+	}
+
+	// 1頭に1枚(500円)賭ける。所持金 = 500000 - invested + payout。
+	code, body := betPost(rd.RaceID, []int{1, 0, 0, 0, 0, 0}, "kb1")
+	if code != http.StatusOK {
+		t.Fatalf("bet status = %d, body = %s", code, body)
+	}
+	var br struct {
+		Player struct {
+			Money int64 `json:"money"`
+		} `json:"player"`
+		Result struct {
+			WinnerIndex int   `json:"winner_index"`
+			Payout      int64 `json:"payout"`
+			Invested    int64 `json:"invested"`
+		} `json:"result"`
+	}
+	json.Unmarshal(body, &br)
+	if br.Result.Invested != 500 {
+		t.Errorf("invested = %d, want 500", br.Result.Invested)
+	}
+	if br.Result.WinnerIndex < 0 || br.Result.WinnerIndex >= 6 {
+		t.Errorf("winner_index = %d out of range", br.Result.WinnerIndex)
+	}
+	if br.Player.Money != 500000-br.Result.Invested+br.Result.Payout {
+		t.Errorf("money = %d, want %d", br.Player.Money, 500000-br.Result.Invested+br.Result.Payout)
+	}
+
+	// 検証: 古いrace_id → 422。
+	if code, _ := betPost(rd.RaceID+9999, []int{1, 0, 0, 0, 0, 0}, "kb2"); code != http.StatusUnprocessableEntity {
+		t.Errorf("stale race code = %d, want 422", code)
+	}
+	// 検証: 3頭賭け → 422。
+	if code, _ := betPost(rd.RaceID, []int{1, 1, 1, 0, 0, 0}, "kb3"); code != http.StatusUnprocessableEntity {
+		t.Errorf("3-horse bet code = %d, want 422", code)
+	}
+	// 検証: 201枚 → 422。
+	if code, _ := betPost(rd.RaceID, []int{201, 0, 0, 0, 0, 0}, "kb4"); code != http.StatusUnprocessableEntity {
+		t.Errorf("over-200 bet code = %d, want 422", code)
+	}
+	// 検証: bets長さ不正 → 400。
+	if code, _ := betPost(rd.RaceID, []int{1, 0, 0}, "kb5"); code != http.StatusBadRequest {
+		t.Errorf("bad-length bet code = %d, want 400", code)
+	}
+
 	// 台帳ゼロ和を維持。
 	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
 		t.Errorf("ledger zero-sum broken: %d", sum)

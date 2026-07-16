@@ -287,6 +287,36 @@ export interface PlayerStocksResp {
   history: string[];
 }
 
+export interface KeibaHorse {
+  name: string;
+  img: string;
+  odds: number;
+}
+export interface KeibaRankEntry {
+  name: string;
+  profit: number;
+  invested: number;
+  won: number;
+}
+export interface KeibaRaceResp {
+  race_id: number;
+  lineup: KeibaHorse[];
+  ranking: KeibaRankEntry[];
+}
+export interface KeibaResult {
+  winner_index: number;
+  winner_name: string;
+  winner_odds: number;
+  payout: number;
+  invested: number;
+  steps: number[][];
+  lineup: KeibaHorse[];
+}
+export interface KeibaBetResp {
+  player: Player;
+  result: KeibaResult;
+}
+
 function adminHeaders(actingId: number): Record<string, string> {
   return { 'X-Acting-Player-Id': String(actingId) };
 }
@@ -318,6 +348,13 @@ export const api = {
     }),
   stockSettle: (id: number) =>
     request<Player>('POST', `/players/${id}/stocks/settle`, {
+      idempotency_key: newIdempotencyKey(),
+    }),
+  keibaRace: (id: number) => request<KeibaRaceResp>('GET', `/players/${id}/keiba`),
+  keibaBet: (id: number, raceId: number, bets: number[]) =>
+    request<KeibaBetResp>('POST', `/players/${id}/keiba/bet`, {
+      race_id: raceId,
+      bets,
       idempotency_key: newIdempotencyKey(),
     }),
   shopItems: () => request<ShopItem[]>('GET', '/items'),

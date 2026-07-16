@@ -14,6 +14,7 @@ import (
 	"github.com/shiroha-a/town/internal/content"
 	"github.com/shiroha-a/town/internal/db"
 	"github.com/shiroha-a/town/internal/httpapi"
+	"github.com/shiroha-a/town/internal/keiba"
 	"github.com/shiroha-a/town/internal/ledger"
 	"github.com/shiroha-a/town/internal/player"
 	"github.com/shiroha-a/town/internal/rediscli"
@@ -80,10 +81,11 @@ func Run(ctx context.Context, mode string, cfg *config.Config) error {
 	actions := action.New(pool, led, players, rnd, loc, cfg.Game.DayBoundaryHour, st)
 	contentSvc := content.New(pool, loc, cfg.Game.DayBoundaryHour, st)
 	stockSvc := stock.New(pool)
+	keibaSvc := keiba.New(pool, rng.New(0)) // レース生成用に独立した(非決定的)乱数源
 
 	switch mode {
 	case "web":
-		return runWeb(ctx, cfg, logger, players, actions, contentSvc, st, tmap, stockSvc)
+		return runWeb(ctx, cfg, logger, players, actions, contentSvc, st, tmap, stockSvc, keibaSvc)
 	case "worker":
 		return worker.New(rdb, pool, led, cfg, st, logger).Run(ctx)
 	default:
@@ -91,10 +93,10 @@ func Run(ctx context.Context, mode string, cfg *config.Config) error {
 	}
 }
 
-func runWeb(ctx context.Context, cfg *config.Config, logger *slog.Logger, players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store, stockSvc *stock.Service) error {
+func runWeb(ctx context.Context, cfg *config.Config, logger *slog.Logger, players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store, stockSvc *stock.Service, keibaSvc *keiba.Service) error {
 	srv := &http.Server{
 		Addr:              cfg.Server.HTTPAddr,
-		Handler:           httpapi.NewServer(players, actions, contentSvc, st, tmap, stockSvc),
+		Handler:           httpapi.NewServer(players, actions, contentSvc, st, tmap, stockSvc, keibaSvc),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
