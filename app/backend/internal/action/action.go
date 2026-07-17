@@ -770,6 +770,57 @@ func (s *Service) DoLoanRepay(ctx context.Context, playerID int64, idempotencyKe
 	})
 }
 
+// gameLimits caps how often each game can be played (legacy 開催間隔・回数制限)。
+// daily=0 means no daily cap, interval=0 means no per-play cooldown.
+var gameLimits = map[string]struct {
+	daily    int
+	interval time.Duration
+}{
+	"saikoro":  {interval: time.Minute},
+	"slot":     {interval: 3 * time.Second},
+	"loto":     {interval: time.Minute},
+	"kuji":     {interval: 30 * time.Second},
+	"donuts":   {daily: 3},
+	"omikuji":  {daily: 10, interval: time.Minute},
+	"otakara":  {interval: time.Minute},
+	"fukubiki": {daily: 1},
+}
+
+// checkGameLimit enforces the per-game daily cap and cooldown from game_plays.
+func (s *Service) checkGameLimit(ctx context.Context, tx pgx.Tx, playerID int64, game string) error {
+	lim, ok := gameLimits[game]
+	if !ok {
+		return nil
+	}
+	if lim.daily > 0 {
+		dayStart := gametime.Date(time.Now(), s.loc, s.dayBoundaryHour).Add(time.Duration(s.dayBoundaryHour) * time.Hour)
+		var cnt int
+		if err := tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM game_plays WHERE game = $1 AND player_id = $2 AND created_at >= $3`,
+			game, playerID, dayStart).Scan(&cnt); err != nil {
+			return err
+		}
+		if cnt >= lim.daily {
+			return &ConditionError{Message: fmt.Sprintf("このゲームは1日%d回までです。", lim.daily)}
+		}
+	}
+	if lim.interval > 0 {
+		var last *time.Time
+		if err := tx.QueryRow(ctx,
+			`SELECT MAX(created_at) FROM game_plays WHERE game = $1 AND player_id = $2`,
+			game, playerID).Scan(&last); err != nil {
+			return err
+		}
+		if last != nil {
+			if elapsed := time.Since(*last); elapsed < lim.interval {
+				wait := int((lim.interval - elapsed).Seconds()) + 1
+				return &ConditionError{Message: fmt.Sprintf("まだ遊べません。あと%d秒お待ちください。", wait)}
+			}
+		}
+	}
+	return nil
+}
+
 // CasinoResult is returned after a minigame play: the updated player and the
 // game outcome for presentation.
 type CasinoResult struct {
@@ -808,6 +859,9 @@ func (s *Service) DoCasinoPlay(ctx context.Context, playerID int64, game string,
 	}
 	out := &CasinoResult{Payout: res.Payout, Win: res.Win, Detail: res.Detail}
 	p, err := s.runAction(ctx, playerID, "casino:"+game, idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		if err := s.checkGameLimit(ctx, tx, playerID, game); err != nil {
+			return err
+		}
 		// 掛け金 + (賽銭など)支払い分を所持金でまかなえるか。
 		needed := bet
 		if res.MoneyDelta < 0 {
