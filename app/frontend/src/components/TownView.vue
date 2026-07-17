@@ -58,7 +58,16 @@ onMounted(async () => {
   }
   // 街を開いた=来訪として足あとに記帳する(1日1回)。
   api.attendanceCheckin(props.player.id).catch(() => {});
-  // 街を開いた時にランダムイベントを抽選する(発生したら通知しステータス再取得)。
+  // 街を開いた時にランダムイベントを抽選する。
+  rollEvent();
+});
+
+// ランダムイベントの通知(発生時のみ)。
+const eventNotice = ref<{ message: string; good: boolean } | null>(null);
+// ランダムイベントを抽選する(街を開いた時・更新ボタン押下時)。発生したら通知し
+// ステータスを再取得する。サーバ側のクールタイム(15秒)内はres.event=nullが返り
+// 何も起きないため、更新ボタンを連打してもイベントは乱発されない。
+function rollEvent() {
   api
     .eventRoll(props.player.id)
     .then((res) => {
@@ -68,10 +77,7 @@ onMounted(async () => {
       }
     })
     .catch(() => {});
-});
-
-// ランダムイベントの通知(発生時のみ)。
-const eventNotice = ref<{ message: string; good: boolean } | null>(null);
+}
 
 // 街トップのチャット窓に表示する最新のあいさつ。
 const greetings = ref<import('../api').Greeting[]>([]);
@@ -136,8 +142,10 @@ const commands = computed(() => {
 });
 function clickCommand(key: string) {
   if (key === 'work' && workCooldown.value) return; // クールタイム中は無効
-  if (key === 'reload') emit('reload');
-  else if (key === 'off') emit('logout');
+  if (key === 'reload') {
+    emit('reload');
+    rollEvent(); // 更新ボタンでもイベントを抽選する
+  } else if (key === 'off') emit('logout');
   else emit('navigate', key);
 }
 
