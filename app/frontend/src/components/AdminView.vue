@@ -157,6 +157,31 @@ function clickCell(col: number, rowIdx: number) {
   }
 }
 
+// ドラッグ&ドロップで施設を配置する。占有セルへドロップした場合は位置を入れ替える。
+const dragging = ref<number | null>(null);
+function onDragStart(idx: number) {
+  if (idx < 0) return;
+  dragging.value = idx;
+  selectedIdx.value = idx;
+}
+function onDragEnd() {
+  dragging.value = null;
+}
+function onDrop(col: number, rowIdx: number) {
+  if (dragging.value === null) return;
+  const src = townmap.value[dragging.value];
+  const targetIdx = mapFacilityAt(col, rowIdx);
+  if (targetIdx >= 0 && targetIdx !== dragging.value) {
+    // 移動先に別の施設があれば位置を入れ替える。
+    const tgt = townmap.value[targetIdx];
+    tgt.col = src.col;
+    tgt.row = src.row;
+  }
+  src.col = col;
+  src.row = rowIdx;
+  dragging.value = null;
+}
+
 function firstFreeCell(): { col: number; row: number } | null {
   for (let r = 0; r < MAP_ROWS; r++) {
     for (let c = 1; c <= MAP_COLS; c++) {
@@ -669,7 +694,11 @@ async function deleteEdit() {
           </button>
           <div v-if="open.map" class="fold-body">
             <section class="panel">
-              <h3>マップ編集<span class="hint"> ※施設をクリックで選択→空きセルをクリックで移動</span></h3>
+              <h3>
+                マップ編集<span class="hint">
+                  ※施設をドラッグ&ドロップで移動(占有セルへは入れ替え)。クリックで選択→空きセルクリックでも移動可</span
+                >
+              </h3>
               <div class="map-editor">
                 <div class="map-scroll">
                   <div class="map-grid">
@@ -684,10 +713,13 @@ async function deleteEdit() {
                         :class="{
                           occ: mapFacilityAt(c, ri) >= 0,
                           sel: mapFacilityAt(c, ri) >= 0 && mapFacilityAt(c, ri) === selectedIdx,
-                          movable: mapFacilityAt(c, ri) < 0 && selectedIdx !== null,
+                          movable: mapFacilityAt(c, ri) < 0 && (selectedIdx !== null || dragging !== null),
+                          dragsrc: mapFacilityAt(c, ri) >= 0 && mapFacilityAt(c, ri) === dragging,
                         }"
                         :title="mapFacilityAt(c, ri) >= 0 ? townmap[mapFacilityAt(c, ri)].alt : ''"
                         @click="clickCell(c, ri)"
+                        @dragover.prevent
+                        @drop="onDrop(c, ri)"
                       >
                         <img
                           v-if="mapFacilityAt(c, ri) >= 0"
@@ -695,6 +727,9 @@ async function deleteEdit() {
                           width="24"
                           height="24"
                           :alt="townmap[mapFacilityAt(c, ri)].alt"
+                          draggable="true"
+                          @dragstart="onDragStart(mapFacilityAt(c, ri))"
+                          @dragend="onDragEnd"
                         />
                       </div>
                     </template>
@@ -1076,7 +1111,12 @@ async function deleteEdit() {
   background: #fff3e8;
   z-index: 1;
 }
+/* ドラッグ中の元セルは半透明にする。 */
+.map-grid .cell.dragsrc {
+  opacity: 0.4;
+}
 .map-grid .cell img {
+  cursor: grab;
   display: block;
   width: 20px;
   height: 20px;
