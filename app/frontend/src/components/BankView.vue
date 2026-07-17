@@ -50,6 +50,16 @@ const fmtDate = (iso: string) => {
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
+
+// 振り込み(送金)。相手はメンバー名、普通口座から引き落とす。
+const transferName = ref('');
+const transferAmt = ref<number>(0);
+const doTransfer = () =>
+  run('振り込み', async () => {
+    const p = await api.transfer(props.player.id, transferName.value, transferAmt.value);
+    if (statement.value) statement.value = await api.bankStatement(props.player.id);
+    return p;
+  });
 </script>
 
 <template>
@@ -107,8 +117,19 @@ const fmtDate = (iso: string) => {
         </table>
 
         <h3 class="sec">■振り込み</h3>
-        <p class="note">※参加者のメンバー名がわかれば送金することができます。</p>
-        <button class="btn" disabled>振り込み<span class="muted">(準備中)</span></button>
+        <p class="note">
+          ※参加者のメンバー名がわかれば送金することができます。<br />
+          お金は普通口座から引き落とされます(送金は1回100万円まで、超えた分は寄付されます)。
+        </p>
+        <div class="row">
+          <span class="lbl">◆お相手</span>
+          <input type="text" v-model.trim="transferName" placeholder="メンバー名" data-test="transfer-name" />
+        </div>
+        <div class="row">
+          <span class="lbl">◆金　額</span>
+          <input type="number" v-model.number="transferAmt" data-test="transfer-amount" /> 円
+          <button class="btn" :disabled="busy" data-test="transfer" @click="doTransfer">振り込む</button>
+        </div>
       </div>
 
       <div class="col">

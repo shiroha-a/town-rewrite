@@ -458,6 +458,95 @@ func (s *Service) DoWithdraw(ctx context.Context, playerID, amount int64, idempo
 	})
 }
 
+// transferLimit caps a single bank transfer; the excess is donated away (寄付),
+// matching the legacy 振り込み. It is also the per-day cap per recipient.
+const transferLimit = 1_000_000
+
+// DoTransfer sends money from the player's savings to another member's savings,
+// the recipient identified by display name. Amount above transferLimit is
+// donated (removed from circulation). Students/day-laborers cannot send, self-
+// transfer is rejected, and the daily total to one recipient is capped.
+func (s *Service) DoTransfer(ctx context.Context, fromID int64, toName string, amount int64, idempotencyKey string) (*player.Player, error) {
+	if amount <= 0 {
+		return nil, &ConditionError{Message: "0円、マイナスの金額は振り込めません。"}
+	}
+	toName = strings.TrimSpace(toName)
+	if toName == "" {
+		return nil, &ConditionError{Message: "振込先の名前を入力してください。"}
+	}
+	return s.runAction(ctx, fromID, "transfer", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		var job string
+		if err := tx.QueryRow(ctx, `SELECT job FROM player_status WHERE player_id = $1`, fromID).Scan(&job); err != nil {
+			return fmt.Errorf("read job: %w", err)
+		}
+		if job == "学生" || job == "日払いバイト" {
+			return &ConditionError{Message: "学生・日払いバイト中は送金できません。"}
+		}
+		// 相手をメンバー名で逆引き。同名が複数いる場合は特定できないため断る。
+		var cnt, toID int64
+		if err := tx.QueryRow(ctx,
+			`SELECT COUNT(*), COALESCE(MIN(id), 0) FROM players WHERE display_name = $1`,
+			toName).Scan(&cnt, &toID); err != nil {
+			return fmt.Errorf("lookup recipient: %w", err)
+		}
+		if cnt == 0 {
+			return &ConditionError{Message: "その名前の参加者が見つかりません。"}
+		}
+		if cnt > 1 {
+			return &ConditionError{Message: "同じ名前の参加者が複数います。振込できません。"}
+		}
+		if toID == fromID {
+			return &ConditionError{Message: "自分宛に振り込むことはできません。"}
+		}
+		var savings int64
+		if err := tx.QueryRow(ctx,
+			`SELECT COALESCE(SUM(delta), 0) FROM ledger_entry WHERE account = $1`,
+			ledger.SavingsAccount(fromID)).Scan(&savings); err != nil {
+			return fmt.Errorf("read savings: %w", err)
+		}
+		if savings < amount {
+			return &ConditionError{Message: "普通口座のお金が足りません。"}
+		}
+		// 上限超過分は寄付として自口座から引かれ、相手には届かない。
+		sent, donation := amount, int64(0)
+		if sent > transferLimit {
+			donation = sent - transferLimit
+			sent = transferLimit
+		}
+		// 同一相手への当日送金合計(相手に届いた額)が上限を超えないか。
+		dayStart := gametime.Date(time.Now(), s.loc, s.dayBoundaryHour).Add(time.Duration(s.dayBoundaryHour) * time.Hour)
+		var todaySum int64
+		if err := tx.QueryRow(ctx,
+			`SELECT COALESCE(SUM(amount), 0) FROM transfer_log WHERE from_id = $1 AND to_id = $2 AND created_at >= $3`,
+			fromID, toID, dayStart).Scan(&todaySum); err != nil {
+			return err
+		}
+		if todaySum+sent > transferLimit {
+			return &ConditionError{Message: fmt.Sprintf("今日この相手への送金は合計%d円までです。", transferLimit)}
+		}
+		if err := s.ledger.PostTx(ctx, tx, "transfer", "", []ledger.Entry{
+			{Account: ledger.SavingsAccount(fromID), Delta: -sent},
+			{Account: ledger.SavingsAccount(toID), Delta: sent},
+		}); err != nil {
+			return fmt.Errorf("transfer: %w", err)
+		}
+		if donation > 0 {
+			if err := s.ledger.PostTx(ctx, tx, "transfer_donation", "", []ledger.Entry{
+				{Account: ledger.SavingsAccount(fromID), Delta: -donation},
+				{Account: ledger.SystemAccount("donation"), Delta: donation},
+			}); err != nil {
+				return fmt.Errorf("donation: %w", err)
+			}
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO transfer_log (from_id, to_id, amount) VALUES ($1, $2, $3)`,
+			fromID, toID, sent); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
 // StatementEntry is one line of a savings-account passbook (入出金明細).
 type StatementEntry struct {
 	At      time.Time `json:"at"`
@@ -495,14 +584,16 @@ func (s *Service) BankStatement(ctx context.Context, playerID int64) ([]Statemen
 		if err := rows.Scan(&e.At, &reason, &e.Amount, &e.Balance); err != nil {
 			return nil, fmt.Errorf("scan statement: %w", err)
 		}
-		e.Label = statementLabel(reason)
+		e.Label = statementLabel(reason, e.Amount)
 		out = append(out, e)
 	}
 	return out, rows.Err()
 }
 
-// statementLabel maps a ledger reason to a Japanese passbook label.
-func statementLabel(reason string) string {
+// statementLabel maps a ledger reason (and the entry sign) to a Japanese
+// passbook label. Transfers share one reason for both parties, so the sign of
+// the amount distinguishes send (out) from receive (in).
+func statementLabel(reason string, amount int64) string {
 	switch {
 	case reason == "deposit":
 		return "預け入れ"
@@ -512,6 +603,13 @@ func statementLabel(reason string) string {
 		return "利息"
 	case reason == "offer":
 		return "おさい銭"
+	case reason == "transfer":
+		if amount < 0 {
+			return "振込(送金)"
+		}
+		return "振込(入金)"
+	case reason == "transfer_donation":
+		return "寄付"
 	default:
 		return "取引"
 	}

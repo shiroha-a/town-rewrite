@@ -603,6 +603,12 @@ export const api = {
       idempotency_key: newIdempotencyKey(),
     }),
   bankStatement: (id: number) => request<StatementEntry[]>('GET', `/players/${id}/bank/statement`),
+  transfer: (id: number, toName: string, amount: number) =>
+    request<Player>('POST', `/players/${id}/bank/transfer`, {
+      to_name: toName,
+      amount,
+      idempotency_key: newIdempotencyKey(),
+    }),
   hospitalTreat: (id: number) =>
     request<Player>('POST', `/players/${id}/hospital/treat`, {
       idempotency_key: newIdempotencyKey(),

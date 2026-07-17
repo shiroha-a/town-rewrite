@@ -77,3 +77,24 @@ func (s *Server) bankStatement(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, entries)
 }
+
+type transferReq struct {
+	ToName         string `json:"to_name"`
+	Amount         int64  `json:"amount"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+func (s *Server) bankTransfer(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req transferReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	p, err := s.actions.DoTransfer(r.Context(), id, req.ToName, req.Amount, req.IdempotencyKey)
+	writeActionResult(w, p, err)
+}
