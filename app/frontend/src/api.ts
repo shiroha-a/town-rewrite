@@ -201,6 +201,20 @@ export interface ScratchOpenResult {
   state: ScratchState;
 }
 
+// ブラックジャックの盤面。進行中は親(oya)の1枚目のみ公開しoya_hidden枚が伏せ。
+export interface BJState {
+  active: boolean;
+  rate: number;
+  ply: number[];
+  ply_score: number;
+  oya: number[];
+  oya_score: number;
+  oya_hidden: number;
+  phase: string; // 'playing' | 'over'
+  result: string; // 'win' | 'lose' | 'push'
+  payout: number;
+}
+
 // ローンの返済プラン1件(返済回数・利率・日額・総返済額)。
 export interface LoanPlanQuote {
   count: number;
@@ -693,6 +707,13 @@ export const api = {
       cell,
       idempotency_key: newIdempotencyKey(),
     }),
+  bjState: (id: number) => request<BJState>('GET', `/players/${id}/blackjack`),
+  bjStart: (id: number, rate: number) =>
+    request<BJState>('POST', `/players/${id}/blackjack/start`, { rate, idempotency_key: newIdempotencyKey() }),
+  bjHit: (id: number) =>
+    request<BJState>('POST', `/players/${id}/blackjack/hit`, { idempotency_key: newIdempotencyKey() }),
+  bjStand: (id: number) =>
+    request<BJState>('POST', `/players/${id}/blackjack/stand`, { idempotency_key: newIdempotencyKey() }),
   hospitalTreat: (id: number) =>
     request<Player>('POST', `/players/${id}/hospital/treat`, {
       idempotency_key: newIdempotencyKey(),

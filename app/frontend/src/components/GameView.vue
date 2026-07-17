@@ -10,6 +10,7 @@ import OmikujiGame from './casino/OmikujiGame.vue';
 import OtakaraGame from './casino/OtakaraGame.vue';
 import FukubikiGame from './casino/FukubikiGame.vue';
 import ScratchGame from './casino/ScratchGame.vue';
+import BlackjackGame from './casino/BlackjackGame.vue';
 
 defineProps<{ player: Player }>();
 const emit = defineEmits<{ update: [player: Player]; back: [] }>();
@@ -27,6 +28,7 @@ const games: { key: string; name: string; desc: string; props?: Record<string, u
   { key: 'fukubiki', name: '福引き', desc: 'カードを選んで景品が当たる(無料)' },
   { key: 'scratch', name: 'スクラッチ', desc: '1日5枚、3マス開けて当たりを狙う(無料)', props: { game: 'scratch' } },
   { key: 'sukuratti', name: 'スクラッチ2', desc: '3x3の9マス版スクラッチ(無料)', props: { game: 'sukuratti' } },
+  { key: 'blackjack', name: 'ブラックジャック', desc: '21に近づけてディーラーに勝つ(配当1:1)' },
 ];
 const gameComponents: Record<string, Component> = {
   saikoro: SaikoroGame,
@@ -39,6 +41,7 @@ const gameComponents: Record<string, Component> = {
   fukubiki: FukubikiGame,
   scratch: ScratchGame,
   sukuratti: ScratchGame,
+  blackjack: BlackjackGame,
 };
 
 const yen = (n: number) => n.toLocaleString('ja-JP');

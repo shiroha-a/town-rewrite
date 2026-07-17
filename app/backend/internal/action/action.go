@@ -937,11 +937,11 @@ func (s *Service) readScratchState(ctx context.Context, playerID int64, game str
 // ScratchOpenResult is returned after opening one scratch cell.
 type ScratchOpenResult struct {
 	Player *player.Player `json:"-"`
-	Value  int            `json:"value"`  // 開いたセルの値
-	Win    bool           `json:"win"`    // そのセルが当たりか
-	Bonus  bool           `json:"bonus"`  // 全開封当りボーナスが出たか
-	Prize  int64          `json:"prize"`  // 今回の賞金
-	State  *ScratchState  `json:"state"`  // 更新後の盤面
+	Value  int            `json:"value"` // 開いたセルの値
+	Win    bool           `json:"win"`   // そのセルが当たりか
+	Bonus  bool           `json:"bonus"` // 全開封当りボーナスが出たか
+	Prize  int64          `json:"prize"` // 今回の賞金
+	State  *ScratchState  `json:"state"` // 更新後の盤面
 }
 
 // DoScratchOpen opens one cell of a scratch card, pays winning prizes, and
@@ -1024,6 +1024,221 @@ func (s *Service) DoScratchOpen(ctx context.Context, playerID int64, game string
 	}
 	out.State = st
 	return out, nil
+}
+
+// bjBets are the allowed blackjack stakes.
+var bjBets = []int64{10000, 100000, 500000, 1000000}
+
+// BJState is the blackjack table state for display. During play the dealer's
+// hole card (oya[1..]) is hidden; at OVER the full hand is shown.
+type BJState struct {
+	Active    bool   `json:"active"`     // 進行中/決着ゲームが存在するか
+	Rate      int64  `json:"rate"`       // 掛け金
+	Ply       []int  `json:"ply"`        // 子の手札(全公開)
+	PlyScore  int    `json:"ply_score"`  // 子の点数
+	Oya       []int  `json:"oya"`        // 親の手札(playing中は1枚目のみ)
+	OyaScore  int    `json:"oya_score"`  // 親の点数(playing中は見せている札のみ)
+	OyaHidden int    `json:"oya_hidden"` // 伏せている親の枚数
+	Phase     string `json:"phase"`      // 'playing' | 'over'
+	Result    string `json:"result"`     // 'win'|'lose'|'push'(over時)
+	Payout    int64  `json:"payout"`     // 決着時の払戻(掛け金返却含む)
+}
+
+// bjReadState loads the player's blackjack game (Active=false if none).
+func (s *Service) bjReadState(ctx context.Context, q queryRower, playerID int64) (*BJState, error) {
+	var rate int64
+	var oya, ply []int32
+	var phase, result string
+	err := q.QueryRow(ctx,
+		`SELECT rate, oya, ply, phase, result FROM player_blackjack WHERE player_id=$1`,
+		playerID).Scan(&rate, &oya, &ply, &phase, &result)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &BJState{Active: false}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	st := &BJState{Active: true, Rate: rate, Phase: phase, Result: result}
+	for _, c := range ply {
+		st.Ply = append(st.Ply, int(c))
+	}
+	st.PlyScore = casino.BJScore(st.Ply)
+	full := make([]int, len(oya))
+	for i, c := range oya {
+		full[i] = int(c)
+	}
+	if phase == "over" {
+		st.Oya = full
+		st.OyaScore = casino.BJScore(full)
+		switch result {
+		case "win":
+			st.Payout = rate * 2
+		case "push":
+			st.Payout = rate
+		}
+	} else {
+		// 進行中は親の1枚目のみ公開。
+		if len(full) > 0 {
+			st.Oya = full[:1]
+			st.OyaScore = casino.BJScore(full[:1])
+			st.OyaHidden = len(full) - 1
+		}
+	}
+	return st, nil
+}
+
+// BJGetState returns the current blackjack state without changing it.
+func (s *Service) BJGetState(ctx context.Context, playerID int64) (*BJState, error) {
+	return s.bjReadState(ctx, s.pool, playerID)
+}
+
+// BJStart deals a new blackjack hand for the given stake. The stake is moved to
+// the casino immediately; a settled hand pays out at hit-bust/stand.
+func (s *Service) BJStart(ctx context.Context, playerID, rate int64, idempotencyKey string) (*BJState, error) {
+	ok := false
+	for _, b := range bjBets {
+		if b == rate {
+			ok = true
+		}
+	}
+	if !ok {
+		return nil, &ConditionError{Message: "掛け金の指定が正しくありません。"}
+	}
+	var out *BJState
+	_, err := s.runAction(ctx, playerID, "bj_start", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		var phase string
+		err := tx.QueryRow(ctx, `SELECT phase FROM player_blackjack WHERE player_id=$1`, playerID).Scan(&phase)
+		if err == nil && phase == "playing" {
+			return &ConditionError{Message: "進行中のゲームがあります。"}
+		}
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if state.Money < rate {
+			return &ConditionError{Message: "お金が足りません。"}
+		}
+		// 掛け金を胴元へ。決着時に payout を胴元から戻す。
+		if err := s.ledger.PostTx(ctx, tx, "bj_bet", "", []ledger.Entry{
+			{Account: ledger.PlayerAccount(playerID), Delta: -rate},
+			{Account: ledger.SystemAccount("casino"), Delta: rate},
+		}); err != nil {
+			return err
+		}
+		// 親子に2枚ずつ。
+		var used []int
+		draw := func() int32 { c := casino.BJDraw(s.rng, used); used = append(used, c); return int32(c) }
+		oya := []int32{draw(), draw()}
+		ply := []int32{draw(), draw()}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO player_blackjack (player_id, rate, oya, ply, phase, result)
+			 VALUES ($1,$2,$3,$4,'playing','')
+			 ON CONFLICT (player_id) DO UPDATE SET rate=$2, oya=$3, ply=$4, phase='playing', result='', updated_at=now()`,
+			playerID, rate, oya, ply); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	out, err = s.bjReadState(ctx, s.pool, playerID)
+	return out, err
+}
+
+// BJHit draws one card for the player; busting settles the hand as a loss.
+func (s *Service) BJHit(ctx context.Context, playerID int64, idempotencyKey string) (*BJState, error) {
+	return s.bjStep(ctx, playerID, "bj_hit", idempotencyKey, func(tx pgx.Tx, rate int64, oya, ply []int32) (bool, string, int64, []int32, []int32, error) {
+		used := append(append([]int{}, toIntSlice(oya)...), toIntSlice(ply)...)
+		ply = append(ply, int32(casino.BJDraw(s.rng, used)))
+		if casino.BJScore(toIntSlice(ply)) > 21 {
+			return true, "lose", 0, oya, ply, nil // バスト=子負け(払戻なし)
+		}
+		return false, "", 0, oya, ply, nil
+	})
+}
+
+// BJStand makes the dealer hit until 17+, then settles the hand.
+func (s *Service) BJStand(ctx context.Context, playerID int64, idempotencyKey string) (*BJState, error) {
+	return s.bjStep(ctx, playerID, "bj_stand", idempotencyKey, func(tx pgx.Tx, rate int64, oya, ply []int32) (bool, string, int64, []int32, []int32, error) {
+		used := append(append([]int{}, toIntSlice(oya)...), toIntSlice(ply)...)
+		for casino.BJScore(toIntSlice(oya)) < 17 {
+			c := int32(casino.BJDraw(s.rng, used))
+			oya = append(oya, c)
+			used = append(used, int(c))
+		}
+		p := casino.BJScore(toIntSlice(ply))
+		o := casino.BJScore(toIntSlice(oya))
+		var result string
+		var payout int64
+		switch {
+		case o > 21:
+			if p > 21 {
+				result, payout = "push", rate
+			} else {
+				result, payout = "win", rate*2
+			}
+		case p == o:
+			result, payout = "push", rate
+		case p <= 21 && p > o:
+			result, payout = "win", rate*2
+		default:
+			result, payout = "lose", 0
+		}
+		return true, result, payout, oya, ply, nil
+	})
+}
+
+// bjStep runs a blackjack transition: it loads the playing game, applies fn
+// (which returns whether the hand is settled, the result, payout, and new hands),
+// pays out on settlement, and persists the new state.
+func (s *Service) bjStep(ctx context.Context, playerID int64, action, idempotencyKey string, fn func(tx pgx.Tx, rate int64, oya, ply []int32) (settled bool, result string, payout int64, newOya, newPly []int32, err error)) (*BJState, error) {
+	_, err := s.runAction(ctx, playerID, action, idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		var rate int64
+		var oya, ply []int32
+		var phase string
+		err := tx.QueryRow(ctx,
+			`SELECT rate, oya, ply, phase FROM player_blackjack WHERE player_id=$1 FOR UPDATE`,
+			playerID).Scan(&rate, &oya, &ply, &phase)
+		if errors.Is(err, pgx.ErrNoRows) || phase != "playing" {
+			return &ConditionError{Message: "進行中のゲームがありません。"}
+		}
+		if err != nil {
+			return err
+		}
+		settled, result, payout, newOya, newPly, err := fn(tx, rate, oya, ply)
+		if err != nil {
+			return err
+		}
+		newPhase := "playing"
+		if settled {
+			newPhase = "over"
+			if payout > 0 {
+				if err := s.ledger.PostTx(ctx, tx, action+"_payout", "", []ledger.Entry{
+					{Account: ledger.SystemAccount("casino"), Delta: -payout},
+					{Account: ledger.PlayerAccount(playerID), Delta: payout},
+				}); err != nil {
+					return err
+				}
+			}
+		}
+		_, err = tx.Exec(ctx,
+			`UPDATE player_blackjack SET oya=$2, ply=$3, phase=$4, result=$5, updated_at=now() WHERE player_id=$1`,
+			playerID, newOya, newPly, newPhase, result)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.bjReadState(ctx, s.pool, playerID)
+}
+
+// toIntSlice converts an int32 slice to int for scoring helpers.
+func toIntSlice(xs []int32) []int {
+	out := make([]int, len(xs))
+	for i, x := range xs {
+		out[i] = int(x)
+	}
+	return out
 }
 
 // CasinoResult is returned after a minigame play: the updated player and the
