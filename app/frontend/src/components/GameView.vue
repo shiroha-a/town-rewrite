@@ -2,6 +2,10 @@
 import { ref, computed, type Component } from 'vue';
 import { type Player } from '../api';
 import SaikoroGame from './casino/SaikoroGame.vue';
+import LotoGame from './casino/LotoGame.vue';
+import SlotGame from './casino/SlotGame.vue';
+import KujiGame from './casino/KujiGame.vue';
+import DonutsGame from './casino/DonutsGame.vue';
 
 defineProps<{ player: Player }>();
 const emit = defineEmits<{ update: [player: Player]; back: [] }>();
@@ -9,9 +13,17 @@ const emit = defineEmits<{ update: [player: Player]; back: [] }>();
 // ゲーム一覧。新しいゲームはこの配列と gameComponents の両方に登録する。
 const games: { key: string; name: string; desc: string }[] = [
   { key: 'saikoro', name: 'サイコロ', desc: '2つのサイコロの合計が偶数か奇数かを当てる(1:1)' },
+  { key: 'loto', name: 'ロト', desc: '6桁の数字を予想し、位置ごとの一致桁数で配当(最大×1000)' },
+  { key: 'slot', name: 'スロット', desc: '8ラインスロット、絵柄を揃えて最大×7777' },
+  { key: 'kuji', name: 'くじ', desc: '2択ダブルアップ、連勝で配当が2倍ずつ増える' },
+  { key: 'donuts', name: 'ドーナツ', desc: 'Hi&Lo、前のカードより大きいか小さいかを当てる' },
 ];
 const gameComponents: Record<string, Component> = {
   saikoro: SaikoroGame,
+  loto: LotoGame,
+  slot: SlotGame,
+  kuji: KujiGame,
+  donuts: DonutsGame,
 };
 
 const yen = (n: number) => n.toLocaleString('ja-JP');
