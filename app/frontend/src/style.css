@@ -1,6 +1,12 @@
 /* レガシーtown(TOWN ver.1.40)のレイアウト・配色を再現する。
    参照: 稼働中のレガシーCGI(port 8081)。クラス名・色・背景画像はレガシー準拠。 */
 
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 body {
   margin: 5px;
   background-color: #e0ffff;
@@ -63,12 +69,38 @@ body {
   align-items: flex-start;
 }
 .col-left {
-  width: 522px;
-  flex: 0 0 auto;
+  flex: 1 1 360px;
+  min-width: 0;
+  max-width: 560px;
 }
 .col-right {
-  flex: 1 1 auto;
+  flex: 1 1 320px;
   min-width: 0;
+}
+/* 右カラム内側(ステータス群 + パラメータ表)。狭幅では折り返す。 */
+.right-cols {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+/* 狭幅(スマホ): 街トップを縦積みにして各カラムを全幅にする。 */
+@media (max-width: 640px) {
+  .town {
+    flex-direction: column;
+  }
+  .col-left,
+  .col-right {
+    width: 100%;
+    max-width: 100%;
+    flex: 1 1 auto;
+  }
+  .right-cols {
+    flex-wrap: wrap;
+  }
+  .params {
+    width: 100%;
+  }
 }
 
 .whitebox {
@@ -93,42 +125,51 @@ body {
   border: 1px solid #cfcfcf;
   padding: 4px;
 }
-table.townmap {
-  border-collapse: collapse;
+/* 街マップ: 全幅にフィットするCSSグリッド。行ラベル列 + 16列を1frで並べ、
+   セルはaspect-ratioで正方形を保つ(画像は上限32px)。 */
+.townmap-grid {
+  display: grid;
+  grid-template-columns: 1.1fr repeat(16, 1fr);
+  width: 100%;
   background-image: url(/img/sima.gif);
   background-color: #66ccff;
 }
-table.townmap td {
-  width: 32px;
-  height: 32px;
-  text-align: center;
-  vertical-align: middle;
-  padding: 0;
-}
-.colhead {
-  font-size: 11px;
+.townmap-grid .th {
+  font-size: 10px;
   color: #333;
-  text-align: center;
-  width: 32px;
-  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.rowhead {
-  font-size: 11px;
-  color: #333;
-  width: 14px;
+.townmap-grid .tcell {
+  aspect-ratio: 1 / 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .facility {
+  width: 100%;
+  height: 100%;
   cursor: pointer;
   border: 0;
   background: transparent;
   padding: 0;
-  line-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .facility img {
   display: block;
+  width: 100%;
+  height: 100%;
+  max-width: 32px;
+  max-height: 32px;
+  object-fit: contain;
 }
 .facility:hover {
   outline: 2px solid #ff6600;
+  outline-offset: -2px;
 }
 
 .ticker {
@@ -361,7 +402,7 @@ table.townmap td {
 
 /* パラメータ一覧(右端) */
 .params {
-  width: 92px;
+  width: 150px;
   flex: 0 0 auto;
 }
 .params .phead {
@@ -378,13 +419,38 @@ table.townmap td {
 .params td {
   font-size: 12px;
   color: #006699;
-  padding: 0 2px;
+  padding: 1px 2px;
+}
+.params td:first-child {
+  white-space: nowrap;
 }
 .params td.v {
-  text-align: right;
-  color: #333;
+  width: 100%;
+}
+/* パラメータバー(旧town_maker準拠の黄色比例バー。数値は右寄せで重ねる) */
+.pbar {
+  position: relative;
+  display: block;
+  height: 15px;
+  background: #f2f2ea;
+  border: 1px solid #e0d38a;
+  overflow: hidden;
+}
+.pbar-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: #ffcc00;
+}
+.pbar-val {
+  position: absolute;
+  right: 4px;
+  top: 0;
+  line-height: 15px;
+  font-size: 11px;
   font-weight: bold;
-  background: #fffbe6;
+  color: #333;
 }
 
 /* 施設パネル(クリックで開く) */

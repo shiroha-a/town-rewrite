@@ -183,6 +183,13 @@ const others: { label: string; key: ParamKey }[] = [
   { label: 'LOVE', key: 'love' },
   { label: '面白さ', key: 'omoshirosa' },
 ];
+
+// パラメータバー(旧town_maker準拠): 自分の全パラメータの最大値を基準にした相対バー。
+// 幅% = 値/最大×100。最大値の項目が満タンで、各項目の相対的な強さが一目で分かる。
+const paramMax = computed(() =>
+  Math.max(1, ...[...zunou, ...shintai, ...others].map((p) => props.player.params[p.key])),
+);
+const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 100));
 </script>
 
 <template>
@@ -200,27 +207,23 @@ const others: { label: string; key: ParamKey }[] = [
     <!-- 左カラム: 街マップ -->
     <div class="col-left">
       <div class="mapwrap">
-        <table class="townmap">
-          <tbody>
-            <tr>
-              <td class="rowhead"></td>
-              <td v-for="c in cols" :key="c" class="colhead">{{ c }}</td>
-            </tr>
-            <tr v-for="(r, ri) in rows" :key="r">
-              <td class="rowhead">{{ r }}</td>
-              <td v-for="c in cols" :key="c">
-                <button
-                  v-if="facilityAt(c, ri)"
-                  class="facility"
-                  :title="facilityAt(c, ri)!.alt"
-                  @click="clickFacility(facilityAt(c, ri)!)"
-                >
-                  <img :src="`/img/${facilityAt(c, ri)!.img}.gif`" width="32" height="32" :alt="facilityAt(c, ri)!.alt" />
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="townmap-grid">
+          <div class="th corner"></div>
+          <div v-for="c in cols" :key="'h' + c" class="th">{{ c }}</div>
+          <template v-for="(r, ri) in rows" :key="r">
+            <div class="th">{{ r }}</div>
+            <div v-for="c in cols" :key="r + '-' + c" class="tcell">
+              <button
+                v-if="facilityAt(c, ri)"
+                class="facility"
+                :title="facilityAt(c, ri)!.alt"
+                @click="clickFacility(facilityAt(c, ri)!)"
+              >
+                <img :src="`/img/${facilityAt(c, ri)!.img}.gif`" :alt="facilityAt(c, ri)!.alt" />
+              </button>
+            </div>
+          </template>
+        </div>
       </div>
       <div class="ticker">{{ tickerText }}</div>
       <button class="chat-head" @click="emit('navigate', 'aisatu')">●チャット(あいさつ)</button>
@@ -238,7 +241,7 @@ const others: { label: string; key: ParamKey }[] = [
 
     <!-- 右カラム: 街情報 + コマンド + ステータス -->
     <div class="col-right">
-      <div style="display: flex; gap: 6px; align-items: flex-start">
+      <div class="right-cols">
         <div style="flex: 1 1 auto; min-width: 0">
           <div class="whitebox town-info">
             <div class="midasi">「Ｔｏｗｎ」内<br />公園</div>
@@ -319,7 +322,12 @@ const others: { label: string; key: ParamKey }[] = [
             <tbody>
               <tr v-for="p in zunou" :key="p.key">
                 <td>{{ p.label }}：</td>
-                <td class="v">{{ player.params[p.key] }}</td>
+                <td class="v">
+                  <span class="pbar">
+                    <span class="pbar-fill" :style="{ width: paramBar(player.params[p.key]) + '%' }"></span>
+                    <span class="pbar-val">{{ player.params[p.key] }}</span>
+                  </span>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -328,7 +336,12 @@ const others: { label: string; key: ParamKey }[] = [
             <tbody>
               <tr v-for="p in shintai" :key="p.key">
                 <td>{{ p.label }}：</td>
-                <td class="v">{{ player.params[p.key] }}</td>
+                <td class="v">
+                  <span class="pbar">
+                    <span class="pbar-fill" :style="{ width: paramBar(player.params[p.key]) + '%' }"></span>
+                    <span class="pbar-val">{{ player.params[p.key] }}</span>
+                  </span>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -337,7 +350,12 @@ const others: { label: string; key: ParamKey }[] = [
             <tbody>
               <tr v-for="p in others" :key="p.key">
                 <td>{{ p.label }}：</td>
-                <td class="v">{{ player.params[p.key] }}</td>
+                <td class="v">
+                  <span class="pbar">
+                    <span class="pbar-fill" :style="{ width: paramBar(player.params[p.key]) + '%' }"></span>
+                    <span class="pbar-val">{{ player.params[p.key] }}</span>
+                  </span>
+                </td>
               </tr>
             </tbody>
           </table>
