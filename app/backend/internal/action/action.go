@@ -787,7 +787,8 @@ func (s *Service) DoCasinoPlay(ctx context.Context, playerID int64, game string,
 	if g == nil {
 		return nil, &ConditionError{Message: "不明なゲームです。"}
 	}
-	if bet <= 0 {
+	// 掛け金は0以上(福引き/おみくじは無料/賽銭のためbet=0を許す)。
+	if bet < 0 {
 		return nil, &ConditionError{Message: "掛け金が正しくありません。"}
 	}
 	if allowed := g.Bets(); len(allowed) > 0 {
@@ -807,13 +808,22 @@ func (s *Service) DoCasinoPlay(ctx context.Context, playerID int64, game string,
 	}
 	out := &CasinoResult{Payout: res.Payout, Win: res.Win, Detail: res.Detail}
 	p, err := s.runAction(ctx, playerID, "casino:"+game, idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
-		if state.Money < bet {
+		// 掛け金 + (賽銭など)支払い分を所持金でまかなえるか。
+		needed := bet
+		if res.MoneyDelta < 0 {
+			needed += -res.MoneyDelta
+		}
+		if state.Money < needed {
 			return &ConditionError{Message: "お金が足りません。"}
 		}
-		// 掛け金を胴元へ移し、払戻を胴元から戻す。ネットで system:casino が損益を吸収。
-		entries := []ledger.Entry{
-			{Account: ledger.PlayerAccount(playerID), Delta: -bet},
-			{Account: ledger.SystemAccount("casino"), Delta: bet},
+		// 掛け金を胴元へ、払戻・直接金銭効果(MoneyDelta)を胴元とやり取りする。
+		// ネットで system:casino が損益を吸収し、ゼロ和を保つ。
+		var entries []ledger.Entry
+		if bet > 0 {
+			entries = append(entries,
+				ledger.Entry{Account: ledger.PlayerAccount(playerID), Delta: -bet},
+				ledger.Entry{Account: ledger.SystemAccount("casino"), Delta: bet},
+			)
 		}
 		if res.Payout > 0 {
 			entries = append(entries,
@@ -821,8 +831,32 @@ func (s *Service) DoCasinoPlay(ctx context.Context, playerID int64, game string,
 				ledger.Entry{Account: ledger.PlayerAccount(playerID), Delta: res.Payout},
 			)
 		}
-		if err := s.ledger.PostTx(ctx, tx, "casino:"+game, "", entries); err != nil {
-			return err
+		if res.MoneyDelta != 0 {
+			entries = append(entries,
+				ledger.Entry{Account: ledger.SystemAccount("casino"), Delta: -res.MoneyDelta},
+				ledger.Entry{Account: ledger.PlayerAccount(playerID), Delta: res.MoneyDelta},
+			)
+		}
+		if len(entries) > 0 {
+			if err := s.ledger.PostTx(ctx, tx, "casino:"+game, "", entries); err != nil {
+				return err
+			}
+		}
+		// ステータス変更(add_param)を適用する。
+		if len(res.Params) > 0 {
+			eff := effects.Effect{}
+			for _, pd := range res.Params {
+				eff.Ops = append(eff.Ops, effects.Op{Kind: "add_param", Param: pd.Param, Amount: pd.Amount})
+			}
+			if err := s.applyEffect(ctx, tx, playerID, "casino:"+game, eff, state); err != nil {
+				return err
+			}
+		}
+		// アイテム付与。
+		for _, it := range res.Items {
+			if err := s.grantItem(ctx, tx, playerID, it.Name, it.Qty); err != nil {
+				return err
+			}
 		}
 		detailJSON, _ := json.Marshal(res.Detail)
 		if _, err := tx.Exec(ctx,
@@ -837,6 +871,36 @@ func (s *Service) DoCasinoPlay(ctx context.Context, playerID int64, game string,
 	}
 	out.Player = p
 	return out, nil
+}
+
+// grantItem adds qty of the named content item to the player, initializing its
+// remaining uses from the item's durability (matching purchase behavior).
+// Unknown item names are silently skipped so a game can reference optional prizes.
+func (s *Service) grantItem(ctx context.Context, tx pgx.Tx, playerID int64, name string, qty int) error {
+	if qty <= 0 || name == "" {
+		return nil
+	}
+	var itemID int64
+	var durability int
+	err := tx.QueryRow(ctx, `SELECT id, durability FROM content_items WHERE name = $1`, name).Scan(&itemID, &durability)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("lookup item %q: %w", name, err)
+	}
+	if durability < 1 {
+		durability = 1
+	}
+	_, err = tx.Exec(ctx,
+		`INSERT INTO player_items (player_id, item_id, quantity, remaining_uses)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (player_id, item_id)
+		 DO UPDATE SET quantity = player_items.quantity + $3,
+		               remaining_uses = player_items.remaining_uses + $4,
+		               updated_at = now()`,
+		playerID, itemID, qty, durability*qty)
+	return err
 }
 
 // StatementEntry is one line of a savings-account passbook (入出金明細).

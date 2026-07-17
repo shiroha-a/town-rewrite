@@ -10,15 +10,35 @@ import (
 	"github.com/shiroha-a/town/internal/rng"
 )
 
+// ParamDelta is a stat change produced by a game (e.g. おみくじ/お宝).
+type ParamDelta struct {
+	Param  string `json:"param"`
+	Amount int64  `json:"amount"`
+}
+
+// ItemGrant is an item awarded by a game, identified by its content_items name
+// (e.g. お宝/福引き).
+type ItemGrant struct {
+	Name string `json:"name"`
+	Qty  int    `json:"qty"`
+}
+
 // Result is the outcome of one minigame play.
 type Result struct {
-	// Payout is the amount returned to the player, INCLUDING the returned stake
-	// on a win. Net profit/loss is Payout - bet. A total loss has Payout 0.
+	// Payout is the amount returned via the bet channel, INCLUDING the returned
+	// stake on a win. Net (bet channel) = Payout - bet. A total loss has Payout 0.
 	Payout int64
 	// Detail is a game-specific struct serialized to JSON for the frontend.
 	Detail any
 	// Win marks a winning round (for presentation only).
 	Win bool
+	// Params are stat changes to apply via add_param.
+	Params []ParamDelta
+	// Items are items to grant to the player.
+	Items []ItemGrant
+	// MoneyDelta is a direct cash change independent of the bet/payout channel
+	// (e.g. おみくじの賽銭・金運). Positive = player gains, negative = player pays.
+	MoneyDelta int64
 }
 
 // Game is a single-shot minigame. Play must be pure: no ledger or DB access.

@@ -6,6 +6,9 @@ import LotoGame from './casino/LotoGame.vue';
 import SlotGame from './casino/SlotGame.vue';
 import KujiGame from './casino/KujiGame.vue';
 import DonutsGame from './casino/DonutsGame.vue';
+import OmikujiGame from './casino/OmikujiGame.vue';
+import OtakaraGame from './casino/OtakaraGame.vue';
+import FukubikiGame from './casino/FukubikiGame.vue';
 
 defineProps<{ player: Player }>();
 const emit = defineEmits<{ update: [player: Player]; back: [] }>();
@@ -17,6 +20,9 @@ const games: { key: string; name: string; desc: string }[] = [
   { key: 'slot', name: 'スロット', desc: '8ラインスロット、絵柄を揃えて最大×7777' },
   { key: 'kuji', name: 'くじ', desc: '2択ダブルアップ、連勝で配当が2倍ずつ増える' },
   { key: 'donuts', name: 'ドーナツ', desc: 'Hi&Lo、前のカードより大きいか小さいかを当てる' },
+  { key: 'omikuji', name: 'おみくじ', desc: 'お賽銭と占う項目を選び、運勢でステータス・金運が変わる' },
+  { key: 'otakara', name: 'お宝', desc: '宝箱を選んで代金を払い、アイテムやステータスを得る' },
+  { key: 'fukubiki', name: '福引き', desc: 'カードを選んで景品が当たる(無料)' },
 ];
 const gameComponents: Record<string, Component> = {
   saikoro: SaikoroGame,
@@ -24,6 +30,9 @@ const gameComponents: Record<string, Component> = {
   slot: SlotGame,
   kuji: KujiGame,
   donuts: DonutsGame,
+  omikuji: OmikujiGame,
+  otakara: OtakaraGame,
+  fukubiki: FukubikiGame,
 };
 
 const yen = (n: number) => n.toLocaleString('ja-JP');
