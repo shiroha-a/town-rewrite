@@ -62,17 +62,20 @@ onMounted(async () => {
   rollEvent();
 });
 
-// ランダムイベントの通知(発生時のみ)。
-const eventNotice = ref<{ message: string; good: boolean } | null>(null);
-// ランダムイベントを抽選する(街を開いた時・更新ボタン押下時)。発生したら通知し
-// ステータスを再取得する。サーバ側のクールタイム(15秒)内はres.event=nullが返り
-// 何も起きないため、更新ボタンを連打してもイベントは乱発されない。
+// ランダムイベントを抽選する(街を開いた時・更新ボタン押下時)。発生したらトーストで
+// 通知しステータスを再取得する。サーバ側のクールタイム(15秒)内はres.event=nullが
+// 返り何も起きないため、更新ボタンを連打してもイベントは乱発されない。
 function rollEvent() {
   api
     .eventRoll(props.player.id)
     .then((res) => {
       if (res.event) {
-        eventNotice.value = { message: res.event.message, good: res.event.good };
+        showToast({
+          variant: res.event.good ? 'event-good' : 'event-bad',
+          title: 'イベント発生！',
+          lines: [res.event.message],
+          icon: 'event',
+        });
         emit('reload');
       }
     })
@@ -140,14 +143,22 @@ const commands = computed(() => {
   );
   return list;
 });
-// 仕事結果のトースト(iOS通知バナー風。上からスライドインし数秒で自動的に消える)。
-const workToast = ref<{ lines: string[]; error: boolean } | null>(null);
-let workToastTimer: number | undefined;
-function showWorkToast(lines: string[], isError: boolean) {
-  workToast.value = { lines, error: isError };
-  if (workToastTimer !== undefined) window.clearTimeout(workToastTimer);
-  workToastTimer = window.setTimeout(() => {
-    workToast.value = null;
+// 画面上部のトースト(iOS通知バナー風。上からスライドインし数秒で自動的に消える)。
+// 仕事結果やランダムイベントの発生を通知する。
+type ToastVariant = 'work' | 'event-good' | 'event-bad' | 'error';
+interface Toast {
+  variant: ToastVariant;
+  title: string;
+  lines: string[];
+  icon: string; // CommandIcon の name
+}
+const toast = ref<Toast | null>(null);
+let toastTimer: number | undefined;
+function showToast(t: Toast) {
+  toast.value = t;
+  if (toastTimer !== undefined) window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => {
+    toast.value = null;
   }, 6000);
 }
 // 仕事アイコン押下でその場で働き、結果をトーストで表示する(画面遷移しない)。
@@ -156,9 +167,14 @@ async function doWork() {
     const before = props.player;
     const after = await api.work(props.player.id);
     emit('reload');
-    showWorkToast(buildWorkLines(before, after), false);
+    showToast({ variant: 'work', title: '仕事に出かけました', lines: buildWorkLines(before, after), icon: 'go_work' });
   } catch (e) {
-    showWorkToast([e instanceof Error ? e.message : String(e)], true);
+    showToast({
+      variant: 'error',
+      title: '仕事に失敗しました',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'go_work',
+    });
   }
 }
 // WorkResultを旧do_work準拠のメッセージ行に整形する。
@@ -224,7 +240,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (timer !== undefined) window.clearInterval(timer);
   if (stockTimer !== undefined) window.clearInterval(stockTimer);
-  if (workToastTimer !== undefined) window.clearTimeout(workToastTimer);
+  if (toastTimer !== undefined) window.clearTimeout(toastTimer);
 });
 const serverCorrectedNow = computed(() => nowMs.value + skewMs.value);
 
@@ -281,19 +297,13 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
 </script>
 
 <template>
-  <!-- 仕事結果のトースト(iOS通知バナー風)。タップで即閉じる。 -->
+  <!-- トースト(iOS通知バナー風)。仕事結果・イベント発生を通知。タップで即閉じる。 -->
   <transition name="wt">
-    <div
-      v-if="workToast"
-      class="work-toast"
-      :class="{ error: workToast.error }"
-      role="status"
-      @click="workToast = null"
-    >
-      <span class="wt-icon"><CommandIcon name="go_work" /></span>
-      <div class="wt-body">
-        <div class="wt-title">{{ workToast.error ? '仕事に失敗しました' : '仕事に出かけました' }}</div>
-        <div v-for="(l, i) in workToast.lines" :key="i" class="wt-line">{{ l }}</div>
+    <div v-if="toast" class="toast" :class="toast.variant" role="status" @click="toast = null">
+      <span class="toast-icon"><CommandIcon :name="toast.icon" /></span>
+      <div class="toast-body">
+        <div class="toast-title">{{ toast.title }}</div>
+        <div v-for="(l, i) in toast.lines" :key="i" class="toast-line">{{ l }}</div>
       </div>
     </div>
   </transition>
@@ -387,10 +397,6 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
               <span v-if="cmd.key === 'work' && workCooldown" class="cmd-cooldown">{{ workCooldown }}</span>
               <span v-if="cmd.key === 'mail' && unreadMail > 0" class="cmd-badge">{{ unreadMail }}</span>
             </button>
-          </div>
-
-          <div v-if="eventNotice" :class="['event-notice', eventNotice.good ? 'good' : 'bad']" @click="eventNotice = null">
-            ★イベント発生！ {{ eventNotice.message }}
           </div>
 
           <div class="orangebox status">

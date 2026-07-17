@@ -425,28 +425,10 @@ body {
 .mail-notice:hover {
   background: #ffe0e0;
 }
-/* ランダムイベント通知バー(クリックで閉じる) */
-.event-notice {
-  margin-bottom: 6px;
-  padding: 6px 10px;
-  font-size: 12px;
-  font-weight: bold;
-  cursor: pointer;
-  border: 1px solid;
-}
-.event-notice.good {
-  background: #eaffea;
-  border-color: #8c8;
-  color: #060;
-}
-.event-notice.bad {
-  background: #ffecec;
-  border-color: #d88;
-  color: #c00;
-}
 
-/* 仕事結果のトースト(iOS通知バナー風)。画面上部中央に固定し、上からスライドインする。 */
-.work-toast {
+/* トースト(iOS通知バナー風)。画面上部中央に固定し、上からスライドインする。
+   仕事結果・イベント発生を通知する(variant: work/event-good/event-bad/error)。 */
+.toast {
   position: fixed;
   top: 8px;
   left: 50%;
@@ -463,7 +445,7 @@ body {
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
   cursor: pointer;
 }
-.wt-icon {
+.toast-icon {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
@@ -474,28 +456,34 @@ body {
   color: #fff;
   background: linear-gradient(180deg, #55c255 0%, #2f8f2f 100%);
 }
-.wt-icon .cmd-icon {
+.toast-icon .cmd-icon {
   width: 20px;
   height: 20px;
 }
-.wt-body {
+.toast-body {
   min-width: 0;
 }
-.wt-title {
+.toast-title {
   font-weight: bold;
   color: #000;
   font-size: 13px;
   margin-bottom: 2px;
 }
-.wt-line {
+.toast-line {
   font-size: 12px;
   color: #006699;
   line-height: 1.5;
 }
-.work-toast.error .wt-title {
+/* variantごとの色分け。good=緑、bad/error=赤。work=緑アイコン+黒見出し(既定)。 */
+.toast.event-good .toast-title {
+  color: #067a06;
+}
+.toast.event-bad .toast-title,
+.toast.error .toast-title {
   color: #cc2200;
 }
-.work-toast.error .wt-icon {
+.toast.event-bad .toast-icon,
+.toast.error .toast-icon {
   background: linear-gradient(180deg, #e57373 0%, #d33 100%);
 }
 /* iOS風スライド: 上に隠れた状態から中央上部へ降りてくる。translateXは維持する。 */
