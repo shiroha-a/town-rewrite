@@ -63,3 +63,17 @@ func (s *Server) withdraw(w http.ResponseWriter, r *http.Request) {
 	p, err := s.actions.DoWithdraw(r.Context(), id, req.Amount, req.IdempotencyKey)
 	writeActionResult(w, p, err)
 }
+
+func (s *Server) bankStatement(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	entries, err := s.actions.BankStatement(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, entries)
+}

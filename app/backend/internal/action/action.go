@@ -458,6 +458,65 @@ func (s *Service) DoWithdraw(ctx context.Context, playerID, amount int64, idempo
 	})
 }
 
+// StatementEntry is one line of a savings-account passbook (入出金明細).
+type StatementEntry struct {
+	At      time.Time `json:"at"`
+	Label   string    `json:"label"`
+	Amount  int64     `json:"amount"`  // 符号付き(入金+/出金-)
+	Balance int64     `json:"balance"` // その取引直後の口座残高
+}
+
+// bankStatementLimit caps how many recent passbook lines are returned.
+const bankStatementLimit = 30
+
+// BankStatement returns the player's recent savings-account movements, newest
+// first, each labelled from the ledger reason (預け入れ/引き出し/利息/おさい銭…).
+func (s *Service) BankStatement(ctx context.Context, playerID int64) ([]StatementEntry, error) {
+	// running=そのentry時点の口座残高(累積和)。全履歴で累積してから最新N件を返す。
+	rows, err := s.pool.Query(ctx,
+		`SELECT created_at, reason, delta, running
+		 FROM (
+		   SELECT e.id, t.created_at, t.reason, e.delta,
+		          SUM(e.delta) OVER (ORDER BY e.id) AS running
+		   FROM ledger_entry e
+		   JOIN ledger_tx t ON t.id = e.tx_id
+		   WHERE e.account = $1
+		 ) x
+		 ORDER BY id DESC
+		 LIMIT $2`, ledger.SavingsAccount(playerID), bankStatementLimit)
+	if err != nil {
+		return nil, fmt.Errorf("query statement: %w", err)
+	}
+	defer rows.Close()
+	out := []StatementEntry{}
+	for rows.Next() {
+		var e StatementEntry
+		var reason string
+		if err := rows.Scan(&e.At, &reason, &e.Amount, &e.Balance); err != nil {
+			return nil, fmt.Errorf("scan statement: %w", err)
+		}
+		e.Label = statementLabel(reason)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// statementLabel maps a ledger reason to a Japanese passbook label.
+func statementLabel(reason string) string {
+	switch {
+	case reason == "deposit":
+		return "預け入れ"
+	case reason == "withdraw":
+		return "引き出し"
+	case strings.HasPrefix(reason, "interest:"):
+		return "利息"
+	case reason == "offer":
+		return "おさい銭"
+	default:
+		return "取引"
+	}
+}
+
 // DoHospitalTreat cures the player's current disease at the hospital: it reads
 // the disease index server-side, charges the fee for the resulting disease name,
 // and resets the disease index to the healthy baseline (50). A healthy player

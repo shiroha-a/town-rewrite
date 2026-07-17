@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue';
-import { api, type Player } from '../api';
+import { api, type Player, type StatementEntry } from '../api';
 
 const props = defineProps<{ player: Player }>();
 const emit = defineEmits<{ update: [player: Player]; back: [] }>();
@@ -30,6 +30,26 @@ async function run(label: string, fn: () => Promise<Player>) {
 }
 const doDeposit = () => run('預け入れ', () => api.deposit(props.player.id, depositAmt.value));
 const doWithdraw = () => run('引き出し', () => api.withdraw(props.player.id, withdrawAmt.value));
+
+// 入出金明細。ボタン押下で取得する。null=未取得、[]=取引なし。
+const statement = ref<StatementEntry[] | null>(null);
+async function loadStatement() {
+  busy.value = true;
+  message.value = '';
+  try {
+    statement.value = await api.bankStatement(props.player.id);
+  } catch (e) {
+    message.value = e instanceof Error ? e.message : String(e);
+    kind.value = 'error';
+  } finally {
+    busy.value = false;
+  }
+}
+const fmtDate = (iso: string) => {
+  const d = new Date(iso);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
 </script>
 
 <template>
@@ -65,8 +85,26 @@ const doWithdraw = () => run('引き出し', () => api.withdraw(props.player.id,
         </div>
 
         <h3 class="sec">■入出金明細</h3>
-        <p class="note">※普通預金の入出金明細を見ることができます。</p>
-        <button class="btn" disabled>入出金明細を見る<span class="muted">(準備中)</span></button>
+        <p class="note">※普通預金の入出金明細を見ることができます(最新30件)。</p>
+        <button class="btn" :disabled="busy" data-test="statement" @click="loadStatement">入出金明細を見る</button>
+        <table v-if="statement" class="statement">
+          <thead>
+            <tr><th>年月日</th><th>お取り引き</th><th class="num">金額</th><th class="num">残高</th></tr>
+          </thead>
+          <tbody>
+            <tr v-if="!statement.length">
+              <td colspan="4" class="muted">まだ取引がありません。</td>
+            </tr>
+            <tr v-for="(s, i) in statement" :key="i">
+              <td>{{ fmtDate(s.at) }}</td>
+              <td>{{ s.label }}</td>
+              <td class="num" :class="s.amount >= 0 ? 'plus' : 'minus'">
+                {{ s.amount >= 0 ? '+' : '' }}{{ yen(s.amount) }}
+              </td>
+              <td class="num">{{ yen(s.balance) }}</td>
+            </tr>
+          </tbody>
+        </table>
 
         <h3 class="sec">■振り込み</h3>
         <p class="note">※参加者のメンバー名がわかれば送金することができます。</p>
@@ -162,5 +200,31 @@ const doWithdraw = () => run('引き出し', () => api.withdraw(props.player.id,
 .row .lbl {
   color: #006699;
   margin-right: 6px;
+}
+.statement {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 6px;
+  font-size: 12px;
+}
+.statement th,
+.statement td {
+  border-bottom: 1px solid #e5e5e5;
+  padding: 3px 6px;
+  text-align: left;
+}
+.statement th {
+  color: #333;
+  border-bottom: 1px solid #999;
+}
+.statement .num {
+  text-align: right;
+  white-space: nowrap;
+}
+.statement .plus {
+  color: #067a06;
+}
+.statement .minus {
+  color: #cc3300;
 }
 </style>

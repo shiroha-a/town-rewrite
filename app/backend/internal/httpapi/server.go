@@ -90,6 +90,7 @@ func NewServer(players *player.Service, actions *action.Service, contentSvc *con
 	mux.HandleFunc("POST /api/v1/players/{id}/use", s.use)
 	mux.HandleFunc("POST /api/v1/players/{id}/bank/deposit", s.deposit)
 	mux.HandleFunc("POST /api/v1/players/{id}/bank/withdraw", s.withdraw)
+	mux.HandleFunc("GET /api/v1/players/{id}/bank/statement", s.bankStatement)
 
 	// 管理者API(暫定認可: X-Acting-Player-Idヘッダのadminロール。将来MiAuthで置換)
 	mux.HandleFunc("POST /api/v1/admin/items", s.createItem)

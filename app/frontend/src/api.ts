@@ -157,6 +157,14 @@ export interface WorkResult {
 }
 export type WorkResponse = Player & { work_result: WorkResult };
 
+// 普通口座の入出金明細1行。
+export interface StatementEntry {
+  at: string;
+  label: string;
+  amount: number;
+  balance: number;
+}
+
 // 効果エンジンのop(add_param / add_money)。
 export interface EffectOp {
   op: 'add_param' | 'add_money';
@@ -594,6 +602,7 @@ export const api = {
       amount,
       idempotency_key: newIdempotencyKey(),
     }),
+  bankStatement: (id: number) => request<StatementEntry[]>('GET', `/players/${id}/bank/statement`),
   hospitalTreat: (id: number) =>
     request<Player>('POST', `/players/${id}/hospital/treat`, {
       idempotency_key: newIdempotencyKey(),
