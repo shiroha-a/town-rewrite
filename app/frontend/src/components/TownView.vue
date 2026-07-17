@@ -257,6 +257,23 @@ const workCooldown = computed<string | null>(() => {
   return m > 0 ? `あと${m}分${String(s).padStart(2, '0')}秒` : `あと${s}秒`;
 });
 
+// パワーが満タンになる時刻までの残り時間(満タン中はnull)。時/分/秒で表示する。
+function fullRemain(fullAt: string | null): string | null {
+  if (!fullAt) return null;
+  const target = new Date(fullAt).getTime();
+  const remain = target - serverCorrectedNow.value;
+  if (Number.isNaN(target) || remain <= 0) return null;
+  const sec = Math.ceil(remain / 1000);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h > 0) return `${h}時間${String(m).padStart(2, '0')}分`;
+  if (m > 0) return `${m}分${String(s).padStart(2, '0')}秒`;
+  return `${s}秒`;
+}
+const energyFullRemain = computed(() => fullRemain(props.player.status.energy_full_at));
+const nouFullRemain = computed(() => fullRemain(props.player.status.nou_energy_full_at));
+
 // パラメータ一覧(バックエンドの実値を表示)
 type ParamKey = keyof Params;
 const zunou: { label: string; key: ParamKey }[] = [
@@ -417,13 +434,15 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
               <span class="honbun2">マスター職</span>：{{ player.status.mastered_jobs.join('、') }}
             </div>
             <div class="honbun2">
-              <span class="honbun2">身体パワー</span>：{{ player.status.energy }} （MAX値：{{ player.status.energy_max }}）<br />
+              <span class="honbun2">身体パワー</span>：{{ player.status.energy }} （MAX値：{{ player.status.energy_max }}）
+              <span v-if="energyFullRemain" class="recover-timer">満タンまで{{ energyFullRemain }}</span><br />
               <span class="powerbar">
                 <span class="bar-fill" :class="energyColor" :style="{ width: energyPct + '%' }"></span>
               </span>
             </div>
             <div class="honbun2">
-              <span class="honbun2">頭脳パワー</span>：{{ player.status.nou_energy }}（MAX値：{{ player.status.nou_energy_max }}）<br />
+              <span class="honbun2">頭脳パワー</span>：{{ player.status.nou_energy }}（MAX値：{{ player.status.nou_energy_max }}）
+              <span v-if="nouFullRemain" class="recover-timer">満タンまで{{ nouFullRemain }}</span><br />
               <span class="powerbar">
                 <span class="bar-fill" :class="nouColor" :style="{ width: nouPct + '%' }"></span>
               </span>

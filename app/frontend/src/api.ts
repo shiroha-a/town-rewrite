@@ -63,6 +63,8 @@ export interface Player {
     disease_name: string;
     condition: string;
     work_available_at: string | null;
+    energy_full_at: string | null;
+    nou_energy_full_at: string | null;
   };
   params: Params;
   items: ItemStack[];

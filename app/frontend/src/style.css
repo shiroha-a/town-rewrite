@@ -524,6 +524,12 @@ body {
   border: 1px solid #999;
   overflow: hidden;
 }
+/* パワーが満タンになるまでの残り時間(リアルタイム) */
+.recover-timer {
+  font-size: 11px;
+  color: #a0308c;
+  white-space: nowrap;
+}
 /* 残量バー本体。幅はJSで%指定、色は残量に応じてクラスで切替。値変化はtransitionで滑らかに描画 */
 .bar-fill {
   display: block;

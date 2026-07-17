@@ -35,6 +35,8 @@ type statusResp struct {
 	DiseaseName     string     `json:"disease_name"`
 	Condition       string     `json:"condition"`
 	WorkAvailableAt *time.Time `json:"work_available_at"`
+	EnergyFullAt    *time.Time `json:"energy_full_at"`
+	NouEnergyFullAt *time.Time `json:"nou_energy_full_at"`
 }
 
 type itemResp struct {
@@ -142,6 +144,8 @@ func toResp(p *player.Player) playerResp {
 			DiseaseName:     p.Status.DiseaseName,
 			Condition:       p.Status.Condition,
 			WorkAvailableAt: p.Status.WorkAvailableAt,
+			EnergyFullAt:    p.Status.EnergyFullAt,
+			NouEnergyFullAt: p.Status.NouEnergyFullAt,
 		},
 		Params:    paramsResp(p.Params),
 		Items:     items,
