@@ -598,6 +598,177 @@ func (s *Service) DoSuperCancel(ctx context.Context, playerID, amount int64, all
 	})
 }
 
+// loanMaxLimit caps the assessed borrowable amount (legacy 融資上限 3000万).
+const loanMaxLimit = 30_000_000
+
+// loanPlans lists the selectable repayment counts and their interest rates
+// (legacy: 12回5% … 120回14%, +1% per 12 installments).
+var loanPlans = []struct {
+	Count int
+	Rate  int
+}{
+	{12, 5}, {24, 6}, {36, 7}, {48, 8}, {60, 9},
+	{72, 10}, {84, 11}, {96, 12}, {108, 13}, {120, 14},
+}
+
+// loanDaily is the daily repayment for a principal over count installments at
+// rate percent: floor((principal + principal*rate/100) / count).
+func loanDaily(principal int64, rate, count int) int64 {
+	total := principal + principal*int64(rate)/100
+	return total / int64(count)
+}
+
+// loanLimit assesses the borrowable amount (1万円未満切り捨て、上限3000万)。
+func loanLimit(salary, jobExp, jobKaisuu, savings, super int64) int64 {
+	limit := int64(float64(salary)*(float64(jobExp)/50.0)*(float64(jobKaisuu)/50.0) +
+		float64(savings)*2 + float64(super)*2.5)
+	limit -= limit % 10000
+	if limit > loanMaxLimit {
+		limit = loanMaxLimit
+	}
+	if limit < 0 {
+		limit = 0
+	}
+	return limit
+}
+
+// LoanPlanQuote is one repayment option in a loan quote.
+type LoanPlanQuote struct {
+	Count int   `json:"count"`
+	Rate  int   `json:"rate"`
+	Daily int64 `json:"daily"`
+	Total int64 `json:"total"`
+}
+
+// LoanQuote is the borrowing assessment: the limit and per-plan daily payments.
+type LoanQuote struct {
+	Limit   int64           `json:"limit"`
+	HasLoan bool            `json:"has_loan"`
+	Plans   []LoanPlanQuote `json:"plans"`
+}
+
+// LoanQuote assesses the borrowable amount from salary, job experience/attendance
+// and savings/super deposit, and the daily payment of each repayment plan.
+func (s *Service) LoanQuote(ctx context.Context, playerID int64) (*LoanQuote, error) {
+	var q LoanQuote
+	var cnt int
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM player_loans WHERE player_id = $1`, playerID).Scan(&cnt); err != nil {
+		return nil, err
+	}
+	q.HasLoan = cnt > 0
+
+	salary, jobExp, jobKaisuu, savings, super, err := s.loanFactors(ctx, s.pool, playerID)
+	if err != nil {
+		return nil, err
+	}
+	q.Limit = loanLimit(salary, jobExp, jobKaisuu, savings, super)
+	for _, pl := range loanPlans {
+		d := loanDaily(q.Limit, pl.Rate, pl.Count)
+		q.Plans = append(q.Plans, LoanPlanQuote{Count: pl.Count, Rate: pl.Rate, Daily: d, Total: d * int64(pl.Count)})
+	}
+	return &q, nil
+}
+
+// queryRower is satisfied by both *pgxpool.Pool and pgx.Tx.
+type queryRower interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// loanFactors gathers the inputs to the borrowing assessment.
+func (s *Service) loanFactors(ctx context.Context, q queryRower, playerID int64) (salary, jobExp, jobKaisuu, savings, super int64, err error) {
+	var job string
+	if err = q.QueryRow(ctx,
+		`SELECT job, job_exp, job_kaisuu FROM player_status WHERE player_id = $1`,
+		playerID).Scan(&job, &jobExp, &jobKaisuu); err != nil {
+		return
+	}
+	// 現職の基本給。学生など content_jobs に無い職は給料0(査定は貯蓄依存になる)。
+	_ = q.QueryRow(ctx, `SELECT salary FROM content_jobs WHERE name = $1`, job).Scan(&salary)
+	if savings, err = s.ledger.Balance(ctx, ledger.SavingsAccount(playerID)); err != nil {
+		return
+	}
+	super, err = s.ledger.Balance(ctx, ledger.SuperSavingsAccount(playerID))
+	return
+}
+
+// DoLoanBorrow borrows the assessed limit over the chosen repayment count. The
+// funds go to the savings (普通口座). Re-borrowing is blocked until repaid.
+func (s *Service) DoLoanBorrow(ctx context.Context, playerID int64, count int, idempotencyKey string) (*player.Player, error) {
+	rate := 0
+	for _, pl := range loanPlans {
+		if pl.Count == count {
+			rate = pl.Rate
+		}
+	}
+	if rate == 0 {
+		return nil, &ConditionError{Message: "返済回数の指定が正しくありません。"}
+	}
+	return s.runAction(ctx, playerID, "loan_borrow", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		var cnt int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM player_loans WHERE player_id = $1`, playerID).Scan(&cnt); err != nil {
+			return err
+		}
+		if cnt > 0 {
+			return &ConditionError{Message: "ローンを完済するまで新しい融資はできません。"}
+		}
+		salary, jobExp, jobKaisuu, savings, super, err := s.loanFactors(ctx, tx, playerID)
+		if err != nil {
+			return err
+		}
+		limit := loanLimit(salary, jobExp, jobKaisuu, savings, super)
+		if limit <= 0 {
+			return &ConditionError{Message: "現在借り入れできる金額がありません。"}
+		}
+		daily := loanDaily(limit, rate, count)
+		// 融資額を普通口座へ入金(原資は system:loan_faucet)。
+		if err := s.ledger.PostTx(ctx, tx, "loan_borrow", "", []ledger.Entry{
+			{Account: ledger.SystemAccount("loan_faucet"), Delta: -limit},
+			{Account: ledger.SavingsAccount(playerID), Delta: limit},
+		}); err != nil {
+			return fmt.Errorf("loan borrow: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO player_loans (player_id, nitigaku, kaisuu) VALUES ($1, $2, $3)`,
+			playerID, daily, count); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+// DoLoanRepay repays the whole outstanding loan at once from savings.
+func (s *Service) DoLoanRepay(ctx context.Context, playerID int64, idempotencyKey string) (*player.Player, error) {
+	return s.runAction(ctx, playerID, "loan_repay_full", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		var nitigaku int64
+		var kaisuu int
+		err := tx.QueryRow(ctx, `SELECT nitigaku, kaisuu FROM player_loans WHERE player_id = $1`, playerID).Scan(&nitigaku, &kaisuu)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &ConditionError{Message: "返済中のローンはありません。"}
+		}
+		if err != nil {
+			return err
+		}
+		remaining := nitigaku * int64(kaisuu)
+		var savings int64
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account=$1`, ledger.SavingsAccount(playerID)).Scan(&savings); err != nil {
+			return err
+		}
+		if savings < remaining {
+			return &ConditionError{Message: "普通口座に十分な預金がありません。"}
+		}
+		if err := s.ledger.PostTx(ctx, tx, "loan_repay_full", "", []ledger.Entry{
+			{Account: ledger.SavingsAccount(playerID), Delta: -remaining},
+			{Account: ledger.SystemAccount("loan_sink"), Delta: remaining},
+		}); err != nil {
+			return fmt.Errorf("loan repay: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM player_loans WHERE player_id = $1`, playerID); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
 // StatementEntry is one line of a savings-account passbook (入出金明細).
 type StatementEntry struct {
 	At      time.Time `json:"at"`
@@ -667,6 +838,12 @@ func statementLabel(reason string, amount int64) string {
 		return "定期解約"
 	case strings.HasPrefix(reason, "super_interest:"):
 		return "定期利息"
+	case reason == "loan_borrow":
+		return "住宅ローン"
+	case reason == "loan_repay":
+		return "ローン返済"
+	case reason == "loan_repay_full":
+		return "ローン一括返済"
 	default:
 		return "取引"
 	}

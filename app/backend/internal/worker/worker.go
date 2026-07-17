@@ -153,6 +153,10 @@ func (w *Worker) runDailyIfNeeded(ctx context.Context, now time.Time) {
 		if _, err := bank.AccrueInterest(ctx, tx, w.ledger, "super_savings:", "super_interest:", superInterestPermille); err != nil {
 			return err
 		}
+		// 住宅ローンの日次返済(普通口座から日額を引き落とし、完済で消す)。
+		if _, err := RepayLoans(ctx, tx, w.ledger); err != nil {
+			return err
+		}
 		// 日単位耐久アイテムの残日数を1減らし、失効したものを削除する。
 		if err := DecayDayItems(ctx, tx); err != nil {
 			return err

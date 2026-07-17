@@ -128,3 +128,46 @@ func (s *Server) superCancel(w http.ResponseWriter, r *http.Request) {
 	p, err := s.actions.DoSuperCancel(r.Context(), id, req.Amount, req.All, req.IdempotencyKey)
 	writeActionResult(w, p, err)
 }
+
+func (s *Server) loanQuote(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	q, err := s.actions.LoanQuote(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, q)
+}
+
+type loanBorrowReq struct {
+	Count          int    `json:"count"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+func (s *Server) loanBorrow(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req loanBorrowReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	p, err := s.actions.DoLoanBorrow(r.Context(), id, req.Count, req.IdempotencyKey)
+	writeActionResult(w, p, err)
+}
+
+func (s *Server) loanRepay(w http.ResponseWriter, r *http.Request) {
+	id, req, ok := decodeBank(w, r)
+	if !ok {
+		return
+	}
+	p, err := s.actions.DoLoanRepay(r.Context(), id, req.IdempotencyKey)
+	writeActionResult(w, p, err)
+}

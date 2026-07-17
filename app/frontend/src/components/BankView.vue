@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { ref } from 'vue';
-import { api, type Player, type StatementEntry } from '../api';
+import { api, type Player, type StatementEntry, type LoanQuote } from '../api';
 
 const props = defineProps<{ player: Player }>();
 const emit = defineEmits<{ update: [player: Player]; back: [] }>();
 
 const yen = (n: number) => n.toLocaleString('ja-JP');
-const total = () => props.player.money + props.player.savings;
+// 総資産=所持金+普通口座+スーパー定期-ローン残高(日額×残回数)。
+const total = () =>
+  props.player.money +
+  props.player.savings +
+  props.player.super_savings -
+  props.player.loan_daily * props.player.loan_count;
 
 const depositAmt = ref<number>(props.player.money);
 const withdrawAmt = ref<number>(0);
@@ -76,6 +81,34 @@ const doSuperDeposit = () =>
 const doSuperCancel = (all: boolean) =>
   run(all ? 'スーパー定期の全額解約' : 'スーパー定期の解約', async () => {
     const p = await api.superCancel(props.player.id, superCancelMan.value * 1_000_000, all);
+    await reloadStatement();
+    return p;
+  });
+
+// ローン。見積り(借入可能額+返済プラン)を取得してから借り入れる。
+const loanQuote = ref<LoanQuote | null>(null);
+async function loadLoanQuote() {
+  busy.value = true;
+  message.value = '';
+  try {
+    loanQuote.value = await api.loanQuote(props.player.id);
+  } catch (e) {
+    message.value = e instanceof Error ? e.message : String(e);
+    kind.value = 'error';
+  } finally {
+    busy.value = false;
+  }
+}
+const doLoanBorrow = (count: number) =>
+  run('借り入れ', async () => {
+    const p = await api.loanBorrow(props.player.id, count);
+    loanQuote.value = null;
+    await reloadStatement();
+    return p;
+  });
+const doLoanRepay = () =>
+  run('ローンの一括返済', async () => {
+    const p = await api.loanRepay(props.player.id);
     await reloadStatement();
     return p;
   });
@@ -172,7 +205,45 @@ const doSuperCancel = (all: boolean) =>
         </div>
 
         <h3 class="sec">■ローン</h3>
-        <p class="note">※当銀行へのご利用度や収入に応じてお金を借りることができます。<span class="muted">(準備中)</span></p>
+        <p class="note">※当銀行へのご利用度や収入に応じてお金を借りることができます。</p>
+        <!-- 返済中 -->
+        <template v-if="player.loan_count > 0">
+          <p class="note">
+            現在のローン残高：<span class="blue">{{ yen(player.loan_daily * player.loan_count) }}円</span><br />
+            （日額 {{ yen(player.loan_daily) }}円 × 残り{{ player.loan_count }}回）<br />
+            ※毎日AM5:00に日額が普通口座から自動で引き落とされます。
+          </p>
+          <button class="btn" :disabled="busy" data-test="loan-repay" @click="doLoanRepay">一括返済する</button>
+        </template>
+        <!-- 未借入 -->
+        <template v-else>
+          <button v-if="!loanQuote" class="btn" :disabled="busy" data-test="loan-quote" @click="loadLoanQuote">
+            借入可能額を調べる
+          </button>
+          <div v-else>
+            <p class="note">借入可能額：<span class="blue">{{ yen(loanQuote.limit) }}円</span></p>
+            <template v-if="loanQuote.limit > 0">
+              <p class="note">返済回数を選んで借り入れます(融資額は借入可能額の全額)。</p>
+              <table class="statement">
+                <thead>
+                  <tr><th>返済回数</th><th>利率</th><th class="num">日額</th><th class="num">総返済</th><th></th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="pl in loanQuote.plans" :key="pl.count">
+                    <td>{{ pl.count }}回</td>
+                    <td>{{ pl.rate }}%</td>
+                    <td class="num">{{ yen(pl.daily) }}</td>
+                    <td class="num">{{ yen(pl.total) }}</td>
+                    <td>
+                      <button class="btn" :disabled="busy" @click="doLoanBorrow(pl.count)">借りる</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </template>
+            <p v-else class="note muted">現在借り入れできる金額がありません。</p>
+          </div>
+        </template>
       </div>
     </div>
 

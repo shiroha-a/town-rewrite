@@ -42,6 +42,8 @@ export interface Player {
   money: number;
   savings: number;
   super_savings: number;
+  loan_daily: number;
+  loan_count: number;
   status: {
     energy: number;
     energy_max: number;
@@ -164,6 +166,20 @@ export interface StatementEntry {
   label: string;
   amount: number;
   balance: number;
+}
+
+// ローンの返済プラン1件(返済回数・利率・日額・総返済額)。
+export interface LoanPlanQuote {
+  count: number;
+  rate: number;
+  daily: number;
+  total: number;
+}
+// ローンの借入見積り(借入可能額と各返済プラン)。
+export interface LoanQuote {
+  limit: number;
+  has_loan: boolean;
+  plans: LoanPlanQuote[];
 }
 
 // 効果エンジンのop(add_param / add_money)。
@@ -619,6 +635,16 @@ export const api = {
     request<Player>('POST', `/players/${id}/bank/super/cancel`, {
       amount,
       all,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  loanQuote: (id: number) => request<LoanQuote>('GET', `/players/${id}/bank/loan/quote`),
+  loanBorrow: (id: number, count: number) =>
+    request<Player>('POST', `/players/${id}/bank/loan/borrow`, {
+      count,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  loanRepay: (id: number) =>
+    request<Player>('POST', `/players/${id}/bank/loan/repay`, {
       idempotency_key: newIdempotencyKey(),
     }),
   hospitalTreat: (id: number) =>

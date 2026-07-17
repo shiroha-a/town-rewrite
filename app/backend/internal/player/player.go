@@ -28,6 +28,8 @@ type Player struct {
 	Money        int64
 	Savings      int64
 	SuperSavings int64
+	LoanDaily    int64 // 住宅ローンの日額返済(なければ0)
+	LoanCount    int   // 住宅ローンの残り返済回数(なければ0)
 	Status       Status
 	Params       Params
 	Items        []ItemStack
@@ -480,6 +482,14 @@ func (s *Service) Get(ctx context.Context, id int64) (*Player, error) {
 		return nil, err
 	}
 	p.SuperSavings = superSavings
+
+	// 住宅ローン(なければ0,0)。サブクエリのCOALESCEで常に1行を返す。
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE((SELECT nitigaku FROM player_loans WHERE player_id = $1), 0),
+		        COALESCE((SELECT kaisuu FROM player_loans WHERE player_id = $1), 0)`,
+		id).Scan(&p.LoanDaily, &p.LoanCount); err != nil {
+		return nil, err
+	}
 
 	items, err := s.pool.Query(ctx,
 		`SELECT ci.id, ci.name, pi.quantity, pi.remaining_uses,

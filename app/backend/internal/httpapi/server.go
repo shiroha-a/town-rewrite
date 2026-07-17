@@ -94,6 +94,9 @@ func NewServer(players *player.Service, actions *action.Service, contentSvc *con
 	mux.HandleFunc("POST /api/v1/players/{id}/bank/transfer", s.bankTransfer)
 	mux.HandleFunc("POST /api/v1/players/{id}/bank/super/deposit", s.superDeposit)
 	mux.HandleFunc("POST /api/v1/players/{id}/bank/super/cancel", s.superCancel)
+	mux.HandleFunc("GET /api/v1/players/{id}/bank/loan/quote", s.loanQuote)
+	mux.HandleFunc("POST /api/v1/players/{id}/bank/loan/borrow", s.loanBorrow)
+	mux.HandleFunc("POST /api/v1/players/{id}/bank/loan/repay", s.loanRepay)
 
 	// 管理者API(暫定認可: X-Acting-Player-Idヘッダのadminロール。将来MiAuthで置換)
 	mux.HandleFunc("POST /api/v1/admin/items", s.createItem)
