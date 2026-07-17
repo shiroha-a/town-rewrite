@@ -226,6 +226,22 @@ export interface PokerState {
   gain: number; // 直近のポイント増減
 }
 
+// ロト6の状態(自分の当日の購入券・上限・直近抽選)。
+export interface Loto6Ticket {
+  numbers: number[];
+}
+export interface Loto6DrawInfo {
+  date: string;
+  winning: number[];
+}
+export interface Loto6State {
+  my_tickets: Loto6Ticket[];
+  today_count: number;
+  daily_limit: number;
+  cost: number;
+  last_draw: Loto6DrawInfo | null;
+}
+
 // ローンの返済プラン1件(返済回数・利率・日額・総返済額)。
 export interface LoanPlanQuote {
   count: number;
@@ -734,6 +750,9 @@ export const api = {
     request<PokerState>('POST', `/players/${id}/poker/draw`, { hold, idempotency_key: newIdempotencyKey() }),
   pokerCashout: (id: number) =>
     request<PokerState>('POST', `/players/${id}/poker/cashout`, { idempotency_key: newIdempotencyKey() }),
+  loto6State: (id: number) => request<Loto6State>('GET', `/players/${id}/loto6`),
+  loto6Buy: (id: number, numbers: number[]) =>
+    request<Loto6State>('POST', `/players/${id}/loto6/buy`, { numbers, idempotency_key: newIdempotencyKey() }),
   hospitalTreat: (id: number) =>
     request<Player>('POST', `/players/${id}/hospital/treat`, {
       idempotency_key: newIdempotencyKey(),

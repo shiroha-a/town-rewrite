@@ -106,6 +106,8 @@ func NewServer(players *player.Service, actions *action.Service, contentSvc *con
 	mux.HandleFunc("POST /api/v1/players/{id}/poker/deal", s.pokerDeal)
 	mux.HandleFunc("POST /api/v1/players/{id}/poker/draw", s.pokerDraw)
 	mux.HandleFunc("POST /api/v1/players/{id}/poker/cashout", s.pokerCashout)
+	mux.HandleFunc("GET /api/v1/players/{id}/loto6", s.loto6State)
+	mux.HandleFunc("POST /api/v1/players/{id}/loto6/buy", s.loto6Buy)
 	mux.HandleFunc("GET /api/v1/players/{id}/bank/loan/quote", s.loanQuote)
 	mux.HandleFunc("POST /api/v1/players/{id}/bank/loan/borrow", s.loanBorrow)
 	mux.HandleFunc("POST /api/v1/players/{id}/bank/loan/repay", s.loanRepay)

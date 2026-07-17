@@ -1431,6 +1431,100 @@ func (s *Service) PokerCashout(ctx context.Context, playerID int64, idempotencyK
 	return s.pokerReadState(ctx, s.pool, playerID)
 }
 
+// Loto6Ticket is one purchased ticket for display.
+type Loto6Ticket struct {
+	Numbers []int `json:"numbers"`
+}
+
+// Loto6DrawInfo is a past draw result for display.
+type Loto6DrawInfo struct {
+	Date    string `json:"date"`
+	Winning []int  `json:"winning"`
+}
+
+// Loto6State is the player's loto6 view: their tickets for today, the daily cap,
+// and the most recent draw.
+type Loto6State struct {
+	MyTickets  []Loto6Ticket  `json:"my_tickets"`
+	TodayCount int            `json:"today_count"`
+	DailyLimit int            `json:"daily_limit"`
+	Cost       int64          `json:"cost"`
+	LastDraw   *Loto6DrawInfo `json:"last_draw"`
+}
+
+// Loto6GetState returns the player's tickets for today and the latest draw.
+func (s *Service) Loto6GetState(ctx context.Context, playerID int64) (*Loto6State, error) {
+	today := gametime.Date(time.Now(), s.loc, s.dayBoundaryHour)
+	st := &Loto6State{DailyLimit: casino.Loto6DailyLimit, Cost: casino.Loto6Cost, MyTickets: []Loto6Ticket{}}
+	rows, err := s.pool.Query(ctx,
+		`SELECT numbers FROM loto6_tickets WHERE player_id=$1 AND game_date=$2 ORDER BY id`,
+		playerID, today)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var nums []int32
+		if err := rows.Scan(&nums); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		st.MyTickets = append(st.MyTickets, Loto6Ticket{Numbers: toIntSlice(nums)})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	st.TodayCount = len(st.MyTickets)
+
+	var date time.Time
+	var winning []int32
+	err = s.pool.QueryRow(ctx, `SELECT game_date, winning FROM loto6_draws ORDER BY game_date DESC LIMIT 1`).Scan(&date, &winning)
+	if err == nil {
+		st.LastDraw = &Loto6DrawInfo{Date: date.Format("2006-01-02"), Winning: toIntSlice(winning)}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	return st, nil
+}
+
+// DoLoto6Buy buys one loto6 ticket with the given numbers (validated), capped at
+// Loto6DailyLimit per day. The cost goes to the casino; prizes are paid at the
+// daily draw.
+func (s *Service) DoLoto6Buy(ctx context.Context, playerID int64, numbers []int, idempotencyKey string) (*Loto6State, error) {
+	if !casino.ValidLoto6Pick(numbers) {
+		return nil, &ConditionError{Message: "1から36の異なる数字を6個選んでください。"}
+	}
+	today := gametime.Date(time.Now(), s.loc, s.dayBoundaryHour)
+	nums := make([]int32, len(numbers))
+	for i, n := range numbers {
+		nums[i] = int32(n)
+	}
+	_, err := s.runAction(ctx, playerID, "loto6_buy", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		var cnt int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM loto6_tickets WHERE player_id=$1 AND game_date=$2`, playerID, today).Scan(&cnt); err != nil {
+			return err
+		}
+		if cnt >= casino.Loto6DailyLimit {
+			return &ConditionError{Message: fmt.Sprintf("ロト6は1日%d口までです。", casino.Loto6DailyLimit)}
+		}
+		if state.Money < casino.Loto6Cost {
+			return &ConditionError{Message: "お金が足りません。"}
+		}
+		if err := s.ledger.PostTx(ctx, tx, "loto6_buy", "", []ledger.Entry{
+			{Account: ledger.PlayerAccount(playerID), Delta: -casino.Loto6Cost},
+			{Account: ledger.SystemAccount("loto"), Delta: casino.Loto6Cost},
+		}); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO loto6_tickets (player_id, game_date, numbers) VALUES ($1,$2,$3)`, playerID, today, nums)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.Loto6GetState(ctx, playerID)
+}
+
 // CasinoResult is returned after a minigame play: the updated player and the
 // game outcome for presentation.
 type CasinoResult struct {

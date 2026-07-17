@@ -252,3 +252,49 @@ func (s *Server) pokerCashout(w http.ResponseWriter, r *http.Request) {
 	st, err := s.actions.PokerCashout(r.Context(), id, req.IdempotencyKey)
 	s.pokerRespond(w, st, err)
 }
+
+func (s *Server) loto6Respond(w http.ResponseWriter, st *action.Loto6State, err error) {
+	if err != nil {
+		var condErr *action.ConditionError
+		switch {
+		case errors.Is(err, player.ErrNotFound):
+			writeError(w, http.StatusNotFound, "player not found")
+		case errors.As(err, &condErr):
+			writeError(w, http.StatusUnprocessableEntity, condErr.Message)
+		default:
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) loto6State(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	st, err := s.actions.Loto6GetState(r.Context(), id)
+	s.loto6Respond(w, st, err)
+}
+
+type loto6BuyReq struct {
+	Numbers        []int  `json:"numbers"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+func (s *Server) loto6Buy(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req loto6BuyReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	st, err := s.actions.DoLoto6Buy(r.Context(), id, req.Numbers, req.IdempotencyKey)
+	s.loto6Respond(w, st, err)
+}
