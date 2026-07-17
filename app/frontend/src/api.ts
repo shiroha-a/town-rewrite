@@ -215,6 +215,17 @@ export interface BJState {
   payout: number;
 }
 
+// ポーカーの状態。phase: none(未購入)/ready(配札前)/dealt(交換前)。
+export interface PokerState {
+  active: boolean;
+  points: number;
+  hand: number[];
+  phase: string;
+  result: number; // 直近の役(-1=未判定)
+  result_name: string;
+  gain: number; // 直近のポイント増減
+}
+
 // ローンの返済プラン1件(返済回数・利率・日額・総返済額)。
 export interface LoanPlanQuote {
   count: number;
@@ -714,6 +725,15 @@ export const api = {
     request<BJState>('POST', `/players/${id}/blackjack/hit`, { idempotency_key: newIdempotencyKey() }),
   bjStand: (id: number) =>
     request<BJState>('POST', `/players/${id}/blackjack/stand`, { idempotency_key: newIdempotencyKey() }),
+  pokerState: (id: number) => request<PokerState>('GET', `/players/${id}/poker`),
+  pokerBuy: (id: number) =>
+    request<PokerState>('POST', `/players/${id}/poker/buy`, { idempotency_key: newIdempotencyKey() }),
+  pokerDeal: (id: number) =>
+    request<PokerState>('POST', `/players/${id}/poker/deal`, { idempotency_key: newIdempotencyKey() }),
+  pokerDraw: (id: number, hold: number[]) =>
+    request<PokerState>('POST', `/players/${id}/poker/draw`, { hold, idempotency_key: newIdempotencyKey() }),
+  pokerCashout: (id: number) =>
+    request<PokerState>('POST', `/players/${id}/poker/cashout`, { idempotency_key: newIdempotencyKey() }),
   hospitalTreat: (id: number) =>
     request<Player>('POST', `/players/${id}/hospital/treat`, {
       idempotency_key: newIdempotencyKey(),

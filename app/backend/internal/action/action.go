@@ -1241,6 +1241,196 @@ func toIntSlice(xs []int32) []int {
 	return out
 }
 
+const (
+	pokerBuyCost   int64 = 5000 // 5000円で5ポイント購入
+	pokerBuyPoints       = 5
+	pokerPointYen  int64 = 1000 // 清算時 1000円/ポイント(手数料として-1点)
+)
+
+// PokerState is the poker table state for display.
+type PokerState struct {
+	Active     bool   `json:"active"`      // 購入済み(points>0)
+	Points     int    `json:"points"`      // 所持ポイント
+	Hand       []int  `json:"hand"`        // 手札(配札後)
+	Phase      string `json:"phase"`       // 'none'|'ready'|'dealt'
+	Result     int    `json:"result"`      // 直近の役(判定後、-1=未判定)
+	ResultName string `json:"result_name"` // 直近の役名
+	Gain       int    `json:"gain"`        // 直近のポイント増減(result-1)
+}
+
+func (s *Service) pokerReadState(ctx context.Context, q queryRower, playerID int64) (*PokerState, error) {
+	var points int
+	var hand []int32
+	var phase string
+	err := q.QueryRow(ctx, `SELECT points, hand, phase FROM player_poker WHERE player_id=$1`, playerID).Scan(&points, &hand, &phase)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &PokerState{Active: false, Phase: "none", Result: -1}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	st := &PokerState{Active: points > 0 || phase != "none", Points: points, Phase: phase, Result: -1}
+	st.Hand = toIntSlice(hand)
+	return st, nil
+}
+
+// PokerGetState returns the current poker state.
+func (s *Service) PokerGetState(ctx context.Context, playerID int64) (*PokerState, error) {
+	return s.pokerReadState(ctx, s.pool, playerID)
+}
+
+// PokerBuy spends 5000 yen for 5 points to start a session.
+func (s *Service) PokerBuy(ctx context.Context, playerID int64, idempotencyKey string) (*PokerState, error) {
+	_, err := s.runAction(ctx, playerID, "poker_buy", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		var points int
+		err := tx.QueryRow(ctx, `SELECT points FROM player_poker WHERE player_id=$1 FOR UPDATE`, playerID).Scan(&points)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if points > 0 {
+			return &ConditionError{Message: "まだポイントが残っています。"}
+		}
+		if state.Money < pokerBuyCost {
+			return &ConditionError{Message: "お金が足りません。"}
+		}
+		if err := s.ledger.PostTx(ctx, tx, "poker_buy", "", []ledger.Entry{
+			{Account: ledger.PlayerAccount(playerID), Delta: -pokerBuyCost},
+			{Account: ledger.SystemAccount("casino"), Delta: pokerBuyCost},
+		}); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx,
+			`INSERT INTO player_poker (player_id, points, hand, phase) VALUES ($1,$2,'{}','ready')
+			 ON CONFLICT (player_id) DO UPDATE SET points=$2, hand='{}', phase='ready', updated_at=now()`,
+			playerID, pokerBuyPoints)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.pokerReadState(ctx, s.pool, playerID)
+}
+
+// PokerDeal deals 5 cards (phase ready -> dealt).
+func (s *Service) PokerDeal(ctx context.Context, playerID int64, idempotencyKey string) (*PokerState, error) {
+	_, err := s.runAction(ctx, playerID, "poker_deal", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		var points int
+		var phase string
+		err := tx.QueryRow(ctx, `SELECT points, phase FROM player_poker WHERE player_id=$1 FOR UPDATE`, playerID).Scan(&points, &phase)
+		if errors.Is(err, pgx.ErrNoRows) || points <= 0 {
+			return &ConditionError{Message: "先にポイントを購入してください。"}
+		}
+		if err != nil {
+			return err
+		}
+		if phase != "ready" {
+			return &ConditionError{Message: "先に交換してください。"}
+		}
+		var used []int
+		hand := make([]int32, 5)
+		for i := range hand {
+			c := casino.BJDraw(s.rng, used)
+			used = append(used, c)
+			hand[i] = int32(c)
+		}
+		_, err = tx.Exec(ctx, `UPDATE player_poker SET hand=$2, phase='dealt', updated_at=now() WHERE player_id=$1`, playerID, hand)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.pokerReadState(ctx, s.pool, playerID)
+}
+
+// PokerDraw swaps the non-held cards, evaluates the hand, and adds result-1 to
+// points. Running out of points ends the session.
+func (s *Service) PokerDraw(ctx context.Context, playerID int64, hold []int, idempotencyKey string) (*PokerState, error) {
+	var out PokerState
+	_, err := s.runAction(ctx, playerID, "poker_draw", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		var points int
+		var hand []int32
+		var phase string
+		err := tx.QueryRow(ctx, `SELECT points, hand, phase FROM player_poker WHERE player_id=$1 FOR UPDATE`, playerID).Scan(&points, &hand, &phase)
+		if errors.Is(err, pgx.ErrNoRows) || phase != "dealt" {
+			return &ConditionError{Message: "配札されていません。"}
+		}
+		if err != nil {
+			return err
+		}
+		held := map[int]bool{}
+		for _, h := range hold {
+			if h >= 0 && h < len(hand) {
+				held[h] = true
+			}
+		}
+		used := toIntSlice(hand)
+		for i := range hand {
+			if !held[i] {
+				c := casino.BJDraw(s.rng, used)
+				used = append(used, c)
+				hand[i] = int32(c)
+			}
+		}
+		result := casino.PokerEval(toIntSlice(hand))
+		gain := result - 1
+		points += gain
+		out.Result = result
+		out.ResultName = casino.PokerHandName(result)
+		out.Gain = gain
+		phase = "ready"
+		if points <= 0 {
+			// ポイント切れでゲームオーバー(セッション消滅)。
+			points = 0
+			phase = "none"
+			_, err = tx.Exec(ctx, `UPDATE player_poker SET points=0, hand='{}', phase='none', updated_at=now() WHERE player_id=$1`, playerID)
+			return err
+		}
+		_, err = tx.Exec(ctx, `UPDATE player_poker SET points=$2, hand=$3, phase=$4, updated_at=now() WHERE player_id=$1`, playerID, points, hand, phase)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	st, err := s.pokerReadState(ctx, s.pool, playerID)
+	if err != nil {
+		return nil, err
+	}
+	st.Result = out.Result
+	st.ResultName = out.ResultName
+	st.Gain = out.Gain
+	return st, nil
+}
+
+// PokerCashout converts remaining points to cash at 1000 yen/point minus a
+// 1-point fee, and ends the session.
+func (s *Service) PokerCashout(ctx context.Context, playerID int64, idempotencyKey string) (*PokerState, error) {
+	_, err := s.runAction(ctx, playerID, "poker_cashout", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		var points int
+		err := tx.QueryRow(ctx, `SELECT points FROM player_poker WHERE player_id=$1 FOR UPDATE`, playerID).Scan(&points)
+		if errors.Is(err, pgx.ErrNoRows) || points <= 0 {
+			return &ConditionError{Message: "清算できるポイントがありません。"}
+		}
+		if err != nil {
+			return err
+		}
+		payout := int64(points-1) * pokerPointYen
+		if payout > 0 {
+			if err := s.ledger.PostTx(ctx, tx, "poker_cashout", "", []ledger.Entry{
+				{Account: ledger.SystemAccount("casino"), Delta: -payout},
+				{Account: ledger.PlayerAccount(playerID), Delta: payout},
+			}); err != nil {
+				return err
+			}
+		}
+		_, err = tx.Exec(ctx, `UPDATE player_poker SET points=0, hand='{}', phase='none', updated_at=now() WHERE player_id=$1`, playerID)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.pokerReadState(ctx, s.pool, playerID)
+}
+
 // CasinoResult is returned after a minigame play: the updated player and the
 // game outcome for presentation.
 type CasinoResult struct {
