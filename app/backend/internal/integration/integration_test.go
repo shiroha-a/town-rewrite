@@ -20,6 +20,7 @@ import (
 	"github.com/shiroha-a/town/internal/action"
 	"github.com/shiroha-a/town/internal/attendance"
 	"github.com/shiroha-a/town/internal/bank"
+	"github.com/shiroha-a/town/internal/cleague"
 	"github.com/shiroha-a/town/internal/content"
 	"github.com/shiroha-a/town/internal/db"
 	"github.com/shiroha-a/town/internal/gametime"
@@ -139,7 +140,7 @@ func setup(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 		pool.Close()
 		t.Fatalf("townmap set: %v", err)
 	}
-	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc, st, tmap, stock.New(pool), keiba.New(pool, rng.New(7)), mail.New(pool, time.UTC, 5), greeting.New(pool), attendance.New(pool, time.UTC, 5), shop.New(pool)))
+	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc, st, tmap, stock.New(pool), keiba.New(pool, rng.New(7)), mail.New(pool, time.UTC, 5), greeting.New(pool), attendance.New(pool, time.UTC, 5), shop.New(pool), cleague.New(pool)))
 	t.Cleanup(func() {
 		srv.Close()
 		pool.Close()
@@ -2410,6 +2411,119 @@ func TestShop(t *testing.T) {
 	}
 	if code, _ := shopPost(bob.ID, "/shop/offer", map[string]any{"owner_id": alice.ID, "amount": 20000, "idempotency_key": "off2"}); code != http.StatusUnprocessableEntity {
 		t.Errorf("over-limit offer status = %d, want 422", code)
+	}
+
+	// 台帳ゼロ和。
+	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
+		t.Errorf("ledger zero-sum broken: %d", sum)
+	}
+}
+
+// TestCLeague covers battle characters: creation, growth (transfers owner params
+// + charges money), battling (records a result), and validation. Ledger zero-sum.
+func TestCLeague(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	led := ledger.New(pool)
+	alice := register(t, srv.URL, "misskey.example", "alice")
+	bob := register(t, srv.URL, "misskey.example", "bob")
+	grantMoney(t, pool, alice.ID, 2000000)
+	// 育成できるよう本人パラメータを高くしておく。
+	for _, id := range []int64{alice.ID, bob.ID} {
+		if _, err := pool.Exec(ctx, `UPDATE player_status SET kokugo=1000, power=1000, looks=1000 WHERE player_id=$1`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	post := func(id int64, path string, body map[string]any) (int, []byte) {
+		b, _ := json.Marshal(body)
+		resp, err := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(id, 10)+path, "application/json", bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, data
+	}
+
+	// キャラ作成。
+	if code, body := post(alice.ID, "/character", map[string]any{"name": "アリスの戦士", "idempotency_key": "n1"}); code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", code, body)
+	}
+	post(bob.ID, "/character", map[string]any{"name": "ボブの戦士", "idempotency_key": "n2"})
+
+	// 育成: kokugo50 + power50 → cost 100万円、本人-50ずつ。
+	code, body := post(alice.ID, "/character/grow", map[string]any{"inputs": map[string]int{"kokugo": 50, "power": 50}, "idempotency_key": "g1"})
+	if code != http.StatusOK {
+		t.Fatalf("grow status = %d, body = %s", code, body)
+	}
+	var pr struct {
+		Money  int64 `json:"money"`
+		Params struct {
+			Kokugo int `json:"kokugo"`
+		} `json:"params"`
+	}
+	json.Unmarshal(body, &pr)
+	if pr.Money != 2500000-1000000 {
+		t.Errorf("money after grow = %d, want %d", pr.Money, 2500000-1000000)
+	}
+	if pr.Params.Kokugo != 950 {
+		t.Errorf("alice kokugo = %d, want 950", pr.Params.Kokugo)
+	}
+	// キャラ能力が反映されている。
+	resp, _ := http.Get(srv.URL + "/api/v1/players/" + strconv.FormatInt(alice.ID, 10) + "/character")
+	var ch struct {
+		Abilities map[string]int `json:"abilities"`
+	}
+	json.NewDecoder(resp.Body).Decode(&ch)
+	resp.Body.Close()
+	if ch.Abilities["kokugo"] != 50 || ch.Abilities["power"] != 50 {
+		t.Errorf("character abilities = %+v", ch.Abilities)
+	}
+
+	// 育成の検証: 本人値以上 → 422。
+	if code, _ := post(alice.ID, "/character/grow", map[string]any{"inputs": map[string]int{"kokugo": 99999}, "idempotency_key": "g2"}); code != http.StatusUnprocessableEntity {
+		t.Errorf("over-param grow status = %d, want 422", code)
+	}
+
+	// bobも少し育成(対戦相手にする)。
+	post(bob.ID, "/character/grow", map[string]any{"inputs": map[string]int{"kokugo": 5}, "idempotency_key": "gb"})
+
+	// 対戦: alice vs bob。結果が返る。
+	code, body = post(alice.ID, "/character/battle", map[string]any{"opponent_id": bob.ID, "idempotency_key": "b1"})
+	if code != http.StatusOK {
+		t.Fatalf("battle status = %d, body = %s", code, body)
+	}
+	var br struct {
+		Result struct {
+			Winner string `json:"winner"`
+			Rounds []any  `json:"rounds"`
+		} `json:"result"`
+	}
+	json.Unmarshal(body, &br)
+	if br.Result.Winner != "a" && br.Result.Winner != "b" && br.Result.Winner != "draw" {
+		t.Errorf("winner = %q", br.Result.Winner)
+	}
+	if len(br.Result.Rounds) != 5 {
+		t.Errorf("rounds = %d, want 5", len(br.Result.Rounds))
+	}
+
+	// クールタイム中の連戦 → 422(DebugNoCooldown=false)。
+	if code, _ := post(alice.ID, "/character/battle", map[string]any{"opponent_id": bob.ID, "idempotency_key": "b2"}); code != http.StatusUnprocessableEntity {
+		t.Errorf("cooldown battle status = %d, want 422", code)
+	}
+	// 自分対戦 → 422。
+	if code, _ := post(alice.ID, "/character/battle", map[string]any{"opponent_id": alice.ID, "idempotency_key": "b3"}); code != http.StatusUnprocessableEntity {
+		t.Errorf("self-battle status = %d, want 422", code)
+	}
+
+	// リーグ順位に2キャラ。
+	resp, _ = http.Get(srv.URL + "/api/v1/cleague")
+	var rank []any
+	json.NewDecoder(resp.Body).Decode(&rank)
+	resp.Body.Close()
+	if len(rank) != 2 {
+		t.Errorf("ranking = %d, want 2", len(rank))
 	}
 
 	// 台帳ゼロ和。

@@ -414,6 +414,42 @@ export interface ShopDetail {
   listings: ShopListing[];
 }
 
+export interface Character {
+  owner_id: number;
+  name: string;
+  abilities: Record<string, number>;
+  sintai: number;
+  zunou: number;
+  wins: number;
+  losses: number;
+  draws: number;
+}
+export interface CLeagueRank {
+  owner_id: number;
+  owner_name: string;
+  char_name: string;
+  wins: number;
+  losses: number;
+  draws: number;
+  sintai: number;
+  zunou: number;
+}
+export interface BattleRound {
+  ability: string;
+  comment: string;
+  a_score: number;
+  b_score: number;
+  winner: string;
+}
+export interface BattleResult {
+  winner: string;
+  rounds: BattleRound[];
+}
+export interface BattleResp {
+  player: Player;
+  result: BattleResult;
+}
+
 function adminHeaders(actingId: number): Record<string, string> {
   return { 'X-Acting-Player-Id': String(actingId) };
 }
@@ -463,6 +499,17 @@ export const api = {
       body,
       color,
       janken,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  getCharacter: (id: number) => request<Character | null>('GET', `/players/${id}/character`),
+  cleague: () => request<CLeagueRank[]>('GET', '/cleague'),
+  setCharacterName: (id: number, name: string) =>
+    request<Player>('POST', `/players/${id}/character`, { name, idempotency_key: newIdempotencyKey() }),
+  growCharacter: (id: number, inputs: Record<string, number>) =>
+    request<Player>('POST', `/players/${id}/character/grow`, { inputs, idempotency_key: newIdempotencyKey() }),
+  battle: (id: number, opponentId: number) =>
+    request<BattleResp>('POST', `/players/${id}/character/battle`, {
+      opponent_id: opponentId,
       idempotency_key: newIdempotencyKey(),
     }),
   listShops: () => request<ShopSummary[]>('GET', '/shops'),

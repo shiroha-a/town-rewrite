@@ -6,6 +6,7 @@ package action
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -16,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/shiroha-a/town/internal/cleague"
 	"github.com/shiroha-a/town/internal/condition"
 	"github.com/shiroha-a/town/internal/effects"
 	"github.com/shiroha-a/town/internal/event"
@@ -1495,6 +1497,163 @@ func (s *Service) DoOffer(ctx context.Context, fromID, toID, amount int64, idemp
 		}
 		return nil
 	})
+}
+
+// cleagueMatchInterval rate-limits battles per player (legacy 疲労クールタイム).
+const cleagueMatchInterval = 5 * time.Minute
+
+// DoSetCharacterName creates or renames the player's battle character (free).
+func (s *Service) DoSetCharacterName(ctx context.Context, playerID int64, name, idempotencyKey string) (*player.Player, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || len([]rune(name)) > 30 {
+		return nil, &ConditionError{Message: "キャラ名は1〜30文字で入力してください。"}
+	}
+	return s.runAction(ctx, playerID, "cleague_name", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		_, err := tx.Exec(ctx,
+			`INSERT INTO battle_characters (owner_id, name, abilities) VALUES ($1, $2, '{}')
+			 ON CONFLICT (owner_id) DO UPDATE SET name = $2`, playerID, name)
+		return err
+	})
+}
+
+// DoGrowCharacter feeds the player's parameters and money into their character:
+// each ability transfers the input value from the owner (owner-param > input
+// required) and costs input×10000 yen. Legacy: make_chara.
+func (s *Service) DoGrowCharacter(ctx context.Context, playerID int64, inputs map[string]int, idempotencyKey string) (*player.Player, error) {
+	for k, v := range inputs {
+		if !cleague.IsAbility(k) || v < 0 {
+			return nil, &ConditionError{Message: "入力が不正です。"}
+		}
+	}
+	return s.runAction(ctx, playerID, "cleague_grow", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		var abJSON []byte
+		if err := tx.QueryRow(ctx, `SELECT abilities FROM battle_characters WHERE owner_id = $1`, playerID).Scan(&abJSON); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return &ConditionError{Message: "先にキャラを作成してください。"}
+			}
+			return fmt.Errorf("character: %w", err)
+		}
+		abilities := map[string]int{}
+		_ = json.Unmarshal(abJSON, &abilities)
+
+		var totalUnits int
+		eff := effects.Effect{}
+		for k, v := range inputs {
+			if v <= 0 {
+				continue
+			}
+			if state.Params[k].Value <= v {
+				return &ConditionError{Message: fmt.Sprintf("%sが足りません(本人の値より小さい値を入力)。", k)}
+			}
+			totalUnits += v
+			abilities[k] += v
+			eff.Ops = append(eff.Ops, effects.Op{Kind: "add_param", Param: k, Amount: int64(-v)})
+		}
+		if totalUnits == 0 {
+			return &ConditionError{Message: "育成する能力を入力してください。"}
+		}
+		cost := int64(totalUnits) * 10000
+		if state.Money < cost {
+			return &ConditionError{Message: "お金が足りません。"}
+		}
+		if err := s.ledger.PostTx(ctx, tx, "cleague_grow", "", []ledger.Entry{
+			{Account: ledger.PlayerAccount(playerID), Delta: -cost},
+			{Account: ledger.SystemAccount("cleague"), Delta: cost},
+		}); err != nil {
+			return fmt.Errorf("pay: %w", err)
+		}
+		if err := s.applyEffect(ctx, tx, playerID, "cleague", eff, state); err != nil {
+			return err
+		}
+		newAb, _ := json.Marshal(abilities)
+		if _, err := tx.Exec(ctx, `UPDATE battle_characters SET abilities = $2 WHERE owner_id = $1`, playerID, newAb); err != nil {
+			return fmt.Errorf("update character: %w", err)
+		}
+		return nil
+	})
+}
+
+// DoBattle fights the player's character against an opponent's, records the
+// result for both, and returns the round-by-round outcome. Legacy: c_league/battle.
+func (s *Service) DoBattle(ctx context.Context, playerID, opponentID int64, idempotencyKey string) (*player.Player, *cleague.BattleResult, error) {
+	if playerID == opponentID {
+		return nil, nil, &ConditionError{Message: "自分とは対戦できません。"}
+	}
+	var result *cleague.BattleResult
+	p, err := s.runAction(ctx, playerID, "cleague_battle", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		mine, err := loadAbilities(ctx, tx, playerID)
+		if err != nil {
+			return err
+		}
+		if mine == nil {
+			return &ConditionError{Message: "先にキャラを作成してください。"}
+		}
+		opp, err := loadAbilities(ctx, tx, opponentID)
+		if err != nil {
+			return err
+		}
+		if opp == nil {
+			return &ConditionError{Message: "相手のキャラがいません。"}
+		}
+		if !s.settings.Get().DebugNoCooldown {
+			var last *time.Time
+			if err := tx.QueryRow(ctx, `SELECT last_match_at FROM battle_characters WHERE owner_id = $1`, playerID).Scan(&last); err != nil {
+				return err
+			}
+			if last != nil && time.Since(*last) < cleagueMatchInterval {
+				return &ConditionError{Message: "キャラが疲れています。少し休ませてください。"}
+			}
+		}
+		res := cleague.Battle(mine, opp, s.rng)
+		result = &res
+		// 戦績更新。
+		switch res.Winner {
+		case "a":
+			if err := bumpRecord(ctx, tx, playerID, "wins"); err != nil {
+				return err
+			}
+			if err := bumpRecord(ctx, tx, opponentID, "losses"); err != nil {
+				return err
+			}
+		case "b":
+			if err := bumpRecord(ctx, tx, playerID, "losses"); err != nil {
+				return err
+			}
+			if err := bumpRecord(ctx, tx, opponentID, "wins"); err != nil {
+				return err
+			}
+		default:
+			if err := bumpRecord(ctx, tx, playerID, "draws"); err != nil {
+				return err
+			}
+			if err := bumpRecord(ctx, tx, opponentID, "draws"); err != nil {
+				return err
+			}
+		}
+		_, err = tx.Exec(ctx, `UPDATE battle_characters SET last_match_at = now() WHERE owner_id = $1`, playerID)
+		return err
+	})
+	return p, result, err
+}
+
+func loadAbilities(ctx context.Context, tx pgx.Tx, ownerID int64) (map[string]int, error) {
+	var abJSON []byte
+	err := tx.QueryRow(ctx, `SELECT abilities FROM battle_characters WHERE owner_id = $1`, ownerID).Scan(&abJSON)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("abilities: %w", err)
+	}
+	ab := map[string]int{}
+	_ = json.Unmarshal(abJSON, &ab)
+	return ab, nil
+}
+
+func bumpRecord(ctx context.Context, tx pgx.Tx, ownerID int64, col string) error {
+	// col は "wins"/"losses"/"draws" の固定値のみ(内部呼び出し)。
+	_, err := tx.Exec(ctx, `UPDATE battle_characters SET `+col+` = `+col+` + 1 WHERE owner_id = $1`, ownerID)
+	return err
 }
 
 // jobEconomy holds a job's take-requirements and pay/level rules (design 17.5).

@@ -7,6 +7,7 @@ import (
 
 	"github.com/shiroha-a/town/internal/action"
 	"github.com/shiroha-a/town/internal/attendance"
+	"github.com/shiroha-a/town/internal/cleague"
 	"github.com/shiroha-a/town/internal/content"
 	"github.com/shiroha-a/town/internal/greeting"
 	"github.com/shiroha-a/town/internal/keiba"
@@ -31,11 +32,12 @@ type Server struct {
 	greeting   *greeting.Service
 	attendance *attendance.Service
 	shop       *shop.Service
+	cleague    *cleague.Service
 }
 
 // NewServer builds the HTTP handler for the REST API.
-func NewServer(players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store, stockSvc *stock.Service, keibaSvc *keiba.Service, mailSvc *mail.Service, greetingSvc *greeting.Service, attendanceSvc *attendance.Service, shopSvc *shop.Service) http.Handler {
-	s := &Server{players: players, actions: actions, content: contentSvc, settings: st, townmap: tmap, stock: stockSvc, keiba: keibaSvc, mail: mailSvc, greeting: greetingSvc, attendance: attendanceSvc, shop: shopSvc}
+func NewServer(players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store, stockSvc *stock.Service, keibaSvc *keiba.Service, mailSvc *mail.Service, greetingSvc *greeting.Service, attendanceSvc *attendance.Service, shopSvc *shop.Service, cleagueSvc *cleague.Service) http.Handler {
+	s := &Server{players: players, actions: actions, content: contentSvc, settings: st, townmap: tmap, stock: stockSvc, keiba: keibaSvc, mail: mailSvc, greeting: greetingSvc, attendance: attendanceSvc, shop: shopSvc, cleague: cleagueSvc}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("POST /api/v1/players", s.registerPlayer)
@@ -69,6 +71,11 @@ func NewServer(players *player.Service, actions *action.Service, contentSvc *con
 	mux.HandleFunc("POST /api/v1/players/{id}/shop/price", s.shopPrice)
 	mux.HandleFunc("POST /api/v1/players/{id}/shop/buy", s.shopBuy)
 	mux.HandleFunc("POST /api/v1/players/{id}/shop/offer", s.shopOffer)
+	mux.HandleFunc("GET /api/v1/cleague", s.cleagueRanking)
+	mux.HandleFunc("GET /api/v1/players/{id}/character", s.getCharacter)
+	mux.HandleFunc("POST /api/v1/players/{id}/character", s.setCharacterName)
+	mux.HandleFunc("POST /api/v1/players/{id}/character/grow", s.growCharacter)
+	mux.HandleFunc("POST /api/v1/players/{id}/character/battle", s.battle)
 	mux.HandleFunc("GET /api/v1/items", s.shopItems)
 	mux.HandleFunc("GET /api/v1/facilities/{facility}/menu", s.facilityMenu)
 	mux.HandleFunc("POST /api/v1/players/{id}/eat", s.eat)
