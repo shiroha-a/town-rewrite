@@ -196,20 +196,10 @@ const others: { label: string; key: ParamKey }[] = [
     ★受信箱に{{ unreadMail }}通の新しいメッセージが届いています！
   </button>
 
-  <div v-if="eventNotice" :class="['event-notice', eventNotice.good ? 'good' : 'bad']" @click="eventNotice = null">
-    ★イベント発生！ {{ eventNotice.message }}
-  </div>
-
   <div class="town">
     <!-- 左カラム: 街マップ -->
     <div class="col-left">
       <div class="mapwrap">
-        <button class="chat-head" @click="emit('navigate', 'aisatu')">●チャット(あいさつ)</button>
-        <div v-if="greetings.length" class="chat-feed">
-          <div v-for="g in greetings" :key="g.id" class="chat-line">
-            <span class="cn">{{ g.user_name }}</span>：<span :style="{ color: g.color }">{{ g.body }}</span>
-          </div>
-        </div>
         <table class="townmap">
           <tbody>
             <tr>
@@ -233,6 +223,12 @@ const others: { label: string; key: ParamKey }[] = [
         </table>
       </div>
       <div class="ticker">{{ tickerText }}</div>
+      <button class="chat-head" @click="emit('navigate', 'aisatu')">●チャット(あいさつ)</button>
+      <div v-if="greetings.length" class="chat-feed">
+        <div v-for="g in greetings" :key="g.id" class="chat-line">
+          <span class="cn">{{ g.user_name }}</span>：<span :style="{ color: g.color }">{{ g.body }}</span>
+        </div>
+      </div>
       <div class="left-links">
         <button class="link-btn" @click="emit('navigate', 'shopping')">商店街</button>
         <button class="link-btn" @click="emit('navigate', 'ashiato')">足あと帳</button>
@@ -265,6 +261,10 @@ const others: { label: string; key: ParamKey }[] = [
               <span v-if="cmd.key === 'work' && workCooldown" class="cmd-cooldown">{{ workCooldown }}</span>
               <span v-if="cmd.key === 'mail' && unreadMail > 0" class="cmd-badge">{{ unreadMail }}</span>
             </button>
+          </div>
+
+          <div v-if="eventNotice" :class="['event-notice', eventNotice.good ? 'good' : 'bad']" @click="eventNotice = null">
+            ★イベント発生！ {{ eventNotice.message }}
           </div>
 
           <div class="orangebox status">
