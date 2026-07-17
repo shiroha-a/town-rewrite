@@ -176,6 +176,31 @@ export interface CasinoPlayResult {
   detail: Record<string, unknown>;
 }
 
+// スクラッチのカード1枚。valuesは開封済みセルのindex->値(未開封は含まない)。
+export interface ScratchCard {
+  index: number;
+  values: Record<number, number>;
+  opened: number;
+  finished: boolean;
+  atari: number;
+}
+export interface ScratchState {
+  game: string;
+  cols: number;
+  cells: number;
+  atari_max: number;
+  open_max: number;
+  cards: ScratchCard[];
+}
+export interface ScratchOpenResult {
+  player: Player;
+  value: number;
+  win: boolean;
+  bonus: boolean;
+  prize: number;
+  state: ScratchState;
+}
+
 // ローンの返済プラン1件(返済回数・利率・日額・総返済額)。
 export interface LoanPlanQuote {
   count: number;
@@ -659,6 +684,13 @@ export const api = {
     request<CasinoPlayResult>('POST', `/players/${id}/casino/${game}/play`, {
       bet,
       params,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  scratchState: (id: number, game: string) => request<ScratchState>('GET', `/players/${id}/scratch/${game}`),
+  scratchOpen: (id: number, game: string, card: number, cell: number) =>
+    request<ScratchOpenResult>('POST', `/players/${id}/scratch/${game}/open`, {
+      card,
+      cell,
       idempotency_key: newIdempotencyKey(),
     }),
   hospitalTreat: (id: number) =>

@@ -9,12 +9,14 @@ import DonutsGame from './casino/DonutsGame.vue';
 import OmikujiGame from './casino/OmikujiGame.vue';
 import OtakaraGame from './casino/OtakaraGame.vue';
 import FukubikiGame from './casino/FukubikiGame.vue';
+import ScratchGame from './casino/ScratchGame.vue';
 
 defineProps<{ player: Player }>();
 const emit = defineEmits<{ update: [player: Player]; back: [] }>();
 
 // ゲーム一覧。新しいゲームはこの配列と gameComponents の両方に登録する。
-const games: { key: string; name: string; desc: string }[] = [
+// props は選択時にコンポーネントへ渡す追加プロパティ(スクラッチのgame種別など)。
+const games: { key: string; name: string; desc: string; props?: Record<string, unknown> }[] = [
   { key: 'saikoro', name: 'サイコロ', desc: '2つのサイコロの合計が偶数か奇数かを当てる(1:1)' },
   { key: 'loto', name: 'ロト', desc: '6桁の数字を予想し、位置ごとの一致桁数で配当(最大×1000)' },
   { key: 'slot', name: 'スロット', desc: '8ラインスロット、絵柄を揃えて最大×7777' },
@@ -23,6 +25,8 @@ const games: { key: string; name: string; desc: string }[] = [
   { key: 'omikuji', name: 'おみくじ', desc: 'お賽銭と占う項目を選び、運勢でステータス・金運が変わる' },
   { key: 'otakara', name: 'お宝', desc: '宝箱を選んで代金を払い、アイテムやステータスを得る' },
   { key: 'fukubiki', name: '福引き', desc: 'カードを選んで景品が当たる(無料)' },
+  { key: 'scratch', name: 'スクラッチ', desc: '1日5枚、3マス開けて当たりを狙う(無料)', props: { game: 'scratch' } },
+  { key: 'sukuratti', name: 'スクラッチ2', desc: '3x3の9マス版スクラッチ(無料)', props: { game: 'sukuratti' } },
 ];
 const gameComponents: Record<string, Component> = {
   saikoro: SaikoroGame,
@@ -33,11 +37,14 @@ const gameComponents: Record<string, Component> = {
   omikuji: OmikujiGame,
   otakara: OtakaraGame,
   fukubiki: FukubikiGame,
+  scratch: ScratchGame,
+  sukuratti: ScratchGame,
 };
 
 const yen = (n: number) => n.toLocaleString('ja-JP');
 const selected = ref<string | null>(null);
 const current = computed(() => (selected.value ? gameComponents[selected.value] : null));
+const currentProps = computed(() => games.find((g) => g.key === selected.value)?.props ?? {});
 </script>
 
 <template>
@@ -58,7 +65,7 @@ const current = computed(() => (selected.value ? gameComponents[selected.value] 
     </template>
     <template v-else>
       <button class="btn menu-back" @click="selected = null">← ゲーム選択にもどる</button>
-      <component :is="current" :player="player" @update="emit('update', $event)" />
+      <component :is="current" :player="player" v-bind="currentProps" @update="emit('update', $event)" />
     </template>
   </div>
 </template>

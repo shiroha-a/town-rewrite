@@ -56,3 +56,62 @@ func (s *Server) casinoPlay(w http.ResponseWriter, r *http.Request) {
 		Detail: res.Detail,
 	})
 }
+
+func (s *Server) scratchState(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	st, err := s.actions.GetScratchState(r.Context(), id, r.PathValue("game"))
+	if err != nil {
+		var condErr *action.ConditionError
+		if errors.As(err, &condErr) {
+			writeError(w, http.StatusUnprocessableEntity, condErr.Message)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+type scratchOpenReq struct {
+	Card           int    `json:"card"`
+	Cell           int    `json:"cell"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+func (s *Server) scratchOpen(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req scratchOpenReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	res, err := s.actions.DoScratchOpen(r.Context(), id, r.PathValue("game"), req.Card, req.Cell, req.IdempotencyKey)
+	if err != nil {
+		var condErr *action.ConditionError
+		switch {
+		case errors.Is(err, player.ErrNotFound):
+			writeError(w, http.StatusNotFound, "player not found")
+		case errors.As(err, &condErr):
+			writeError(w, http.StatusUnprocessableEntity, condErr.Message)
+		default:
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"player": toResp(res.Player),
+		"value":  res.Value,
+		"win":    res.Win,
+		"bonus":  res.Bonus,
+		"prize":  res.Prize,
+		"state":  res.State,
+	})
+}

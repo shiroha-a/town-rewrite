@@ -821,6 +821,211 @@ func (s *Service) checkGameLimit(ctx context.Context, tx pgx.Tx, playerID int64,
 	return nil
 }
 
+// scratchDef parameters a scratch-card variant (scratch: 3x2/当り<=3,
+// sukuratti: 3x3/当り<=4). Both give +Prize per winning cell opened and a +Bonus
+// when all OpenMax opened cells are winners.
+type scratchDef struct {
+	Cells    int   // 総セル数(6 or 9)
+	Cols     int   // 表示列数
+	AtariMax int   // この値以下が当たり
+	OpenMax  int   // 1カードで開けられる数
+	Cards    int   // 1日の枚数
+	Prize    int64 // 当りセル1つの賞金
+	Bonus    int64 // 全開封が当りのボーナス
+}
+
+var scratchDefs = map[string]scratchDef{
+	"scratch":   {Cells: 6, Cols: 3, AtariMax: 3, OpenMax: 3, Cards: 5, Prize: 100000, Bonus: 300000},
+	"sukuratti": {Cells: 9, Cols: 3, AtariMax: 4, OpenMax: 3, Cards: 5, Prize: 100000, Bonus: 300000},
+}
+
+// genScratchCells returns a random permutation of 1..n (randcheck相当)。
+func genScratchCells(r *rng.Rand, n int) []int32 {
+	cells := make([]int32, n)
+	for i := range cells {
+		cells[i] = int32(i + 1)
+	}
+	for i := n - 1; i > 0; i-- {
+		j := r.IntN(i + 1)
+		cells[i], cells[j] = cells[j], cells[i]
+	}
+	return cells
+}
+
+// ScratchCard is one card's display state: only opened cells reveal their value.
+type ScratchCard struct {
+	Index    int         `json:"index"`
+	Values   map[int]int `json:"values"` // 開封セルindex -> 値(未開封は含まない)
+	Opened   int         `json:"opened"`
+	Finished bool        `json:"finished"`
+	Atari    int         `json:"atari"`
+}
+
+// ScratchState is the current daily scratch board.
+type ScratchState struct {
+	Game     string        `json:"game"`
+	Cols     int           `json:"cols"`
+	Cells    int           `json:"cells"`
+	AtariMax int           `json:"atari_max"`
+	OpenMax  int           `json:"open_max"`
+	Cards    []ScratchCard `json:"cards"`
+}
+
+// GetScratchState returns today's scratch cards, generating a fresh set on the
+// first access of a new game day.
+func (s *Service) GetScratchState(ctx context.Context, playerID int64, game string) (*ScratchState, error) {
+	def, ok := scratchDefs[game]
+	if !ok {
+		return nil, &ConditionError{Message: "不明なゲームです。"}
+	}
+	today := gametime.Date(time.Now(), s.loc, s.dayBoundaryHour)
+	if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var cnt int
+		if err := tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM player_scratch_cards WHERE player_id=$1 AND game=$2 AND game_date=$3`,
+			playerID, game, today).Scan(&cnt); err != nil {
+			return err
+		}
+		if cnt == 0 {
+			for i := 0; i < def.Cards; i++ {
+				if _, err := tx.Exec(ctx,
+					`INSERT INTO player_scratch_cards (player_id, game, game_date, card_index, cells)
+					 VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
+					playerID, game, today, i, genScratchCells(s.rng, def.Cells)); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return s.readScratchState(ctx, playerID, game, today, def)
+}
+
+func (s *Service) readScratchState(ctx context.Context, playerID int64, game string, today time.Time, def scratchDef) (*ScratchState, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT card_index, cells, opened FROM player_scratch_cards
+		 WHERE player_id=$1 AND game=$2 AND game_date=$3 ORDER BY card_index`,
+		playerID, game, today)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	st := &ScratchState{Game: game, Cols: def.Cols, Cells: def.Cells, AtariMax: def.AtariMax, OpenMax: def.OpenMax}
+	for rows.Next() {
+		var idx int
+		var cells, opened []int32
+		if err := rows.Scan(&idx, &cells, &opened); err != nil {
+			return nil, err
+		}
+		card := ScratchCard{Index: idx, Values: map[int]int{}}
+		for _, o := range opened {
+			v := int(cells[o])
+			card.Values[int(o)] = v
+			if v <= def.AtariMax {
+				card.Atari++
+			}
+		}
+		card.Opened = len(opened)
+		card.Finished = card.Opened >= def.OpenMax
+		st.Cards = append(st.Cards, card)
+	}
+	return st, rows.Err()
+}
+
+// ScratchOpenResult is returned after opening one scratch cell.
+type ScratchOpenResult struct {
+	Player *player.Player `json:"-"`
+	Value  int            `json:"value"`  // 開いたセルの値
+	Win    bool           `json:"win"`    // そのセルが当たりか
+	Bonus  bool           `json:"bonus"`  // 全開封当りボーナスが出たか
+	Prize  int64          `json:"prize"`  // 今回の賞金
+	State  *ScratchState  `json:"state"`  // 更新後の盤面
+}
+
+// DoScratchOpen opens one cell of a scratch card, pays winning prizes, and
+// returns the updated board. Cards are per game day and capped at OpenMax opens.
+func (s *Service) DoScratchOpen(ctx context.Context, playerID int64, game string, cardIndex, cellIndex int, idempotencyKey string) (*ScratchOpenResult, error) {
+	def, ok := scratchDefs[game]
+	if !ok {
+		return nil, &ConditionError{Message: "不明なゲームです。"}
+	}
+	today := gametime.Date(time.Now(), s.loc, s.dayBoundaryHour)
+	out := &ScratchOpenResult{}
+	p, err := s.runAction(ctx, playerID, "scratch:"+game, idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		var cells, opened []int32
+		err := tx.QueryRow(ctx,
+			`SELECT cells, opened FROM player_scratch_cards
+			 WHERE player_id=$1 AND game=$2 AND game_date=$3 AND card_index=$4 FOR UPDATE`,
+			playerID, game, today, cardIndex).Scan(&cells, &opened)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &ConditionError{Message: "そのカードは今日ありません。"}
+		}
+		if err != nil {
+			return err
+		}
+		if cellIndex < 0 || cellIndex >= len(cells) {
+			return &ConditionError{Message: "セルの指定が正しくありません。"}
+		}
+		for _, o := range opened {
+			if int(o) == cellIndex {
+				return &ConditionError{Message: "そのマスはもう開いています。"}
+			}
+		}
+		if len(opened) >= def.OpenMax {
+			return &ConditionError{Message: "このカードはもう開けられません。"}
+		}
+		opened = append(opened, int32(cellIndex))
+		val := int(cells[cellIndex])
+		out.Value = val
+		var prize int64
+		if val <= def.AtariMax {
+			out.Win = true
+			prize += def.Prize
+		}
+		// 開封上限に達し、開けたセルがすべて当たりならボーナス。
+		if len(opened) == def.OpenMax {
+			atari := 0
+			for _, o := range opened {
+				if int(cells[o]) <= def.AtariMax {
+					atari++
+				}
+			}
+			if atari == def.OpenMax {
+				out.Bonus = true
+				prize += def.Bonus
+			}
+		}
+		out.Prize = prize
+		if _, err := tx.Exec(ctx,
+			`UPDATE player_scratch_cards SET opened=$1
+			 WHERE player_id=$2 AND game=$3 AND game_date=$4 AND card_index=$5`,
+			opened, playerID, game, today, cardIndex); err != nil {
+			return err
+		}
+		if prize > 0 {
+			if err := s.ledger.PostTx(ctx, tx, "scratch:"+game, "", []ledger.Entry{
+				{Account: ledger.SystemAccount("casino"), Delta: -prize},
+				{Account: ledger.PlayerAccount(playerID), Delta: prize},
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	out.Player = p
+	st, err := s.readScratchState(ctx, playerID, game, today, def)
+	if err != nil {
+		return nil, err
+	}
+	out.State = st
+	return out, nil
+}
+
 // CasinoResult is returned after a minigame play: the updated player and the
 // game outcome for presentation.
 type CasinoResult struct {
