@@ -27,6 +27,7 @@ type Player struct {
 	Roles        []string
 	Money        int64
 	Savings      int64
+	SuperSavings int64
 	Status       Status
 	Params       Params
 	Items        []ItemStack
@@ -473,6 +474,12 @@ func (s *Service) Get(ctx context.Context, id int64) (*Player, error) {
 		return nil, err
 	}
 	p.Savings = savings
+
+	superSavings, err := s.ledger.Balance(ctx, ledger.SuperSavingsAccount(id))
+	if err != nil {
+		return nil, err
+	}
+	p.SuperSavings = superSavings
 
 	items, err := s.pool.Query(ctx,
 		`SELECT ci.id, ci.name, pi.quantity, pi.remaining_uses,

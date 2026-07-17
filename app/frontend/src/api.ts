@@ -41,6 +41,7 @@ export interface Player {
   roles: string[];
   money: number;
   savings: number;
+  super_savings: number;
   status: {
     energy: number;
     energy_max: number;
@@ -607,6 +608,17 @@ export const api = {
     request<Player>('POST', `/players/${id}/bank/transfer`, {
       to_name: toName,
       amount,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  superDeposit: (id: number, amount: number) =>
+    request<Player>('POST', `/players/${id}/bank/super/deposit`, {
+      amount,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  superCancel: (id: number, amount: number, all: boolean) =>
+    request<Player>('POST', `/players/${id}/bank/super/cancel`, {
+      amount,
+      all,
       idempotency_key: newIdempotencyKey(),
     }),
   hospitalTreat: (id: number) =>

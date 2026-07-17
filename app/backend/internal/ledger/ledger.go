@@ -32,6 +32,10 @@ func PlayerAccount(id int64) string { return fmt.Sprintf("player:%d", id) }
 // SavingsAccount returns the ledger account name for a player's bank savings.
 func SavingsAccount(id int64) string { return fmt.Sprintf("savings:%d", id) }
 
+// SuperSavingsAccount returns the ledger account name for a player's super
+// time-deposit (スーパー定期).
+func SuperSavingsAccount(id int64) string { return fmt.Sprintf("super_savings:%d", id) }
+
 // SystemAccount returns a system faucet/sink account name.
 func SystemAccount(name string) string { return "system:" + name }
 

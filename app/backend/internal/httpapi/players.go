@@ -76,6 +76,7 @@ type playerResp struct {
 	Roles        []string   `json:"roles"`
 	Money        int64      `json:"money"`
 	Savings      int64      `json:"savings"`
+	SuperSavings int64      `json:"super_savings"`
 	Status       statusResp `json:"status"`
 	Params       paramsResp `json:"params"`
 	Items        []itemResp `json:"items"`
@@ -117,6 +118,7 @@ func toResp(p *player.Player) playerResp {
 		Roles:        roles,
 		Money:        p.Money,
 		Savings:      p.Savings,
+		SuperSavings: p.SuperSavings,
 		Status: statusResp{
 			Energy:          p.Status.Energy,
 			EnergyMax:       p.Status.EnergyMax,

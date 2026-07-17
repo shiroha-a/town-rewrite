@@ -14,26 +14,27 @@ import (
 	"github.com/shiroha-a/town/internal/ledger"
 )
 
-// AccrueInterest credits interest to every savings account with a positive
-// balance, using the caller's transaction. permille is the per-mille daily rate
-// (5 = 0.5%). It returns the number of accounts credited.
+// AccrueInterest credits interest to every account matching accountPrefix (e.g.
+// "savings:") that has a positive balance, using the caller's transaction.
+// permille is the per-mille daily rate (5 = 0.5%); reasonPrefix labels each
+// ledger tx (e.g. "interest:"). It returns the number of accounts credited.
 //
 // Idempotency for "once per game day" is provided by the caller (the worker's
 // worker_jobs claim runs this in the same transaction), so no per-post ref is
 // needed here.
-func AccrueInterest(ctx context.Context, tx pgx.Tx, led *ledger.Repo, permille int) (int, error) {
+func AccrueInterest(ctx context.Context, tx pgx.Tx, led *ledger.Repo, accountPrefix, reasonPrefix string, permille int) (int, error) {
 	if permille <= 0 {
 		return 0, nil
 	}
 
-	// 先に全savings残高を読み切ってから台帳へ書く(同一tx上でrowsを開いたまま
+	// 先に全残高を読み切ってから台帳へ書く(同一tx上でrowsを開いたまま
 	// 別クエリを発行できないため)。
 	rows, err := tx.Query(ctx,
 		`SELECT account, SUM(delta) AS balance
 		 FROM ledger_entry
-		 WHERE account LIKE 'savings:%'
+		 WHERE account LIKE $1
 		 GROUP BY account
-		 HAVING SUM(delta) > 0`)
+		 HAVING SUM(delta) > 0`, accountPrefix+"%")
 	if err != nil {
 		return 0, fmt.Errorf("query savings: %w", err)
 	}
@@ -61,7 +62,7 @@ func AccrueInterest(ctx context.Context, tx pgx.Tx, led *ledger.Repo, permille i
 		if interest <= 0 {
 			continue
 		}
-		reason := "interest:" + accountID(s.account)
+		reason := reasonPrefix + accountID(s.account)
 		if err := led.PostTx(ctx, tx, reason, "", []ledger.Entry{
 			{Account: ledger.SystemAccount("interest_faucet"), Delta: -interest},
 			{Account: s.account, Delta: interest},

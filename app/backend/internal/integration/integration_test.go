@@ -776,7 +776,7 @@ func TestBankAndInterest(t *testing.T) {
 		var n int
 		err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 			var e error
-			n, e = bank.AccrueInterest(ctx, tx, led, 5)
+			n, e = bank.AccrueInterest(ctx, tx, led, "savings:", "interest:", 5)
 			return e
 		})
 		if err != nil {

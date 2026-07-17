@@ -27,6 +27,10 @@ const leaderKey = "town:worker:leader"
 // (legacy: online players + 1). Higher = rarer, gentler moves.
 const stockVolatilityG = 20
 
+// superInterestPermille is the daily rate for super time-deposits (10 = 1%),
+// twice the ordinary savings rate. Legacy: fixed 1%.
+const superInterestPermille = 10
+
 // Worker drives scheduled game progression.
 type Worker struct {
 	rdb      *redis.Client
@@ -141,8 +145,12 @@ func (w *Worker) runDailyIfNeeded(ctx context.Context, now time.Time) {
 			return nil // 本日分は実行済み
 		}
 		ran = true
-		interestAccounts, err = bank.AccrueInterest(ctx, tx, w.ledger, w.settings.Get().DailyInterestPermille)
+		interestAccounts, err = bank.AccrueInterest(ctx, tx, w.ledger, "savings:", "interest:", w.settings.Get().DailyInterestPermille)
 		if err != nil {
+			return err
+		}
+		// スーパー定期は普通口座の倍(1%/日)の利息を付与する。
+		if _, err := bank.AccrueInterest(ctx, tx, w.ledger, "super_savings:", "super_interest:", superInterestPermille); err != nil {
 			return err
 		}
 		// 日単位耐久アイテムの残日数を1減らし、失効したものを削除する。

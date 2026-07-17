@@ -98,3 +98,33 @@ func (s *Server) bankTransfer(w http.ResponseWriter, r *http.Request) {
 	p, err := s.actions.DoTransfer(r.Context(), id, req.ToName, req.Amount, req.IdempotencyKey)
 	writeActionResult(w, p, err)
 }
+
+func (s *Server) superDeposit(w http.ResponseWriter, r *http.Request) {
+	id, req, ok := decodeBank(w, r)
+	if !ok {
+		return
+	}
+	p, err := s.actions.DoSuperDeposit(r.Context(), id, req.Amount, req.IdempotencyKey)
+	writeActionResult(w, p, err)
+}
+
+type superCancelReq struct {
+	Amount         int64  `json:"amount"`
+	All            bool   `json:"all"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+func (s *Server) superCancel(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req superCancelReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	p, err := s.actions.DoSuperCancel(r.Context(), id, req.Amount, req.All, req.IdempotencyKey)
+	writeActionResult(w, p, err)
+}

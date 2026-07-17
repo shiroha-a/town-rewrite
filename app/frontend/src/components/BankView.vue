@@ -60,6 +60,25 @@ const doTransfer = () =>
     if (statement.value) statement.value = await api.bankStatement(props.player.id);
     return p;
   });
+
+// スーパー定期(100万円単位で入力)。
+const superDepositMan = ref<number>(0);
+const superCancelMan = ref<number>(0);
+const reloadStatement = async () => {
+  if (statement.value) statement.value = await api.bankStatement(props.player.id);
+};
+const doSuperDeposit = () =>
+  run('スーパー定期の預け入れ', async () => {
+    const p = await api.superDeposit(props.player.id, superDepositMan.value * 1_000_000);
+    await reloadStatement();
+    return p;
+  });
+const doSuperCancel = (all: boolean) =>
+  run(all ? 'スーパー定期の全額解約' : 'スーパー定期の解約', async () => {
+    const p = await api.superCancel(props.player.id, superCancelMan.value * 1_000_000, all);
+    await reloadStatement();
+    return p;
+  });
 </script>
 
 <template>
@@ -133,8 +152,24 @@ const doTransfer = () =>
       </div>
 
       <div class="col">
-        <h3 class="sec">■スーパー定期<span class="blue">●スーパー定期預金額：0</span></h3>
-        <p class="note">※スーパー定期では1日1回1％の利息がつきます。<span class="muted">(準備中)</span></p>
+        <h3 class="sec">
+          ■スーパー定期<span class="blue">●スーパー定期預金額：{{ yen(player.super_savings) }}</span>
+        </h3>
+        <p class="note">
+          ※スーパー定期では1日1回1％の利息がつきます。<br />
+          預け入れは100万円単位、引き出しは解約(全額または100万円単位)となります。
+        </p>
+        <div class="row">
+          <span class="lbl">◆お　預　け</span>
+          <input type="number" v-model.number="superDepositMan" min="0" data-test="super-deposit-amount" /> 百万円
+          <button class="btn" :disabled="busy" data-test="super-deposit" @click="doSuperDeposit">預ける</button>
+        </div>
+        <div class="row">
+          <span class="lbl">◆解　　約</span>
+          <input type="number" v-model.number="superCancelMan" min="0" data-test="super-cancel-amount" /> 百万円
+          <button class="btn" :disabled="busy" data-test="super-cancel" @click="doSuperCancel(false)">部分解約</button>
+          <button class="btn" :disabled="busy" data-test="super-cancel-all" @click="doSuperCancel(true)">全額解約</button>
+        </div>
 
         <h3 class="sec">■ローン</h3>
         <p class="note">※当銀行へのご利用度や収入に応じてお金を借りることができます。<span class="muted">(準備中)</span></p>

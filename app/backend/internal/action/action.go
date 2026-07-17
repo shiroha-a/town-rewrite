@@ -547,6 +547,57 @@ func (s *Service) DoTransfer(ctx context.Context, fromID int64, toName string, a
 	})
 }
 
+// superUnit is the deposit/cancel unit for the super time-deposit (100万円).
+const superUnit = 1_000_000
+
+// DoSuperDeposit moves cash into the super time-deposit in 100万円 units. It
+// earns 1%/day interest, twice the ordinary savings rate.
+func (s *Service) DoSuperDeposit(ctx context.Context, playerID, amount int64, idempotencyKey string) (*player.Player, error) {
+	if amount <= 0 || amount%superUnit != 0 {
+		return nil, &ConditionError{Message: "スーパー定期は100万円単位で預け入れてください。"}
+	}
+	return s.runAction(ctx, playerID, "super_deposit", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		if state.Money < amount {
+			return &ConditionError{Message: "お金が足りません。"}
+		}
+		return s.ledger.PostTx(ctx, tx, "super_deposit", "", []ledger.Entry{
+			{Account: ledger.PlayerAccount(playerID), Delta: -amount},
+			{Account: ledger.SuperSavingsAccount(playerID), Delta: amount},
+		})
+	})
+}
+
+// DoSuperCancel returns super time-deposit money to cash. Withdrawal is only by
+// cancellation: the full balance (all=true) or a 100万円-unit amount. There is
+// no early-cancellation penalty (legacy behavior).
+func (s *Service) DoSuperCancel(ctx context.Context, playerID, amount int64, all bool, idempotencyKey string) (*player.Player, error) {
+	if !all && (amount <= 0 || amount%superUnit != 0) {
+		return nil, &ConditionError{Message: "スーパー定期の解約は100万円単位です。"}
+	}
+	return s.runAction(ctx, playerID, "super_cancel", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		var super int64
+		if err := tx.QueryRow(ctx,
+			`SELECT COALESCE(SUM(delta), 0) FROM ledger_entry WHERE account = $1`,
+			ledger.SuperSavingsAccount(playerID)).Scan(&super); err != nil {
+			return fmt.Errorf("read super savings: %w", err)
+		}
+		amt := amount
+		if all {
+			amt = super
+		}
+		if amt <= 0 {
+			return &ConditionError{Message: "解約できる定期預金がありません。"}
+		}
+		if super < amt {
+			return &ConditionError{Message: "そんなに定期預金がありません。"}
+		}
+		return s.ledger.PostTx(ctx, tx, "super_cancel", "", []ledger.Entry{
+			{Account: ledger.SuperSavingsAccount(playerID), Delta: -amt},
+			{Account: ledger.PlayerAccount(playerID), Delta: amt},
+		})
+	})
+}
+
 // StatementEntry is one line of a savings-account passbook (入出金明細).
 type StatementEntry struct {
 	At      time.Time `json:"at"`
@@ -566,13 +617,13 @@ func (s *Service) BankStatement(ctx context.Context, playerID int64) ([]Statemen
 		`SELECT created_at, reason, delta, running
 		 FROM (
 		   SELECT e.id, t.created_at, t.reason, e.delta,
-		          SUM(e.delta) OVER (ORDER BY e.id) AS running
+		          SUM(e.delta) OVER (PARTITION BY e.account ORDER BY e.id) AS running
 		   FROM ledger_entry e
 		   JOIN ledger_tx t ON t.id = e.tx_id
-		   WHERE e.account = $1
+		   WHERE e.account IN ($1, $2)
 		 ) x
 		 ORDER BY id DESC
-		 LIMIT $2`, ledger.SavingsAccount(playerID), bankStatementLimit)
+		 LIMIT $3`, ledger.SavingsAccount(playerID), ledger.SuperSavingsAccount(playerID), bankStatementLimit)
 	if err != nil {
 		return nil, fmt.Errorf("query statement: %w", err)
 	}
@@ -610,6 +661,12 @@ func statementLabel(reason string, amount int64) string {
 		return "振込(入金)"
 	case reason == "transfer_donation":
 		return "寄付"
+	case reason == "super_deposit":
+		return "定期預入"
+	case reason == "super_cancel":
+		return "定期解約"
+	case strings.HasPrefix(reason, "super_interest:"):
+		return "定期利息"
 	default:
 		return "取引"
 	}
