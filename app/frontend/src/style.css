@@ -220,6 +220,21 @@ body {
   font-size: clamp(9px, 2.4cqw, 12px);
   overflow: hidden;
 }
+/* 銘柄間の区切り(全角読点)はCSSで挿入し、要素間の余分な空白を避ける。 */
+.tk-item + .tk-item::before {
+  content: '，';
+}
+/* 前回比の騰落記号。上昇=赤▲/下落=青▼。 */
+.tk-dir {
+  margin-left: 1px;
+  font-size: 0.85em;
+}
+.tk-dir.up {
+  color: #e60000;
+}
+.tk-dir.down {
+  color: #0066cc;
+}
 .left-links {
   display: flex;
   gap: 8px;

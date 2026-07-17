@@ -87,15 +87,29 @@ async function refreshUnread() {
 // 親のポーリング(player更新)に合わせて未読も更新する。
 watch(() => props.player, refreshUnread);
 
-// 株価ティッカー(街トップの帯)。全銘柄の現在株価を表示する。
+// 株価ティッカー(街トップの帯)。全銘柄の現在株価と前回比の騰落方向を表示する。
 const stockPrices = ref<{ symbol: string; price: number }[]>([]);
-const tickerText = computed(() => {
-  if (!stockPrices.value.length) return '株価情報を取得中…';
-  const wide = 'ＡＢＣＤＥ';
-  return stockPrices.value
-    .map((s, i) => `${wide[i] ?? s.symbol}株 ${s.price.toLocaleString('ja-JP')}円`)
-    .join('，');
+type PriceDir = 'up' | 'down' | 'flat';
+// 各銘柄の前回比(up=騰/down=落/flat=変わらず)。ポーリングで価格が変わるたびに更新する。
+const priceDir = ref<Record<string, PriceDir>>({});
+watch(stockPrices, (newVal, oldVal) => {
+  const prev = new Map((oldVal ?? []).map((s) => [s.symbol, s.price]));
+  const dir: Record<string, PriceDir> = {};
+  for (const s of newVal) {
+    const p = prev.get(s.symbol);
+    dir[s.symbol] = p === undefined || p === s.price ? 'flat' : s.price > p ? 'up' : 'down';
+  }
+  priceDir.value = dir;
 });
+const tickerItems = computed(() =>
+  stockPrices.value.map((s, i) => ({
+    symbol: s.symbol,
+    label: 'ＡＢＣＤＥ'[i] ?? s.symbol,
+    priceText: s.price.toLocaleString('ja-JP'),
+    dir: priceDir.value[s.symbol] ?? ('flat' as PriceDir),
+  })),
+);
+const dirMark = (d: PriceDir) => (d === 'up' ? '▲' : d === 'down' ? '▼' : '');
 
 function clickFacility(f: TownFacility) {
   if (f.ready) emit('navigate', f.key);
@@ -136,13 +150,24 @@ syncSkew();
 watch(() => props.player.server_now, syncSkew);
 const nowMs = ref(Date.now());
 let timer: number | undefined;
+let stockTimer: number | undefined;
 onMounted(() => {
   timer = window.setInterval(() => {
     nowMs.value = Date.now();
   }, 1000);
+  // 株価はworkerが定期的に変動させるため、街トップ表示中はポーリングで追従する。
+  stockTimer = window.setInterval(async () => {
+    try {
+      const s = await api.stocks();
+      stockPrices.value = s.prices;
+    } catch {
+      // 一時的な取得失敗は無視し、次回のポーリングで再取得する。
+    }
+  }, 10000);
 });
 onUnmounted(() => {
   if (timer !== undefined) window.clearInterval(timer);
+  if (stockTimer !== undefined) window.clearInterval(stockTimer);
 });
 const serverCorrectedNow = computed(() => nowMs.value + skewMs.value);
 
@@ -237,7 +262,18 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
           </template>
         </div>
       </div>
-      <div class="ticker">{{ tickerText }}</div>
+      <div class="ticker">
+        <template v-if="tickerItems.length">
+          <span v-for="s in tickerItems" :key="s.symbol" class="tk-item"
+            >{{ s.label }}株 {{ s.priceText }}円<span
+              v-if="s.dir !== 'flat'"
+              :class="['tk-dir', s.dir]"
+              >{{ dirMark(s.dir) }}</span
+            ></span
+          >
+        </template>
+        <template v-else>株価情報を取得中…</template>
+      </div>
       <button class="chat-head" @click="emit('navigate', 'aisatu')">●チャット(あいさつ)</button>
       <div v-if="greetings.length" class="chat-feed">
         <div v-for="g in greetings" :key="g.id" class="chat-line">
