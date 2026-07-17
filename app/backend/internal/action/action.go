@@ -43,9 +43,13 @@ var statusColumns = func() map[string]string {
 	return m
 }()
 
-// detailedParamMax is the soft cap for the detailed parameters (国語/体力/…),
-// which have no per-column max. energy/nou_energy use their own *_max columns.
-const detailedParamMax = 999
+// detailedParamMax is an overflow guard for the detailed parameters (国語/体力/…),
+// which the legacy left effectively unbounded (青天井). The columns are BIGINT
+// (migration 0036); this ceiling sits far below int64/BIGINT max so that
+// clamp arithmetic and the derived power-max computation cannot overflow, while
+// staying astronomically beyond any reachable gameplay value. It is not a
+// gameplay cap. energy/nou_energy use their own *_max columns.
+const detailedParamMax = 1_000_000_000_000_000 // 1e15
 
 // satietyMax is the full 満腹度. Eating fills to this; food is blocked at full.
 const satietyMax = 100

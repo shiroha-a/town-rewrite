@@ -195,9 +195,9 @@ func RefreshPowerMax(ctx context.Context, tx pgx.Tx, playerID int64) error {
 		FROM (
 			SELECT player_id,
 				(FLOOR(looks/12.0 + tairyoku/4.0 + kenkou/4.0 + speed/8.0
-				       + power/8.0 + wanryoku/8.0 + kyakuryoku/8.0) + 1)::int AS emax,
+				       + power/8.0 + wanryoku/8.0 + kyakuryoku/8.0) + 1)::bigint AS emax,
 				(FLOOR(kokugo/6.0 + suugaku/6.0 + rika/6.0 + syakai/6.0
-				       + eigo/6.0 + ongaku/6.0 + bijutsu/6.0) + 1)::int AS nmax
+				       + eigo/6.0 + ongaku/6.0 + bijutsu/6.0) + 1)::bigint AS nmax
 			FROM player_status WHERE player_id = $1
 		) m
 		WHERE ps.player_id = m.player_id`, playerID); err != nil {
