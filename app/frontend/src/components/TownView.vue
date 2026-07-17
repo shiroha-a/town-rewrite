@@ -2,6 +2,7 @@
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue';
 import { api, type Player, type Params, type TownFacility } from '../api';
 import { satietyLabel } from '../params';
+import CommandIcon from './CommandIcon.vue';
 
 const props = defineProps<{ player: Player }>();
 const emit = defineEmits<{ navigate: [view: string]; reload: []; logout: [] }>();
@@ -309,7 +310,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
               :class="{ 'on-cooldown': cmd.key === 'work' && !!workCooldown }"
               @click="clickCommand(cmd.key)"
             >
-              <img :src="`/img/${cmd.img}.gif`" width="32" height="32" :alt="cmd.alt" />
+              <CommandIcon :name="cmd.img" />
               <span v-if="cmd.key === 'work' && workCooldown" class="cmd-cooldown">{{ workCooldown }}</span>
               <span v-if="cmd.key === 'mail' && unreadMail > 0" class="cmd-badge">{{ unreadMail }}</span>
             </button>

@@ -315,27 +315,52 @@ body {
   background: #fff;
   border: 1px solid #cfcfcf;
 }
+/* 立体感のある緑グラデーションのアイコンボタン。中の白線SVG(cmd-icon)は
+   currentColorで描画される。ホバーでオレンジに切り替わる。 */
 .command-icons button {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
   border: 0;
-  background: transparent;
   padding: 0;
   cursor: pointer;
-  line-height: 0;
+  border-radius: 8px;
+  color: #fff;
+  background: linear-gradient(180deg, #55c255 0%, #2f8f2f 100%);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  transition:
+    background 0.15s ease,
+    transform 0.05s ease;
 }
 .command-icons button:hover {
-  outline: 2px solid #ff6600;
+  outline: 0;
+  background: linear-gradient(180deg, #ffb152 0%, #f2801a 100%);
 }
-/* 管理者導線(アイコンではなくテキストボタン) */
+.command-icons button:active {
+  transform: translateY(1px);
+}
+.cmd-icon {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+/* 管理者導線(アイコンではなくテキストボタン)。幅は内容に合わせる。 */
 .command-icons button.admin-link {
+  width: auto;
+  height: auto;
   background: #445566;
   color: #fff;
   border: 1px solid #223344;
-  border-radius: 3px;
+  border-radius: 6px;
   padding: 2px 8px;
   font-size: 12px;
   line-height: 1.4;
-  cursor: pointer;
+  box-shadow: none;
 }
 .command-icons button.admin-link:hover {
   outline: 0;
@@ -343,15 +368,15 @@ body {
 }
 /* 就労クールタイム中の仕事アイコン: グレーアウト+残り時間ラベル */
 .command-icons button.on-cooldown {
-  position: relative;
   cursor: not-allowed;
+  background: linear-gradient(180deg, #b8b8b8 0%, #909090 100%);
 }
 .command-icons button.on-cooldown:hover {
   outline: 0;
+  background: linear-gradient(180deg, #b8b8b8 0%, #909090 100%);
 }
-.command-icons button.on-cooldown img {
-  filter: grayscale(1);
-  opacity: 0.4;
+.command-icons button.on-cooldown .cmd-icon {
+  opacity: 0.55;
 }
 .command-icons button .cmd-cooldown {
   position: absolute;
