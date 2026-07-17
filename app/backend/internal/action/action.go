@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/shiroha-a/town/internal/casino"
 	"github.com/shiroha-a/town/internal/cleague"
 	"github.com/shiroha-a/town/internal/condition"
 	"github.com/shiroha-a/town/internal/effects"
@@ -767,6 +768,75 @@ func (s *Service) DoLoanRepay(ctx context.Context, playerID int64, idempotencyKe
 		}
 		return nil
 	})
+}
+
+// CasinoResult is returned after a minigame play: the updated player and the
+// game outcome for presentation.
+type CasinoResult struct {
+	Player *player.Player `json:"-"`
+	Payout int64          `json:"payout"`
+	Win    bool           `json:"win"`
+	Detail any            `json:"detail"`
+}
+
+// DoCasinoPlay runs one round of a single-shot minigame: it validates the bet,
+// plays the (pure) game, then in one transaction moves the stake to the casino,
+// pays out any winnings, and records the play to game_plays.
+func (s *Service) DoCasinoPlay(ctx context.Context, playerID int64, game string, bet int64, params json.RawMessage, idempotencyKey string) (*CasinoResult, error) {
+	g := casino.Lookup(game)
+	if g == nil {
+		return nil, &ConditionError{Message: "不明なゲームです。"}
+	}
+	if bet <= 0 {
+		return nil, &ConditionError{Message: "掛け金が正しくありません。"}
+	}
+	if allowed := g.Bets(); len(allowed) > 0 {
+		ok := false
+		for _, b := range allowed {
+			if b == bet {
+				ok = true
+			}
+		}
+		if !ok {
+			return nil, &ConditionError{Message: "掛け金の指定が正しくありません。"}
+		}
+	}
+	res, err := g.Play(s.rng, bet, params)
+	if err != nil {
+		return nil, &ConditionError{Message: err.Error()}
+	}
+	out := &CasinoResult{Payout: res.Payout, Win: res.Win, Detail: res.Detail}
+	p, err := s.runAction(ctx, playerID, "casino:"+game, idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		if state.Money < bet {
+			return &ConditionError{Message: "お金が足りません。"}
+		}
+		// 掛け金を胴元へ移し、払戻を胴元から戻す。ネットで system:casino が損益を吸収。
+		entries := []ledger.Entry{
+			{Account: ledger.PlayerAccount(playerID), Delta: -bet},
+			{Account: ledger.SystemAccount("casino"), Delta: bet},
+		}
+		if res.Payout > 0 {
+			entries = append(entries,
+				ledger.Entry{Account: ledger.SystemAccount("casino"), Delta: -res.Payout},
+				ledger.Entry{Account: ledger.PlayerAccount(playerID), Delta: res.Payout},
+			)
+		}
+		if err := s.ledger.PostTx(ctx, tx, "casino:"+game, "", entries); err != nil {
+			return err
+		}
+		detailJSON, _ := json.Marshal(res.Detail)
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO game_plays (game, player_id, bet, payout, detail) VALUES ($1, $2, $3, $4, $5)`,
+			game, playerID, bet, res.Payout, detailJSON); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	out.Player = p
+	return out, nil
 }
 
 // StatementEntry is one line of a savings-account passbook (入出金明細).

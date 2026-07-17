@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted } from 'vue';
 import { api, type Player } from './api';
 import LoginView from './components/LoginView.vue';
 import TownView from './components/TownView.vue';
+import GameView from './components/GameView.vue';
 import DepartView from './components/DepartView.vue';
 import BankView from './components/BankView.vue';
 import ItemView from './components/ItemView.vue';
@@ -104,6 +105,7 @@ const facilityTitles: Record<string, string> = {
   </template>
   <template v-else>
     <TownView v-if="view === 'town'" :player="player" @navigate="navigate" @reload="reload" @logout="onLogout" />
+    <GameView v-else-if="view === 'casino'" :player="player" @update="onUpdate" @back="back" />
     <DepartView v-else-if="view === 'depart'" :player="player" @update="onUpdate" @back="back" />
     <BankView v-else-if="view === 'bank'" :player="player" @update="onUpdate" @back="back" />
     <ItemView v-else-if="view === 'item'" :player="player" @update="onUpdate" @back="back" />

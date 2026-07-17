@@ -368,6 +368,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
         <button class="link-btn" @click="emit('navigate', 'shopping')">商店街</button>
         <button class="link-btn" @click="emit('navigate', 'ashiato')">足あと帳</button>
         <button class="link-btn" @click="emit('navigate', 'yakuba')">役場(住民名鑑)</button>
+        <button class="link-btn" @click="emit('navigate', 'casino')">カジノ</button>
       </div>
     </div>
 

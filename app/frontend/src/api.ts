@@ -168,6 +168,14 @@ export interface StatementEntry {
   balance: number;
 }
 
+// ミニゲーム(カジノ)1プレイの結果。detailはゲーム別の結果詳細。
+export interface CasinoPlayResult {
+  player: Player;
+  payout: number;
+  win: boolean;
+  detail: Record<string, unknown>;
+}
+
 // ローンの返済プラン1件(返済回数・利率・日額・総返済額)。
 export interface LoanPlanQuote {
   count: number;
@@ -645,6 +653,12 @@ export const api = {
     }),
   loanRepay: (id: number) =>
     request<Player>('POST', `/players/${id}/bank/loan/repay`, {
+      idempotency_key: newIdempotencyKey(),
+    }),
+  casinoPlay: (id: number, game: string, bet: number, params: unknown) =>
+    request<CasinoPlayResult>('POST', `/players/${id}/casino/${game}/play`, {
+      bet,
+      params,
       idempotency_key: newIdempotencyKey(),
     }),
   hospitalTreat: (id: number) =>
