@@ -183,6 +183,12 @@ const others: { label: string; key: ParamKey }[] = [
   { label: 'LOVE', key: 'love' },
   { label: '面白さ', key: 'omoshirosa' },
 ];
+// パラメータ表示の3カテゴリ。狭幅では横並び(param-group)、広幅では縦積みにする。
+const paramCategories: { title: string; items: { label: string; key: ParamKey }[] }[] = [
+  { title: '頭　脳', items: zunou },
+  { title: '身　体', items: shintai },
+  { title: 'その他', items: others },
+];
 
 // パラメータバー(旧town_maker準拠): 自分の全パラメータの最大値を基準にした相対バー。
 // 幅% = 値/最大×100。最大値の項目が満タンで、各項目の相対的な強さが一目で分かる。
@@ -193,6 +199,12 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
 </script>
 
 <template>
+  <!-- 街情報ヘッダ。狭幅(モバイル)でのみ最上部に表示する(town-info-top)。 -->
+  <div class="whitebox town-info town-info-top">
+    <div class="midasi">「Ｔｏｗｎ」内<br />公園</div>
+    <div class="num">地　価：2000万<br />経済力：--円<br />繁栄度：--</div>
+  </div>
+
   <div class="participant">
     現在の総参加者(1人)：★
     <img :src="`/img/img062.gif`" width="12" height="12" style="vertical-align: middle" alt="" />
@@ -243,7 +255,8 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
     <div class="col-right">
       <div class="right-cols">
         <div style="flex: 1 1 auto; min-width: 0">
-          <div class="whitebox town-info">
+          <!-- 街情報ヘッダ。デスクトップでのみ右カラム上部に表示する(town-info-side)。 -->
+          <div class="whitebox town-info town-info-side">
             <div class="midasi">「Ｔｏｗｎ」内<br />公園</div>
             <div class="num">地　価：2000万<br />経済力：--円<br />繁栄度：--</div>
           </div>
@@ -315,50 +328,24 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
           </div>
         </div>
 
-        <!-- パラメータ一覧 -->
+        <!-- パラメータ一覧。狭幅ではカテゴリを横並びにする(param-group)。 -->
         <div class="params">
-          <div class="phead">頭　脳</div>
-          <table>
-            <tbody>
-              <tr v-for="p in zunou" :key="p.key">
-                <td>{{ p.label }}：</td>
-                <td class="v">
-                  <span class="pbar">
-                    <span class="pbar-fill" :style="{ width: paramBar(player.params[p.key]) + '%' }"></span>
-                    <span class="pbar-val">{{ player.params[p.key] }}</span>
-                  </span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-          <div class="phead">身　体</div>
-          <table>
-            <tbody>
-              <tr v-for="p in shintai" :key="p.key">
-                <td>{{ p.label }}：</td>
-                <td class="v">
-                  <span class="pbar">
-                    <span class="pbar-fill" :style="{ width: paramBar(player.params[p.key]) + '%' }"></span>
-                    <span class="pbar-val">{{ player.params[p.key] }}</span>
-                  </span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-          <div class="phead">その他</div>
-          <table>
-            <tbody>
-              <tr v-for="p in others" :key="p.key">
-                <td>{{ p.label }}：</td>
-                <td class="v">
-                  <span class="pbar">
-                    <span class="pbar-fill" :style="{ width: paramBar(player.params[p.key]) + '%' }"></span>
-                    <span class="pbar-val">{{ player.params[p.key] }}</span>
-                  </span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <div v-for="cat in paramCategories" :key="cat.title" class="param-group">
+            <div class="phead">{{ cat.title }}</div>
+            <table>
+              <tbody>
+                <tr v-for="p in cat.items" :key="p.key">
+                  <td>{{ p.label }}：</td>
+                  <td class="v">
+                    <span class="pbar">
+                      <span class="pbar-fill" :style="{ width: paramBar(player.params[p.key]) + '%' }"></span>
+                      <span class="pbar-val">{{ player.params[p.key] }}</span>
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>

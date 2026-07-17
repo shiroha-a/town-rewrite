@@ -72,6 +72,8 @@ body {
   flex: 1 1 360px;
   min-width: 0;
   max-width: 560px;
+  /* 株価ティッカーの文字サイズをこのカラム幅に追従させる(cqw)ための基準。 */
+  container-type: inline-size;
 }
 .col-right {
   flex: 1 1 320px;
@@ -98,8 +100,42 @@ body {
   .right-cols {
     flex-wrap: wrap;
   }
-  .params {
+  /* ベースの .params(width:150px; flex:0 0 auto)がこの後方にあるため、
+     詳細度を上げて狭幅で全幅・横並びに上書きする(でないと150pxに縮む)。 */
+  .right-cols .params {
     width: 100%;
+    flex: 1 1 100%;
+    display: flex;
+    gap: 6px;
+    align-items: flex-start;
+  }
+  /* 狭幅ではパラメータ3カテゴリ(頭脳/身体/その他)を均等幅で横並びにする。
+     各行はラベルとバーを縦2段に積み、狭いカラムでもバーを全幅表示する
+     (pbarの中身が絶対配置でテーブル自然幅が0になり、td.vが潰れるため)。 */
+  .param-group {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  .param-group tr {
+    display: block;
+    margin-bottom: 2px;
+  }
+  .param-group td {
+    display: block;
+    width: auto;
+    padding: 0;
+    line-height: 1.2;
+  }
+  .param-group td:first-child {
+    font-size: 11px;
+  }
+  /* 狭幅では最上部の街情報ヘッダを出し、右カラム側は隠す。
+     .town-info の定義がこの後方にあるため、詳細度を2クラスに上げて上書きを防ぐ。 */
+  .town-info.town-info-top {
+    display: flex;
+  }
+  .town-info.town-info-side {
+    display: none;
   }
 }
 
@@ -179,6 +215,10 @@ body {
   background: #fff;
   border: 1px solid #cfcfcf;
   margin-top: 4px;
+  /* 株価5銘柄を常に1行に収める。折り返し禁止+左カラム幅(cqw)に追従する文字サイズ。 */
+  white-space: nowrap;
+  font-size: clamp(9px, 2.4cqw, 12px);
+  overflow: hidden;
 }
 .left-links {
   display: flex;
@@ -233,12 +273,16 @@ body {
   font-weight: bold;
 }
 
-/* 右カラム: 街情報ヘッダ */
+/* 街情報ヘッダ */
 .town-info {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 6px 10px;
+}
+/* デスクトップは右カラム上部(side)のみ表示。狭幅では最上部(top)へ出し分ける。 */
+.town-info-top {
+  display: none;
 }
 .town-info .num {
   font-size: 11px;
