@@ -5,7 +5,6 @@ import LoginView from './components/LoginView.vue';
 import TownView from './components/TownView.vue';
 import DepartView from './components/DepartView.vue';
 import BankView from './components/BankView.vue';
-import WorkView from './components/WorkView.vue';
 import ItemView from './components/ItemView.vue';
 import JobChangeView from './components/JobChangeView.vue';
 import SyokudouView from './components/SyokudouView.vue';
@@ -107,7 +106,6 @@ const facilityTitles: Record<string, string> = {
     <TownView v-if="view === 'town'" :player="player" @navigate="navigate" @reload="reload" @logout="onLogout" />
     <DepartView v-else-if="view === 'depart'" :player="player" @update="onUpdate" @back="back" />
     <BankView v-else-if="view === 'bank'" :player="player" @update="onUpdate" @back="back" />
-    <WorkView v-else-if="view === 'work'" :player="player" @update="onUpdate" @back="back" />
     <ItemView v-else-if="view === 'item'" :player="player" @update="onUpdate" @back="back" />
     <JobChangeView v-else-if="view === 'jobchange'" :player="player" @update="onUpdate" @back="back" />
     <SyokudouView v-else-if="view === 'syokudou'" :player="player" @update="onUpdate" @back="back" />

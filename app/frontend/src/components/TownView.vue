@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue';
-import { api, type Player, type Params, type TownFacility } from '../api';
+import { api, type Player, type Params, type TownFacility, type WorkResponse } from '../api';
 import { satietyLabel } from '../params';
 import CommandIcon from './CommandIcon.vue';
 
@@ -140,8 +140,55 @@ const commands = computed(() => {
   );
   return list;
 });
+// 仕事結果のトースト(iOS通知バナー風。上からスライドインし数秒で自動的に消える)。
+const workToast = ref<{ lines: string[]; error: boolean } | null>(null);
+let workToastTimer: number | undefined;
+function showWorkToast(lines: string[], isError: boolean) {
+  workToast.value = { lines, error: isError };
+  if (workToastTimer !== undefined) window.clearTimeout(workToastTimer);
+  workToastTimer = window.setTimeout(() => {
+    workToast.value = null;
+  }, 6000);
+}
+// 仕事アイコン押下でその場で働き、結果をトーストで表示する(画面遷移しない)。
+async function doWork() {
+  try {
+    const before = props.player;
+    const after = await api.work(props.player.id);
+    emit('reload');
+    showWorkToast(buildWorkLines(before, after), false);
+  } catch (e) {
+    showWorkToast([e instanceof Error ? e.message : String(e)], true);
+  }
+}
+// WorkResultを旧do_work準拠のメッセージ行に整形する。
+function buildWorkLines(before: Player, after: WorkResponse): string[] {
+  const r = after.work_result;
+  const lines: string[] = [];
+  if (r.pay > 0 && r.pay_every === 1) lines.push(`${yen(r.pay)}円の給料をもらいました！`);
+  else if (r.pay > 0)
+    lines.push(`${yen(r.pay)}円（${yen(r.this_salary)}円×${r.pay_every}回出勤）の給料が出ました！`);
+  else lines.push('今回は給料日ではありませんでした。');
+  lines.push(`経験値が${r.exp_gained >= 0 ? '+' : ''}${r.exp_gained}（レベル${r.new_level}）`);
+  if (r.leveled_up) {
+    lines.push(`レベルが${r.new_level}に上がりました！`);
+    lines.push(`${yen(r.this_salary)}円／1回に昇給しました。`);
+  }
+  if (r.bonus > 0) lines.push(`${yen(r.bonus)}円のボーナスが出ました！`);
+  for (const m of r.mastered) lines.push(`「${m}」をマスターしました！`);
+  const energyUsed = before.status.energy - after.status.energy;
+  const nouUsed = before.status.nou_energy - after.status.nou_energy;
+  lines.push(`身体パワーを${energyUsed}使いました。`);
+  if (nouUsed > 0) lines.push(`頭脳パワーを${nouUsed}使いました。`);
+  return lines;
+}
+
 function clickCommand(key: string) {
-  if (key === 'work' && workCooldown.value) return; // クールタイム中は無効
+  if (key === 'work') {
+    if (workCooldown.value) return; // クールタイム中は無効
+    doWork();
+    return;
+  }
   if (key === 'reload') {
     emit('reload');
     rollEvent(); // 更新ボタンでもイベントを抽選する
@@ -177,6 +224,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (timer !== undefined) window.clearInterval(timer);
   if (stockTimer !== undefined) window.clearInterval(stockTimer);
+  if (workToastTimer !== undefined) window.clearTimeout(workToastTimer);
 });
 const serverCorrectedNow = computed(() => nowMs.value + skewMs.value);
 
@@ -233,6 +281,23 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
 </script>
 
 <template>
+  <!-- 仕事結果のトースト(iOS通知バナー風)。タップで即閉じる。 -->
+  <transition name="wt">
+    <div
+      v-if="workToast"
+      class="work-toast"
+      :class="{ error: workToast.error }"
+      role="status"
+      @click="workToast = null"
+    >
+      <span class="wt-icon"><CommandIcon name="go_work" /></span>
+      <div class="wt-body">
+        <div class="wt-title">{{ workToast.error ? '仕事に失敗しました' : '仕事に出かけました' }}</div>
+        <div v-for="(l, i) in workToast.lines" :key="i" class="wt-line">{{ l }}</div>
+      </div>
+    </div>
+  </transition>
+
   <!-- 街情報ヘッダ。狭幅(モバイル)でのみ最上部に表示する(town-info-top)。 -->
   <div class="whitebox town-info town-info-top">
     <div class="midasi">「Ｔｏｗｎ」内<br />公園</div>

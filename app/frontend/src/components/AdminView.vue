@@ -123,7 +123,6 @@ const KEY_PRESETS: { key: string; label: string }[] = [
   { key: 'hospital', label: '病院' },
   { key: 'jobchange', label: '職業安定所' },
   { key: 'yakuba', label: '役場' },
-  { key: 'work', label: '仕事場' },
   { key: 'item', label: 'アイテム' },
   { key: 'kabu', label: '株取引場(準備中)' },
   { key: 'keiba', label: '競馬場(準備中)' },
