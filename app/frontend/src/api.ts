@@ -81,6 +81,9 @@ export interface JobOption {
   require_master: string;
   requirements: Record<string, number>;
   work_params: Record<string, number>;
+  energy_cost: number;
+  nou_energy_cost: number;
+  pay_interval: number;
 }
 
 export interface ShopItem {

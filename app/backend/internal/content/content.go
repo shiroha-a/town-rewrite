@@ -16,6 +16,7 @@ import (
 
 	"github.com/shiroha-a/town/internal/effects"
 	"github.com/shiroha-a/town/internal/gametime"
+	"github.com/shiroha-a/town/internal/jobrule"
 	"github.com/shiroha-a/town/internal/settings"
 )
 
@@ -315,18 +316,22 @@ func (s *Service) listItems(ctx context.Context, facility string) ([]ShopItem, e
 type JobOption struct {
 	ID            int64          `json:"id"`
 	Name          string         `json:"name"`
-	Pay           int64          `json:"pay"`            // 基本給(1回)。salaryと同値
-	Salary        int64          `json:"salary"`         // 基本給(1回)
-	Rank          int            `json:"rank"`           // ランク(星)
-	RequireMaster string         `json:"require_master"` // 前提マスター職(なければ空)
-	Requirements  map[string]int `json:"requirements"`   // 就くための必要パラメータ
-	WorkParams    map[string]int `json:"work_params"`    // 働いたときの上昇/消費パラメータ
+	Pay           int64          `json:"pay"`             // 基本給(1回)。salaryと同値
+	Salary        int64          `json:"salary"`          // 基本給(1回)
+	Rank          int            `json:"rank"`            // ランク(星)
+	RequireMaster string         `json:"require_master"`  // 前提マスター職(なければ空)
+	Requirements  map[string]int `json:"requirements"`    // 就くための必要パラメータ
+	WorkParams    map[string]int `json:"work_params"`     // 働いたときの上昇/消費パラメータ
+	EnergyCost    int            `json:"energy_cost"`     // 1回の身体パワー消費(ランク係数込み)
+	NouEnergyCost int            `json:"nou_energy_cost"` // 1回の頭脳パワー消費(ランク係数込み)
+	PayInterval   int            `json:"pay_interval"`    // 支払間隔(N回出勤ごと。1=日払い)
 }
 
 // ListSelectableJobs returns enabled jobs for the job-office UI.
 func (s *Service) ListSelectableJobs(ctx context.Context) ([]JobOption, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, name, requirements, effect, salary, rank, require_master
+		`SELECT id, name, requirements, effect, salary, rank, require_master,
+		        body_cost, nou_cost, pay_interval
 		 FROM content_jobs WHERE enabled ORDER BY rank, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
@@ -335,17 +340,25 @@ func (s *Service) ListSelectableJobs(ctx context.Context) ([]JobOption, error) {
 	jobs := []JobOption{}
 	for rows.Next() {
 		var (
-			opt              JobOption
-			reqJSON, effJSON []byte
-			requireMaster    *string
+			opt               JobOption
+			reqJSON, effJSON  []byte
+			requireMaster     *string
+			bodyCost, nouCost int
 		)
 		if err := rows.Scan(&opt.ID, &opt.Name, &reqJSON, &effJSON,
-			&opt.Salary, &opt.Rank, &requireMaster); err != nil {
+			&opt.Salary, &opt.Rank, &requireMaster,
+			&bodyCost, &nouCost, &opt.PayInterval); err != nil {
 			return nil, fmt.Errorf("scan job: %w", err)
 		}
 		opt.Pay = opt.Salary
 		_, opt.WorkParams = effectSummary(effJSON)
 		opt.Requirements = requirementSummary(reqJSON)
+		// 表示用の1回消費量(実際のdo_workと同じ式: 基準+基準×ランク係数)。
+		opt.EnergyCost = jobrule.PowerSpend(bodyCost, opt.Rank)
+		opt.NouEnergyCost = jobrule.PowerSpend(nouCost, opt.Rank)
+		if opt.PayInterval <= 0 {
+			opt.PayInterval = 1
+		}
 		if requireMaster != nil {
 			opt.RequireMaster = *requireMaster
 		}
