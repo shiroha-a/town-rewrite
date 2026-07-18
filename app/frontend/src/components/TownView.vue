@@ -191,6 +191,7 @@ function buildWorkLines(before: Player, after: WorkResponse): string[] {
     lines.push(`${yen(r.this_salary)}円／1回に昇給しました。`);
   }
   if (r.bonus > 0) lines.push(`${yen(r.bonus)}円のボーナスが出ました！`);
+  if (r.work_bonus > 0) lines.push(`労働ボーナス${yen(r.work_bonus)}円が給料に含まれています。`);
   for (const m of r.mastered) lines.push(`「${m}」をマスターしました！`);
   const energyUsed = before.status.energy - after.status.energy;
   const nouUsed = before.status.nou_energy - after.status.nou_energy;

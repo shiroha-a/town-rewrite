@@ -288,11 +288,12 @@ func TestCrossPlayerIdempotency(t *testing.T) {
 	if c1 != http.StatusOK || c2 != http.StatusOK {
 		t.Fatalf("work status: %d %d", c1, c2)
 	}
-	if r1.Money != 501000 {
-		t.Errorf("player1 money = %d, want 501000", r1.Money)
+	// 給料1000+労働ボーナス40(消費2×20)=1040。
+	if r1.Money != 501040 {
+		t.Errorf("player1 money = %d, want 501040", r1.Money)
 	}
-	if r2.Money != 501000 {
-		t.Errorf("player2 money = %d, want 501000 (同一キーでも別プレイヤーは独立)", r2.Money)
+	if r2.Money != 501040 {
+		t.Errorf("player2 money = %d, want 501040 (同一キーでも別プレイヤーは独立)", r2.Money)
 	}
 }
 
@@ -339,13 +340,13 @@ func TestWorkAction(t *testing.T) {
 		t.Errorf("job after change = %q, want アルバイト", jp.Status.Job)
 	}
 
-	// 仕事1回: +1000円, 身体パワー-1(初期上限6→6-1=5)。
+	// 仕事1回: +1040円(給料1000+労働ボーナス40=消費2×20), 身体パワー-2(消費=基準1+基準1×係数1、初期上限6→4)。
 	p, code := doWork(t, srv.URL, alice.ID, "work-1")
 	if code != http.StatusOK {
 		t.Fatalf("work status = %d", code)
 	}
-	if p.Money != 501000 || p.Status.Energy != 5 {
-		t.Errorf("after work: money=%d energy=%d, want 501000/5", p.Money, p.Status.Energy)
+	if p.Money != 501040 || p.Status.Energy != 4 {
+		t.Errorf("after work: money=%d energy=%d, want 501040/4", p.Money, p.Status.Energy)
 	}
 
 	// 同一idempotency_keyの再実行は冪等: 状態は変わらない。
@@ -353,14 +354,14 @@ func TestWorkAction(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("idempotent work status = %d", code)
 	}
-	if p2.Money != 501000 || p2.Status.Energy != 5 {
+	if p2.Money != 501040 || p2.Status.Energy != 4 {
 		t.Errorf("idempotent work changed state: money=%d energy=%d", p2.Money, p2.Status.Energy)
 	}
 
-	// 別キーならもう一度適用される(5-1=4)。
+	// 別キーならもう一度適用される(4-2=2)。
 	p3, _ := doWork(t, srv.URL, alice.ID, "work-2")
-	if p3.Money != 502000 || p3.Status.Energy != 4 {
-		t.Errorf("second work: money=%d energy=%d, want 502000/4", p3.Money, p3.Status.Energy)
+	if p3.Money != 502080 || p3.Status.Energy != 2 {
+		t.Errorf("second work: money=%d energy=%d, want 502080/2", p3.Money, p3.Status.Energy)
 	}
 
 	// 身体パワー0では条件不成立 -> 422、状態は不変。
@@ -1249,13 +1250,13 @@ func TestJobEconomy(t *testing.T) {
 	alice := register(t, srv.URL, "misskey.example", "alice")
 	changeJob(t, srv.URL, alice.ID, "アルバイト", "j-baito")
 
-	// 1回働く: 給料+1000、勤務回数1、経験値が正方向に増える。
+	// 1回働く: 給料+1040(給料1000+労働ボーナス40)、勤務回数1、経験値が正方向に増える。
 	p, code := doWork(t, srv.URL, alice.ID, "w1")
 	if code != http.StatusOK {
 		t.Fatalf("work status = %d", code)
 	}
-	if p.Money != 501000 {
-		t.Errorf("money after work = %d, want 501000 (salary 1000)", p.Money)
+	if p.Money != 501040 {
+		t.Errorf("money after work = %d, want 501040 (salary 1000 + labor bonus 40)", p.Money)
 	}
 	if p.Status.JobKaisuu != 1 {
 		t.Errorf("job_kaisuu = %d, want 1", p.Status.JobKaisuu)

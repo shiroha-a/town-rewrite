@@ -24,6 +24,7 @@ type workResultResp struct {
 	Pay        int64    `json:"pay"`
 	PayEvery   int      `json:"pay_every"`
 	Bonus      int64    `json:"bonus"`
+	WorkBonus  int64    `json:"work_bonus"`
 	Mastered   []string `json:"mastered"`
 }
 
@@ -77,6 +78,7 @@ func (s *Server) work(w http.ResponseWriter, r *http.Request) {
 			Pay:        result.Pay,
 			PayEvery:   result.PayEvery,
 			Bonus:      result.Bonus,
+			WorkBonus:  result.WorkBonus,
 			Mastered:   mastered,
 		},
 	})

@@ -24,6 +24,7 @@ import (
 	"github.com/shiroha-a/town/internal/event"
 	"github.com/shiroha-a/town/internal/gametime"
 	"github.com/shiroha-a/town/internal/greeting"
+	"github.com/shiroha-a/town/internal/jobrule"
 	"github.com/shiroha-a/town/internal/keiba"
 	"github.com/shiroha-a/town/internal/ledger"
 	"github.com/shiroha-a/town/internal/player"
@@ -200,6 +201,7 @@ type WorkResult struct {
 	Pay        int64    // 今回支給された給料(支払間隔到達時のみ>0)
 	PayEvery   int      // 支払間隔(N回出勤ごと)
 	Bonus      int64    // レベルアップ時ボーナス
+	WorkBonus  int64    // 消費に見合う労働ボーナス(今回の給料に含まれる)
 	Mastered   []string // 今回新たにマスターした職業
 }
 
@@ -283,8 +285,13 @@ func (s *Service) DoWork(ctx context.Context, playerID int64, idempotencyKey str
 		}
 		newLevel := newExp / 100
 		leveledUp := newLevel > oldLevel
-		// 6. 今回の給料(レベル×昇給係数で増額)。
-		thisSalary := econ.salary + econ.salary*int64(newLevel)*int64(econ.raiseRate)/100
+		// パワー消費 = 基準 + 基準×ランク係数(隠しランクで重みが変わる。青天井の
+		// パラメータ値には依存しない。基準以下にはならない)。
+		energySpend := jobrule.PowerSpend(econ.bodyCost, econ.rank)
+		nouSpend := jobrule.PowerSpend(econ.nouCost, econ.rank)
+		// 6. 今回の給料(レベル×昇給係数で増額)+ 消費した合計パワーに見合う労働ボーナス。
+		workBonus := int64(energySpend+nouSpend) * jobrule.PayPerPower
+		thisSalary := econ.salary + econ.salary*int64(newLevel)*int64(econ.raiseRate)/100 + workBonus
 		// 7. 勤務回数を進め、支払間隔ごとにまとめて支給。
 		payInterval := econ.payInterval
 		if payInterval <= 0 {
@@ -311,9 +318,7 @@ func (s *Service) DoWork(ctx context.Context, playerID int64, idempotencyKey str
 		}
 		// 9. レベル15到達&未マスターならマスター認定。
 		masteredNow := newLevel >= 15 && !contains(mastered, job)
-		// 10. パワー消費 = 基礎コスト + floor(現在値 × 0.0125)。11. 体重減少 = body_cost×10。
-		energySpend := econ.bodyCost + state.Params["energy"].Value/80
-		nouSpend := econ.nouCost + state.Params["nou_energy"].Value/80
+		// 11. 体重減少 = body_cost×10。
 		if _, err := tx.Exec(ctx, `
 			UPDATE player_status SET
 				job_exp = $1, job_level = $2, job_kaisuu = $3,
@@ -340,6 +345,7 @@ func (s *Service) DoWork(ctx context.Context, playerID int64, idempotencyKey str
 		result = WorkResult{
 			ExpGained: randed, NewLevel: newLevel, LeveledUp: leveledUp,
 			ThisSalary: thisSalary, Pay: pay, PayEvery: payInterval, Bonus: bonus,
+			WorkBonus: workBonus,
 		}
 		if masteredNow {
 			result.Mastered = []string{job}
@@ -2952,6 +2958,7 @@ type jobEconomy struct {
 	raiseRate     int
 	bodyCost      int
 	nouCost       int
+	rank          int
 	bmiMin        *int
 	bmiMax        *int
 	heightMin     *int
@@ -2965,10 +2972,10 @@ func (s *Service) loadJobEconomy(ctx context.Context, name string) (jobEconomy, 
 	)
 	err := s.pool.QueryRow(ctx,
 		`SELECT requirements, salary, pay_interval, bonus_rate, raise_rate,
-		        body_cost, nou_cost, bmi_min, bmi_max, height_min, require_master
+		        body_cost, nou_cost, rank, bmi_min, bmi_max, height_min, require_master
 		 FROM content_jobs WHERE name = $1 AND enabled`, name).
 		Scan(&reqJSON, &e.salary, &e.payInterval, &e.bonusRate, &e.raiseRate,
-			&e.bodyCost, &e.nouCost, &e.bmiMin, &e.bmiMax, &e.heightMin, &e.requireMaster)
+			&e.bodyCost, &e.nouCost, &e.rank, &e.bmiMin, &e.bmiMax, &e.heightMin, &e.requireMaster)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return jobEconomy{}, fmt.Errorf("job %q not found", name)
 	}

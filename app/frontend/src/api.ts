@@ -158,6 +158,7 @@ export interface WorkResult {
   pay: number;
   pay_every: number;
   bonus: number;
+  work_bonus: number;
   mastered: string[];
 }
 export type WorkResponse = Player & { work_result: WorkResult };
