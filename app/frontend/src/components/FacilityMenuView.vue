@@ -2,6 +2,8 @@
 import { ref, onMounted } from 'vue';
 import { api, type Player, type ShopItem } from '../api';
 import { PARAM_COLUMNS } from '../params';
+import Toast from './Toast.vue';
+import { useToast, buildEffectLines } from '../toast';
 
 // ジム等、メニューを選んで利用する施設の汎用ビュー。
 const props = defineProps<{
@@ -18,6 +20,7 @@ const menu = ref<ShopItem[]>([]);
 const message = ref('');
 const kind = ref<'ok' | 'error'>('ok');
 const busy = ref(false);
+const { toast, showToast, closeToast } = useToast();
 
 const intervalLabel = (m: number) => (m > 0 ? `${m}分` : '-');
 
@@ -32,14 +35,23 @@ onMounted(async () => {
 
 async function use(item: ShopItem) {
   busy.value = true;
-  message.value = '';
+  const before = props.player;
   try {
-    emit('update', await api.facilityUse(props.player.id, props.facility, item.id));
-    message.value = `${item.name}で${props.useLabel}ました。`;
-    kind.value = 'ok';
+    const after = await api.facilityUse(props.player.id, props.facility, item.id);
+    emit('update', after);
+    showToast({
+      variant: 'item',
+      title: item.name,
+      lines: buildEffectLines(before, after),
+      icon: 'item',
+    });
   } catch (e) {
-    message.value = e instanceof Error ? e.message : String(e);
-    kind.value = 'error';
+    showToast({
+      variant: 'error',
+      title: '利用できませんでした',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'item',
+    });
   } finally {
     busy.value = false;
   }
@@ -48,6 +60,7 @@ async function use(item: ShopItem) {
 
 <template>
   <div class="facility-page fac-menu-page">
+    <Toast :toast="toast" @close="closeToast" />
     <button class="btn back" @click="emit('back')">街に戻る</button>
 
     <div class="fac-header">

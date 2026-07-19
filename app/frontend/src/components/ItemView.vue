@@ -2,13 +2,14 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { api, type Player, type ItemStack } from '../api';
 import { PARAM_COLUMNS } from '../params';
+import Toast from './Toast.vue';
+import { useToast, buildEffectLines } from '../toast';
 
 const props = defineProps<{ player: Player }>();
 const emit = defineEmits<{ update: [player: Player]; back: [] }>();
 
-const message = ref('');
-const kind = ref<'ok' | 'error'>('ok');
 const busy = ref(false);
+const { toast, showToast, closeToast } = useToast();
 
 // サーバ時刻とクライアント時計のずれ(ms)。カウントダウンをサーバ基準に補正し、
 // 端末時計がずれていても残り時間が正しく表示されるようにする。
@@ -75,14 +76,23 @@ async function use(it: ItemStack) {
   // クールタイム中はボタンをグレーアウトしているが、二重の安全策として弾く。
   if (cooldowns.value[it.item_id]?.active) return;
   busy.value = true;
-  message.value = '';
+  const before = props.player;
   try {
-    emit('update', await api.use(props.player.id, it.item_id));
-    message.value = `${it.name}を使用しました。`;
-    kind.value = 'ok';
+    const after = await api.use(props.player.id, it.item_id);
+    emit('update', after);
+    showToast({
+      variant: 'item',
+      title: `${it.name}を使った`,
+      lines: buildEffectLines(before, after),
+      icon: 'item',
+    });
   } catch (e) {
-    message.value = e instanceof Error ? e.message : String(e);
-    kind.value = 'error';
+    showToast({
+      variant: 'error',
+      title: '使えませんでした',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'item',
+    });
   } finally {
     busy.value = false;
   }
@@ -91,13 +101,12 @@ async function use(it: ItemStack) {
 
 <template>
   <div class="facility-page item-page">
+    <Toast :toast="toast" @close="closeToast" />
     <button class="btn back" @click="emit('back')">街に戻る</button>
     <div class="item-header">
       <div class="lead">持っているアイテムを使うことができます。</div>
       <div class="title">アイテム使用</div>
     </div>
-
-    <div v-if="message" :class="['message', kind]" data-test="message">{{ message }}</div>
 
     <div class="panel-white">
       <p v-if="player.items.length === 0" class="muted">持ち物はありません。</p>

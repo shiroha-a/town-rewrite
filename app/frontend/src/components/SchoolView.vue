@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { api, type Player, type ShopItem } from '../api';
+import Toast from './Toast.vue';
+import { useToast, buildEffectLines } from '../toast';
 
 // 学校: 頭脳科目を1日1回だけ大きく伸ばす施設。頭脳パワー(nou_energy)と現金を消費する。
 const props = defineProps<{ player: Player }>();
@@ -23,6 +25,7 @@ const menu = ref<ShopItem[]>([]);
 const message = ref('');
 const kind = ref<'ok' | 'error'>('ok');
 const busy = ref(false);
+const { toast, showToast, closeToast } = useToast();
 
 // 頭脳消費は effect の nou_energy 負値。表示用に絶対値を返す。
 const brainCost = (item: ShopItem) => Math.abs(Math.min(0, item.params['nou_energy'] ?? 0));
@@ -38,14 +41,23 @@ onMounted(async () => {
 
 async function attend(item: ShopItem) {
   busy.value = true;
-  message.value = '';
+  const before = props.player;
   try {
-    emit('update', await api.schoolAttend(props.player.id, item.id));
-    message.value = `●${item.name}を受講しました。`;
-    kind.value = 'ok';
+    const after = await api.schoolAttend(props.player.id, item.id);
+    emit('update', after);
+    showToast({
+      variant: 'item',
+      title: `${item.name}を受講した`,
+      lines: buildEffectLines(before, after),
+      icon: 'item',
+    });
   } catch (e) {
-    message.value = e instanceof Error ? e.message : String(e);
-    kind.value = 'error';
+    showToast({
+      variant: 'error',
+      title: '受講できませんでした',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'item',
+    });
   } finally {
     busy.value = false;
   }
@@ -54,6 +66,7 @@ async function attend(item: ShopItem) {
 
 <template>
   <div class="facility-page school-page">
+    <Toast :toast="toast" @close="closeToast" />
     <button class="btn back" @click="emit('back')">街に戻る</button>
 
     <div class="fac-header">
@@ -86,7 +99,7 @@ async function attend(item: ShopItem) {
             </td>
             <td class="price">{{ yen(item.price) }}円</td>
             <td class="cost">{{ brainCost(item) }}</td>
-            <td class="use"><button class="btn" :disabled="busy" @click="attend(item)">受講</button></td>
+            <td class="use"><button class="btn" :disabled="busy" @click="attend(item)">受講する</button></td>
           </tr>
         </tbody>
       </table>

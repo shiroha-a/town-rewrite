@@ -117,7 +117,7 @@ const facilityTitles: Record<string, string> = {
       facility="gym"
       title="スポーツクラブ"
       lead="今日も張り切って体を鍛えましょう。"
-      use-label="鍛え"
+      use-label="鍛える"
       @update="onUpdate"
       @back="back"
     />
@@ -127,7 +127,7 @@ const facilityTitles: Record<string, string> = {
       facility="kyushitu"
       title="教室"
       lead="今日も張り切って鍛えましょう。"
-      use-label="受講し"
+      use-label="受講する"
       @update="onUpdate"
       @back="back"
     />

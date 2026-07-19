@@ -2,6 +2,8 @@
 import { ref, onMounted } from 'vue';
 import { api, type Player, type ShopItem } from '../api';
 import { PARAM_COLUMNS, satietyLabel } from '../params';
+import Toast from './Toast.vue';
+import { useToast, buildEffectLines } from '../toast';
 
 const props = defineProps<{ player: Player }>();
 const emit = defineEmits<{ update: [player: Player]; back: [] }>();
@@ -11,6 +13,7 @@ const menu = ref<ShopItem[]>([]);
 const message = ref('');
 const kind = ref<'ok' | 'error'>('ok');
 const busy = ref(false);
+const { toast, showToast, closeToast } = useToast();
 
 onMounted(async () => {
   try {
@@ -23,15 +26,24 @@ onMounted(async () => {
 
 async function eat(food: ShopItem) {
   busy.value = true;
-  message.value = '';
+  const before = props.player;
   try {
-    emit('update', await api.eat(props.player.id, food.id));
+    const after = await api.eat(props.player.id, food.id);
+    emit('update', after);
     menu.value = await api.facilityMenu('syokudou'); // 食後の在庫数を反映する
-    message.value = `${food.name}を食べました。`;
-    kind.value = 'ok';
+    showToast({
+      variant: 'item',
+      title: `${food.name}を食べた`,
+      lines: buildEffectLines(before, after),
+      icon: 'item',
+    });
   } catch (e) {
-    message.value = e instanceof Error ? e.message : String(e);
-    kind.value = 'error';
+    showToast({
+      variant: 'error',
+      title: '食べられませんでした',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'item',
+    });
   } finally {
     busy.value = false;
   }
@@ -40,6 +52,7 @@ async function eat(food: ShopItem) {
 
 <template>
   <div class="facility-page syokudou-page">
+    <Toast :toast="toast" @close="closeToast" />
     <button class="btn back" @click="emit('back')">街に戻る</button>
 
     <div class="syokudou-header">
