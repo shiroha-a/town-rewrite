@@ -65,6 +65,7 @@ export interface Player {
     work_available_at: string | null;
     energy_full_at: string | null;
     nou_energy_full_at: string | null;
+    onsen_multiplier: number;
   };
   params: Params;
   items: ItemStack[];
@@ -766,6 +767,14 @@ export const api = {
   onsenBathe: (id: number, bathId: number) =>
     request<Player>('POST', `/players/${id}/onsen/bathe`, {
       bath_id: bathId,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  onsenLeave: (id: number) =>
+    request<Player>('POST', `/players/${id}/onsen/leave`, {
+      idempotency_key: newIdempotencyKey(),
+    }),
+  onsenTick: (id: number) =>
+    request<Player>('POST', `/players/${id}/onsen/tick`, {
       idempotency_key: newIdempotencyKey(),
     }),
 

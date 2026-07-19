@@ -19,16 +19,22 @@ func RecoverPower(ctx context.Context, pool *pgxpool.Pool, energySec, nouSec int
 	if nouSec <= 0 {
 		nouSec = 60
 	}
+	// 入浴中(onsen_multiplier>1)は実効回復秒を1/倍率にして回復を加速する。
+	// 付与後に両パワーが満タンになったら入浴を終了し倍率を1(通常)へ戻す。
 	tag, err := pool.Exec(ctx, `
 		UPDATE player_status ps SET
 			energy = LEAST(ps.energy_max, ps.energy + g.gain_e),
-			energy_recovered_at = ps.energy_recovered_at + make_interval(secs => (g.gain_e * $1)::double precision),
+			energy_recovered_at = ps.energy_recovered_at + make_interval(secs => (g.gain_e * $1::double precision / ps.onsen_multiplier)),
 			nou_energy = LEAST(ps.nou_energy_max, ps.nou_energy + g.gain_n),
-			nou_recovered_at = ps.nou_recovered_at + make_interval(secs => (g.gain_n * $2)::double precision)
+			nou_recovered_at = ps.nou_recovered_at + make_interval(secs => (g.gain_n * $2::double precision / ps.onsen_multiplier)),
+			onsen_multiplier = CASE
+				WHEN LEAST(ps.energy_max, ps.energy + g.gain_e) >= ps.energy_max
+				 AND LEAST(ps.nou_energy_max, ps.nou_energy + g.gain_n) >= ps.nou_energy_max
+				THEN 1 ELSE ps.onsen_multiplier END
 		FROM (
 			SELECT player_id,
-				FLOOR(EXTRACT(EPOCH FROM (now() - energy_recovered_at)) / $1)::int AS gain_e,
-				FLOOR(EXTRACT(EPOCH FROM (now() - nou_recovered_at)) / $2)::int AS gain_n
+				FLOOR(EXTRACT(EPOCH FROM (now() - energy_recovered_at)) / ($1::double precision / onsen_multiplier))::int AS gain_e,
+				FLOOR(EXTRACT(EPOCH FROM (now() - nou_recovered_at)) / ($2::double precision / onsen_multiplier))::int AS gain_n
 			FROM player_status
 		) g
 		WHERE ps.player_id = g.player_id AND (g.gain_e > 0 OR g.gain_n > 0)

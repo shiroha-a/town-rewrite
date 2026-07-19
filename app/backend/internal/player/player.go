@@ -94,6 +94,7 @@ type Status struct {
 	WorkAvailableAt *time.Time // 就労クールタイム中の再就労可能時刻(可能ならnil)
 	EnergyFullAt    *time.Time // 身体パワーが満タンになる時刻(満タン時はnil)
 	NouEnergyFullAt *time.Time // 頭脳パワーが満タンになる時刻(満タン時はnil)
+	OnsenMultiplier int        // 入浴中の回復倍率(1=入浴していない)
 }
 
 // Service is the player domain service.
@@ -414,7 +415,7 @@ func (s *Service) Get(ctx context.Context, id int64) (*Player, error) {
 		        kokugo, suugaku, rika, syakai, eigo, ongaku, bijutsu,
 		        looks, tairyoku, kenkou, speed, power, wanryoku, kyakuryoku,
 		        love, omoshirosa,
-		        energy_recovered_at, nou_recovered_at
+		        energy_recovered_at, nou_recovered_at, onsen_multiplier
 		 FROM player_status WHERE player_id = $1`, id).
 		Scan(&p.Status.Energy, &p.Status.EnergyMax, &p.Status.NouEnergy,
 			&p.Status.NouEnergyMax, &p.Status.Job, &p.Status.JobLevel, &p.Status.Satiety,
@@ -425,18 +426,25 @@ func (s *Service) Get(ctx context.Context, id int64) (*Player, error) {
 			&p.Params.Looks, &p.Params.Tairyoku, &p.Params.Kenkou, &p.Params.Speed,
 			&p.Params.Power, &p.Params.Wanryoku, &p.Params.Kyakuryoku,
 			&p.Params.Love, &p.Params.Omoshirosa,
-			&energyRecoveredAt, &nouRecoveredAt); err != nil {
+			&energyRecoveredAt, &nouRecoveredAt, &p.Status.OnsenMultiplier); err != nil {
 		return nil, fmt.Errorf("get status: %w", err)
 	}
 	// 満タンまでの残り時間表示用に、満タンになる時刻を算出する(満タン中はnil)。
-	// 満タン時刻 = recovered_at + recovery_sec × (max - current)。
+	// 満タン時刻 = recovered_at + (recovery_sec / 入浴倍率) × (max - current)。
+	// 入浴中(onsen_multiplier>1)は回復が倍率ぶん速いので満タンも早くなる。
 	cfg := s.settings.Get()
+	mult := p.Status.OnsenMultiplier
+	if mult < 1 {
+		mult = 1
+	}
 	if sec := cfg.EnergyRecoverySec; sec > 0 && p.Status.Energy < p.Status.EnergyMax {
-		full := energyRecoveredAt.Add(time.Duration(sec*(p.Status.EnergyMax-p.Status.Energy)) * time.Second)
+		d := time.Duration(float64(sec)/float64(mult)*float64(p.Status.EnergyMax-p.Status.Energy)) * time.Second
+		full := energyRecoveredAt.Add(d)
 		p.Status.EnergyFullAt = &full
 	}
 	if sec := cfg.NouRecoverySec; sec > 0 && p.Status.NouEnergy < p.Status.NouEnergyMax {
-		full := nouRecoveredAt.Add(time.Duration(sec*(p.Status.NouEnergyMax-p.Status.NouEnergy)) * time.Second)
+		d := time.Duration(float64(sec)/float64(mult)*float64(p.Status.NouEnergyMax-p.Status.NouEnergy)) * time.Second
+		full := nouRecoveredAt.Add(d)
 		p.Status.NouEnergyFullAt = &full
 	}
 	// BMI・体型・コンディションはサーバ側で権威的に算出する(副作用なし。旧check_BMIと同一)。

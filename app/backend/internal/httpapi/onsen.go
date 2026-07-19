@@ -32,3 +32,26 @@ func (s *Server) onsenBathe(w http.ResponseWriter, r *http.Request) {
 	p, err := s.actions.DoOnsen(r.Context(), id, req.BathID, req.IdempotencyKey)
 	writeFacilityResult(w, p, err)
 }
+
+// onsenLeave ends the onsen session, resetting recovery to normal speed.
+func (s *Server) onsenLeave(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	p, err := s.actions.DoOnsenLeave(r.Context(), id)
+	writeFacilityResult(w, p, err)
+}
+
+// onsenTick advances the bather's recovery to now so the bath screen can poll
+// and show power rising smoothly, without waiting for the worker's coarse tick.
+func (s *Server) onsenTick(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	p, err := s.actions.DoOnsenTick(r.Context(), id)
+	writeFacilityResult(w, p, err)
+}

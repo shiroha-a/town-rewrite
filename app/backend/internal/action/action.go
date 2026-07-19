@@ -1805,7 +1805,8 @@ func (s *Service) DoOnsen(ctx context.Context, playerID, bathID int64, idempoten
 		}); err != nil {
 			return fmt.Errorf("pay: %w", err)
 		}
-		// gain = floor(経過秒 / 回復秒 * 倍率) + 1、上限クランプ。回復時刻を現在に進める。
+		// 入浴した瞬間に経過ぶんを倍率で一括回復し、以降はonsen_multiplierを立てて
+		// workerが倍率速度で回復し続ける(満タンか退室で1に戻る)。
 		cfg := s.settings.Get()
 		energyRecSec, nouRecSec := cfg.EnergyRecoverySec, cfg.NouRecoverySec
 		if energyRecSec <= 0 {
@@ -1822,10 +1823,62 @@ func (s *Service) DoOnsen(ctx context.Context, playerID, bathID int64, idempoten
 				nou_energy = LEAST(nou_energy_max,
 					nou_energy + FLOOR(EXTRACT(EPOCH FROM (now() - nou_recovered_at)) / $4 * $3)::int + 1),
 				nou_recovered_at = now(),
+				onsen_multiplier = $3,
 				updated_at = now()
 			WHERE player_id = $1`,
 			playerID, energyRecSec, multiplier, nouRecSec); err != nil {
 			return fmt.Errorf("onsen recover: %w", err)
+		}
+		return nil
+	})
+}
+
+// DoOnsenLeave ends an onsen session by resetting the recovery multiplier to
+// normal. Called when the player leaves the bath screen (or picks another bath).
+func (s *Service) DoOnsenLeave(ctx context.Context, playerID int64) (*player.Player, error) {
+	return s.runAction(ctx, playerID, "onsen_leave", "", func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		if _, err := tx.Exec(ctx,
+			`UPDATE player_status SET onsen_multiplier = 1, updated_at = now() WHERE player_id = $1`,
+			playerID); err != nil {
+			return fmt.Errorf("onsen leave: %w", err)
+		}
+		return nil
+	})
+}
+
+// DoOnsenTick advances this player's power recovery up to now so the bath screen
+// can poll it and show power rising smoothly, without waiting for the worker's
+// coarse tick. RecoverPowerと同じ式の1人版で、満タンになったら倍率を1に戻す。
+func (s *Service) DoOnsenTick(ctx context.Context, playerID int64) (*player.Player, error) {
+	cfg := s.settings.Get()
+	energySec, nouSec := cfg.EnergyRecoverySec, cfg.NouRecoverySec
+	if energySec <= 0 {
+		energySec = 60
+	}
+	if nouSec <= 0 {
+		nouSec = 60
+	}
+	return s.runAction(ctx, playerID, "onsen_tick", "", func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		if _, err := tx.Exec(ctx, `
+			UPDATE player_status ps SET
+				energy = LEAST(ps.energy_max, ps.energy + g.gain_e),
+				energy_recovered_at = ps.energy_recovered_at + make_interval(secs => (g.gain_e * $2::double precision / ps.onsen_multiplier)),
+				nou_energy = LEAST(ps.nou_energy_max, ps.nou_energy + g.gain_n),
+				nou_recovered_at = ps.nou_recovered_at + make_interval(secs => (g.gain_n * $3::double precision / ps.onsen_multiplier)),
+				onsen_multiplier = CASE
+					WHEN LEAST(ps.energy_max, ps.energy + g.gain_e) >= ps.energy_max
+					 AND LEAST(ps.nou_energy_max, ps.nou_energy + g.gain_n) >= ps.nou_energy_max
+					THEN 1 ELSE ps.onsen_multiplier END,
+				updated_at = now()
+			FROM (
+				SELECT player_id,
+					FLOOR(EXTRACT(EPOCH FROM (now() - energy_recovered_at)) / ($2::double precision / onsen_multiplier))::int AS gain_e,
+					FLOOR(EXTRACT(EPOCH FROM (now() - nou_recovered_at)) / ($3::double precision / onsen_multiplier))::int AS gain_n
+				FROM player_status WHERE player_id = $1
+			) g
+			WHERE ps.player_id = g.player_id`,
+			playerID, energySec, nouSec); err != nil {
+			return fmt.Errorf("onsen tick: %w", err)
 		}
 		return nil
 	})

@@ -3,6 +3,7 @@ import { computed, ref, onMounted, onUnmounted, watch } from 'vue';
 import { api, type Player, type Params, type TownFacility, type WorkResponse } from '../api';
 import { satietyLabel } from '../params';
 import CommandIcon from './CommandIcon.vue';
+import PowerBar from './PowerBar.vue';
 
 const props = defineProps<{ player: Player }>();
 const emit = defineEmits<{ navigate: [view: string]; reload: []; logout: [] }>();
@@ -11,20 +12,6 @@ const yen = (n: number) => n.toLocaleString('ja-JP');
 
 const total = computed(() => props.player.money + props.player.savings);
 
-// パワーバーは残量%(0-100)。色は旧town_maker準拠: >59%青 / >19%黄 / それ以下赤。
-function pct(v: number, max: number): number {
-  if (max <= 0) return 0;
-  return Math.min(100, Math.max(0, Math.round((v / max) * 100)));
-}
-function barColor(p: number): string {
-  if (p > 59) return 'blue';
-  if (p > 19) return 'yellow';
-  return 'red';
-}
-const energyPct = computed(() => pct(props.player.status.energy, props.player.status.energy_max));
-const nouPct = computed(() => pct(props.player.status.nou_energy, props.player.status.nou_energy_max));
-const energyColor = computed(() => barColor(energyPct.value));
-const nouColor = computed(() => barColor(nouPct.value));
 
 // 体重はg保持なので表示はkg小数第1位に整形する。
 const weightKg = computed(() => (props.player.status.weight_g / 1000).toFixed(1));
@@ -434,20 +421,18 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
             <div v-if="player.status.mastered_jobs.length > 0" class="honbun2">
               <span class="honbun2">マスター職</span>：{{ player.status.mastered_jobs.join('、') }}
             </div>
-            <div class="honbun2">
-              <span class="honbun2">身体パワー</span>：{{ player.status.energy }} （MAX値：{{ player.status.energy_max }}）
-              <span v-if="energyFullRemain" class="recover-timer">満タンまで{{ energyFullRemain }}</span><br />
-              <span class="powerbar">
-                <span class="bar-fill" :class="energyColor" :style="{ width: energyPct + '%' }"></span>
-              </span>
-            </div>
-            <div class="honbun2">
-              <span class="honbun2">頭脳パワー</span>：{{ player.status.nou_energy }}（MAX値：{{ player.status.nou_energy_max }}）
-              <span v-if="nouFullRemain" class="recover-timer">満タンまで{{ nouFullRemain }}</span><br />
-              <span class="powerbar">
-                <span class="bar-fill" :class="nouColor" :style="{ width: nouPct + '%' }"></span>
-              </span>
-            </div>
+            <PowerBar
+              label="身体パワー"
+              :value="player.status.energy"
+              :max="player.status.energy_max"
+              :full-remain="energyFullRemain"
+            />
+            <PowerBar
+              label="頭脳パワー"
+              :value="player.status.nou_energy"
+              :max="player.status.nou_energy_max"
+              :full-remain="nouFullRemain"
+            />
             <div class="honbun2">
               <span class="honbun2">コンディション</span>：<span :class="{ sick: player.status.disease_name }">{{ player.status.condition }}</span>
             </div>
