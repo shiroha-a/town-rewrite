@@ -66,6 +66,7 @@ type ItemStack struct {
 	Quantity        int
 	RemainingUses   int            // 残量('use'=残り総使用回数, 'day'=残日数)
 	Sets            int            // 表示セット数 = ceil(remaining_uses/durability)
+	DurabilityUnit  string         // 'use'(回) or 'day'(日)
 	Money           int64          // 使用時のお金増減
 	Params          map[string]int // 使用時の上昇パラメータ
 	IntervalMin     int            // 使用間隔(分)
@@ -518,7 +519,7 @@ func (s *Service) Get(ctx context.Context, id int64) (*Player, error) {
 	items, err := s.pool.Query(ctx,
 		`SELECT ci.id, ci.name, pi.quantity, pi.remaining_uses,
 		        CEIL(pi.remaining_uses::numeric / ci.durability)::int AS sets,
-		        ci.effect, ci.use_interval_min,
+		        ci.durability_unit, ci.effect, ci.use_interval_min,
 		        CASE WHEN pi.last_used_at IS NOT NULL
 		                  AND pi.last_used_at + make_interval(mins => ci.use_interval_min) > now()
 		             THEN pi.last_used_at + make_interval(mins => ci.use_interval_min)
@@ -536,7 +537,7 @@ func (s *Service) Get(ctx context.Context, id int64) (*Player, error) {
 			it      ItemStack
 			effJSON []byte
 		)
-		if err := items.Scan(&it.ItemID, &it.Name, &it.Quantity, &it.RemainingUses, &it.Sets, &effJSON, &it.IntervalMin, &it.NextAvailableAt); err != nil {
+		if err := items.Scan(&it.ItemID, &it.Name, &it.Quantity, &it.RemainingUses, &it.Sets, &it.DurabilityUnit, &effJSON, &it.IntervalMin, &it.NextAvailableAt); err != nil {
 			return nil, fmt.Errorf("scan item: %w", err)
 		}
 		if debugNoCd {

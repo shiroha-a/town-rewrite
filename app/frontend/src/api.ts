@@ -7,6 +7,7 @@ export interface ItemStack {
   quantity: number;
   remaining_uses: number;
   sets: number;
+  durability_unit: string; // 'use'(回) or 'day'(日)
   money: number;
   params: Record<string, number>;
   interval_min: number;
