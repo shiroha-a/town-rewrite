@@ -39,6 +39,7 @@ async function buy(it: ShopItem) {
   message.value = '';
   try {
     emit('update', await api.buy(props.player.id, it.id));
+    items.value = await api.shopItems(); // 購入後の在庫数を反映する
     message.value = `●${it.name}を購入しました。`;
     kind.value = 'ok';
   } catch (e) {
@@ -57,7 +58,7 @@ async function buy(it: ShopItem) {
     <div class="depart-header">
       <div class="lead">
         デパートです。品揃えは毎日変わります。種類は豊富ですが値段は高めです。<br />
-        また一度に持てる所有物の限度は25品目です。<br />
+        また一度に持てる所有物の限度は{{ player.item_kind_limit > 0 ? `${player.item_kind_limit}品目` : '無制限' }}です。<br />
         ●{{ player.display_name }}さんの所持金：<span class="money">{{ yen(player.money) }}円</span>
       </div>
       <div class="title">デパート</div>
@@ -75,13 +76,14 @@ async function buy(it: ShopItem) {
               <th>耐久</th>
               <th v-for="c in PARAM_COLUMNS" :key="c.key" class="p">{{ c.label }}</th>
               <th>間隔</th>
+              <th>在庫</th>
               <th></th>
             </tr>
           </thead>
           <template v-for="[cat, list] in grouped" :key="cat">
             <tbody>
               <tr class="cat-row">
-                <td :colspan="PARAM_COLUMNS.length + 5">●{{ cat }}</td>
+                <td :colspan="PARAM_COLUMNS.length + 6">●{{ cat }}</td>
               </tr>
               <tr v-for="it in list" :key="it.id" :data-test="`shop-${it.id}`">
                 <td class="l">{{ it.name }}</td>
@@ -91,8 +93,13 @@ async function buy(it: ShopItem) {
                   {{ it.params[c.key] ?? 0 }}
                 </td>
                 <td class="interval">{{ intervalLabel(it.interval_min) }}</td>
+                <td class="stock" :class="{ soldout: it.stock === 0 }">
+                  {{ it.stock < 0 ? '-' : it.stock === 0 ? '売切' : it.stock }}
+                </td>
                 <td class="buy">
-                  <button class="btn" :disabled="busy" @click="buy(it)">買う</button>
+                  <button class="btn" :disabled="busy || it.stock === 0" @click="buy(it)">
+                    {{ it.stock === 0 ? '売切' : '買う' }}
+                  </button>
                 </td>
               </tr>
             </tbody>
@@ -200,5 +207,12 @@ async function buy(it: ShopItem) {
 }
 .depart-table td.buy {
   width: 44px;
+}
+.depart-table td.stock {
+  color: #333;
+}
+.depart-table td.stock.soldout {
+  color: #cc0000;
+  font-weight: bold;
 }
 </style>

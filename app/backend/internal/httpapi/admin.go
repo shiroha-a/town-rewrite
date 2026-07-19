@@ -95,10 +95,11 @@ func writeContentErr(w http.ResponseWriter, err error) {
 }
 
 type createItemReq struct {
-	Name     string          `json:"name"`
-	Category string          `json:"category"`
-	Price    int64           `json:"price"`
-	Effect   json.RawMessage `json:"effect"`
+	Name        string          `json:"name"`
+	Category    string          `json:"category"`
+	Price       int64           `json:"price"`
+	Effect      json.RawMessage `json:"effect"`
+	StockMaster *int            `json:"stock_master"`
 }
 
 func (s *Server) createItem(w http.ResponseWriter, r *http.Request) {
@@ -110,7 +111,7 @@ func (s *Server) createItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	it, err := s.content.CreateItem(r.Context(), req.Name, req.Category, req.Price, req.Effect)
+	it, err := s.content.CreateItem(r.Context(), req.Name, req.Category, req.Price, req.Effect, req.StockMaster)
 	if err != nil {
 		writeContentErr(w, err)
 		return
@@ -119,11 +120,12 @@ func (s *Server) createItem(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateItemReq struct {
-	Name     string          `json:"name"`
-	Category string          `json:"category"`
-	Price    int64           `json:"price"`
-	Effect   json.RawMessage `json:"effect"`
-	Enabled  bool            `json:"enabled"`
+	Name        string          `json:"name"`
+	Category    string          `json:"category"`
+	Price       int64           `json:"price"`
+	Effect      json.RawMessage `json:"effect"`
+	Enabled     bool            `json:"enabled"`
+	StockMaster *int            `json:"stock_master"`
 }
 
 func (s *Server) updateItem(w http.ResponseWriter, r *http.Request) {
@@ -140,7 +142,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	it, err := s.content.UpdateItem(r.Context(), id, req.Name, req.Category, req.Price, req.Effect, req.Enabled)
+	it, err := s.content.UpdateItem(r.Context(), id, req.Name, req.Category, req.Price, req.Effect, req.Enabled, req.StockMaster)
 	if err != nil {
 		writeContentErr(w, err)
 		return

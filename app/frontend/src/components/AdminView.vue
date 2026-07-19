@@ -46,11 +46,18 @@ const PARAM_OPTIONS = [
   'omoshirosa',
 ];
 
-const item = reactive<{ name: string; category: string; price: number; effect: EffectOp[] }>({
+const item = reactive<{
+  name: string;
+  category: string;
+  price: number;
+  effect: EffectOp[];
+  stock_master: number | null;
+}>({
   name: '',
   category: '',
   price: 0,
   effect: [],
+  stock_master: null,
 });
 function emptyJob(): JobPayload {
   return {
@@ -231,6 +238,8 @@ const SETTINGS_FIELDS: { key: keyof GameSettings; label: string; hint?: string }
   { key: 'work_interval_min', label: '仕事間隔', hint: '連続して働けるようになるまでの分数' },
   { key: 'depart_daily_count', label: 'デパート日次件数', hint: '0で全件(日次ローテ無効)' },
   { key: 'syokudou_daily_count', label: '食堂日次件数', hint: '0で全件(日次ローテ無効)' },
+  { key: 'item_kind_limit', label: '所持アイテム種類上限', hint: '0で無制限(旧TOWN 25品目)' },
+  { key: 'stock_adjust', label: '店頭在庫倍率', hint: '実在庫=ceil(標準在庫÷倍率)。大きいほど品薄' },
 ];
 async function saveSettings() {
   if (!settings.value) return;
@@ -359,6 +368,7 @@ async function createItem() {
       category: item.category,
       price: item.price,
       effect: item.effect,
+      stock_master: item.stock_master,
     });
     message.value = `アイテム「${item.name}」を作成しました。`;
     kind.value = 'ok';
@@ -366,6 +376,7 @@ async function createItem() {
     item.category = '';
     item.price = 0;
     item.effect = [];
+    item.stock_master = null;
     await refresh();
   } catch (e) {
     fail(e);
@@ -469,6 +480,7 @@ async function saveEdit() {
       price: editing.value.price,
       effect: editing.value.effect,
       enabled: editing.value.enabled,
+      stock_master: editing.value.stock_master,
     });
     message.value = `アイテム「${editing.value.name}」を更新しました。`;
     kind.value = 'ok';
@@ -524,6 +536,7 @@ async function deleteEdit() {
               <label>品名<input v-model="item.name" placeholder="例: 特製栄養ドリンク" /></label>
               <label>カテゴリ<input v-model="item.category" placeholder="例: ドリンク" /></label>
               <label>値段<input type="number" v-model.number="item.price" /></label>
+              <label>標準在庫数<input type="number" v-model.number="item.stock_master" placeholder="空=無制限" /></label>
               <div class="ops">
                 <div class="ops-head">使用効果</div>
                 <div v-for="(op, i) in item.effect" :key="i" class="op-row">
@@ -781,6 +794,7 @@ async function deleteEdit() {
         <label>品名<input v-model="editing.name" /></label>
         <label>カテゴリ<input v-model="editing.category" /></label>
         <label>値段<input type="number" v-model.number="editing.price" /></label>
+        <label>標準在庫数<input type="number" v-model.number="editing.stock_master" placeholder="空=無制限" /></label>
         <label class="chk"><input type="checkbox" v-model="editing.enabled" /> 有効（オフで無効化）</label>
         <div class="ops">
           <div class="ops-head">使用効果</div>

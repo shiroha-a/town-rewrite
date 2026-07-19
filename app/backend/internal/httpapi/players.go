@@ -82,10 +82,11 @@ type playerResp struct {
 	SuperSavings int64      `json:"super_savings"`
 	LoanDaily    int64      `json:"loan_daily"`
 	LoanCount    int        `json:"loan_count"`
-	Status       statusResp `json:"status"`
-	Params       paramsResp `json:"params"`
-	Items        []itemResp `json:"items"`
-	ServerNow    time.Time  `json:"server_now"`
+	Status        statusResp `json:"status"`
+	Params        paramsResp `json:"params"`
+	Items         []itemResp `json:"items"`
+	ItemKindLimit int        `json:"item_kind_limit"`
+	ServerNow     time.Time  `json:"server_now"`
 }
 
 func toResp(p *player.Player) playerResp {
@@ -149,9 +150,10 @@ func toResp(p *player.Player) playerResp {
 			EnergyFullAt:    p.Status.EnergyFullAt,
 			NouEnergyFullAt: p.Status.NouEnergyFullAt,
 		},
-		Params:    paramsResp(p.Params),
-		Items:     items,
-		ServerNow: time.Now(),
+		Params:        paramsResp(p.Params),
+		Items:         items,
+		ItemKindLimit: p.ItemKindLimit,
+		ServerNow:     time.Now(),
 	}
 }
 

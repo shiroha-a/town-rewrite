@@ -63,6 +63,10 @@ type GameConfig struct {
 	// 商品プールから game_date をシードに決定論的に選ぶ。0以下は全件表示。
 	DepartDailyCount   int `yaml:"depart_daily_count"`
 	SyokudouDailyCount int `yaml:"syokudou_daily_count"`
+	// ItemKindLimit: 所持できるアイテムの種類上限(旧TOWN 25品目)。0以下で無制限。
+	ItemKindLimit int `yaml:"item_kind_limit"`
+	// StockAdjust: 店頭在庫の割り算倍率(旧 zaiko_tyousetuti)。実在庫=ceil(標準在庫/倍率)。
+	StockAdjust int `yaml:"stock_adjust"`
 }
 
 type WorkerConfig struct {

@@ -69,6 +69,8 @@ func Run(ctx context.Context, mode string, cfg *config.Config) error {
 		DebugNoCooldown:          cfg.Game.DebugNoCooldown,
 		DepartDailyCount:         cfg.Game.DepartDailyCount,
 		SyokudouDailyCount:       cfg.Game.SyokudouDailyCount,
+		ItemKindLimit:            cfg.Game.ItemKindLimit,
+		StockAdjust:              cfg.Game.StockAdjust,
 	})
 	if err != nil {
 		return fmt.Errorf("load settings: %w", err)

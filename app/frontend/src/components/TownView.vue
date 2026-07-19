@@ -445,7 +445,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
               <span class="honbun2">体　型</span>：{{ player.status.body_type }}（BMI {{ player.status.bmi }}）
             </div>
             <div class="honbun2">
-              <span class="honbun2">所有物</span>：購入商品 {{ player.items.reduce((n, i) => n + i.quantity, 0) }} / 25<br />
+              <span class="honbun2">所有物</span>：購入商品 {{ player.items.length }} / {{ player.item_kind_limit || '∞' }}<br />
               <span class="honbun5" v-for="it in player.items" :key="it.item_id">○{{ it.name }}({{ it.quantity }}個) </span>
             </div>
           </div>

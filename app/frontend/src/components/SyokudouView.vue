@@ -26,6 +26,7 @@ async function eat(food: ShopItem) {
   message.value = '';
   try {
     emit('update', await api.eat(props.player.id, food.id));
+    menu.value = await api.facilityMenu('syokudou'); // 食後の在庫数を反映する
     message.value = `${food.name}を食べました。`;
     kind.value = 'ok';
   } catch (e) {
@@ -60,6 +61,7 @@ async function eat(food: ShopItem) {
             <th class="l">メニュー</th>
             <th>値段</th>
             <th v-for="c in PARAM_COLUMNS" :key="c.key" class="p">{{ c.label }}</th>
+            <th>在庫</th>
             <th></th>
           </tr>
         </thead>
@@ -70,7 +72,14 @@ async function eat(food: ShopItem) {
             <td v-for="c in PARAM_COLUMNS" :key="c.key" class="p" :class="{ up: (food.params[c.key] ?? 0) > 0 }">
               {{ food.params[c.key] ?? 0 }}
             </td>
-            <td class="eat"><button class="btn" :disabled="busy" @click="eat(food)">食べる</button></td>
+            <td class="stock" :class="{ soldout: food.stock === 0 }">
+              {{ food.stock < 0 ? '-' : food.stock === 0 ? '売切' : food.stock }}
+            </td>
+            <td class="eat">
+              <button class="btn" :disabled="busy || food.stock === 0" @click="eat(food)">
+                {{ food.stock === 0 ? '売切' : '食べる' }}
+              </button>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -165,5 +174,12 @@ async function eat(food: ShopItem) {
 }
 .menu-table td.eat {
   width: 56px;
+}
+.menu-table td.stock {
+  color: #333;
+}
+.menu-table td.stock.soldout {
+  color: #cc0000;
+  font-weight: bold;
 }
 </style>

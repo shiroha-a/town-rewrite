@@ -28,12 +28,13 @@ func (e *ValidationError) Error() string { return e.Message }
 
 // Item is a content item definition. Effect is the item's use-time effect.
 type Item struct {
-	ID       int64           `json:"id"`
-	Name     string          `json:"name"`
-	Category string          `json:"category"`
-	Price    int64           `json:"price"`
-	Effect   json.RawMessage `json:"effect"`
-	Enabled  bool            `json:"enabled"`
+	ID          int64           `json:"id"`
+	Name        string          `json:"name"`
+	Category    string          `json:"category"`
+	Price       int64           `json:"price"`
+	Effect      json.RawMessage `json:"effect"`
+	Enabled     bool            `json:"enabled"`
+	StockMaster *int            `json:"stock_master"` // 標準在庫数(NULL=無制限)
 }
 
 // Job is a content job definition (含む給与体系, design 17.5)。
@@ -138,7 +139,7 @@ func orEmptyArray(b []byte) []byte {
 }
 
 // CreateItem validates the effect and inserts a new item.
-func (s *Service) CreateItem(ctx context.Context, name, category string, price int64, effect []byte) (Item, error) {
+func (s *Service) CreateItem(ctx context.Context, name, category string, price int64, effect []byte, stockMaster *int) (Item, error) {
 	if name == "" {
 		return Item{}, &ValidationError{Message: "name is required"}
 	}
@@ -151,18 +152,18 @@ func (s *Service) CreateItem(ctx context.Context, name, category string, price i
 	}
 	var it Item
 	if err := s.pool.QueryRow(ctx,
-		`INSERT INTO content_items (name, category, price, effect)
-		 VALUES ($1, $2, $3, $4::jsonb)
-		 RETURNING id, name, COALESCE(category, ''), price, effect, enabled`,
-		name, category, price, string(effect)).
-		Scan(&it.ID, &it.Name, &it.Category, &it.Price, &it.Effect, &it.Enabled); err != nil {
+		`INSERT INTO content_items (name, category, price, effect, stock_master)
+		 VALUES ($1, $2, $3, $4::jsonb, $5)
+		 RETURNING id, name, COALESCE(category, ''), price, effect, enabled, stock_master`,
+		name, category, price, string(effect), stockMaster).
+		Scan(&it.ID, &it.Name, &it.Category, &it.Price, &it.Effect, &it.Enabled, &it.StockMaster); err != nil {
 		return Item{}, fmt.Errorf("insert item: %w", err)
 	}
 	return it, nil
 }
 
 // UpdateItem validates and updates an existing item (including enabled/無効化).
-func (s *Service) UpdateItem(ctx context.Context, id int64, name, category string, price int64, effect []byte, enabled bool) (Item, error) {
+func (s *Service) UpdateItem(ctx context.Context, id int64, name, category string, price int64, effect []byte, enabled bool, stockMaster *int) (Item, error) {
 	if name == "" {
 		return Item{}, &ValidationError{Message: "name is required"}
 	}
@@ -175,11 +176,11 @@ func (s *Service) UpdateItem(ctx context.Context, id int64, name, category strin
 	}
 	var it Item
 	err := s.pool.QueryRow(ctx,
-		`UPDATE content_items SET name = $2, category = $3, price = $4, effect = $5::jsonb, enabled = $6
+		`UPDATE content_items SET name = $2, category = $3, price = $4, effect = $5::jsonb, enabled = $6, stock_master = $7
 		 WHERE id = $1
-		 RETURNING id, name, COALESCE(category, ''), price, effect, enabled`,
-		id, name, category, price, string(effect), enabled).
-		Scan(&it.ID, &it.Name, &it.Category, &it.Price, &it.Effect, &it.Enabled)
+		 RETURNING id, name, COALESCE(category, ''), price, effect, enabled, stock_master`,
+		id, name, category, price, string(effect), enabled, stockMaster).
+		Scan(&it.ID, &it.Name, &it.Category, &it.Price, &it.Effect, &it.Enabled, &it.StockMaster)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Item{}, &ValidationError{Message: "そのアイテムはありません。"}
 	}
@@ -213,7 +214,7 @@ func (s *Service) DeleteItem(ctx context.Context, id int64) error {
 // ListItems returns all items ordered by id.
 func (s *Service) ListItems(ctx context.Context) ([]Item, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, name, COALESCE(category, ''), price, effect, enabled
+		`SELECT id, name, COALESCE(category, ''), price, effect, enabled, stock_master
 		 FROM content_items ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list items: %w", err)
@@ -222,7 +223,7 @@ func (s *Service) ListItems(ctx context.Context) ([]Item, error) {
 	items := []Item{}
 	for rows.Next() {
 		var it Item
-		if err := rows.Scan(&it.ID, &it.Name, &it.Category, &it.Price, &it.Effect, &it.Enabled); err != nil {
+		if err := rows.Scan(&it.ID, &it.Name, &it.Category, &it.Price, &it.Effect, &it.Enabled, &it.StockMaster); err != nil {
 			return nil, fmt.Errorf("scan item: %w", err)
 		}
 		items = append(items, it)
@@ -269,6 +270,7 @@ type ShopItem struct {
 	Durability      int            `json:"durability"`       // 1セットあたりの耐久(使用可能回数/日数)
 	DurabilityUnit  string         `json:"durability_unit"`  // 'use'(回) or 'day'(日)
 	PowerMultiplier int            `json:"power_multiplier"` // 温泉の回復速度倍率(0=温泉ではない)
+	Stock           int            `json:"stock"`            // 本日の店頭在庫(-1=無制限)
 }
 
 // ListShopItems returns the general department-store items (facility=”).
@@ -282,15 +284,29 @@ func (s *Service) ListFacilityMenu(ctx context.Context, facility string) ([]Shop
 }
 
 func (s *Service) listItems(ctx context.Context, facility string) ([]ShopItem, error) {
-	query := `SELECT id, name, COALESCE(category, ''), price, effect, use_interval_min, durability, durability_unit, power_multiplier
-	          FROM content_items WHERE enabled AND facility = $1`
-	args := []any{facility}
+	// 在庫: stock_master=NULLは無制限(-1)。それ以外は本日の店頭在庫(shop_daily_stockが
+	// 未生成なら初期値 max(1, ceil(stock_master/2)))。zaikoAdjust=2はaction.consumeStockと一致。
+	gameDate := gametime.Date(time.Now(), s.loc, s.dayBoundaryHour)
+	adjust := s.settings.Get().StockAdjust
+	if adjust <= 0 {
+		adjust = 2
+	}
+	query := `SELECT ci.id, ci.name, COALESCE(ci.category, ''), ci.price, ci.effect,
+	                 ci.use_interval_min, ci.durability, ci.durability_unit, ci.power_multiplier,
+	                 CASE WHEN ci.stock_master IS NULL THEN -1
+	                      ELSE COALESCE(sds.remaining, GREATEST(1, CEIL(ci.stock_master::numeric / $3)::int))
+	                 END AS stock
+	          FROM content_items ci
+	          LEFT JOIN shop_daily_stock sds
+	                 ON sds.facility = ci.facility AND sds.item_id = ci.id AND sds.game_date = $2
+	          WHERE ci.enabled AND ci.facility = $1`
+	args := []any{facility, gameDate, adjust}
 	// デパート/食堂は毎日一部だけを品揃えする(旧仕様)。
 	if n := s.dailyCountFor(facility); n > 0 {
-		query += ` AND id IN (SELECT id FROM daily_shop_ids($1, $2, $3))`
+		query += ` AND ci.id IN (SELECT id FROM daily_shop_ids($1, $4, $5))`
 		args = append(args, gametime.DateKey(time.Now(), s.loc, s.dayBoundaryHour), n)
 	}
-	query += ` ORDER BY id`
+	query += ` ORDER BY ci.id`
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list items: %w", err)
@@ -302,7 +318,7 @@ func (s *Service) listItems(ctx context.Context, facility string) ([]ShopItem, e
 			it      ShopItem
 			effJSON []byte
 		)
-		if err := rows.Scan(&it.ID, &it.Name, &it.Category, &it.Price, &effJSON, &it.IntervalMin, &it.Durability, &it.DurabilityUnit, &it.PowerMultiplier); err != nil {
+		if err := rows.Scan(&it.ID, &it.Name, &it.Category, &it.Price, &effJSON, &it.IntervalMin, &it.Durability, &it.DurabilityUnit, &it.PowerMultiplier, &it.Stock); err != nil {
 			return nil, fmt.Errorf("scan item: %w", err)
 		}
 		it.Money, it.Params = effectSummary(effJSON)

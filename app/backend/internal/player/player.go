@@ -30,9 +30,10 @@ type Player struct {
 	SuperSavings int64
 	LoanDaily    int64 // 住宅ローンの日額返済(なければ0)
 	LoanCount    int   // 住宅ローンの残り返済回数(なければ0)
-	Status       Status
-	Params       Params
-	Items        []ItemStack
+	Status        Status
+	Params        Params
+	Items         []ItemStack
+	ItemKindLimit int // 所持できるアイテムの種類上限(0=無制限。表示用)
 }
 
 // Params holds the detailed player parameters shown on the main screen.
@@ -557,5 +558,7 @@ func (s *Service) Get(ctx context.Context, id int64) (*Player, error) {
 	if err := items.Err(); err != nil {
 		return nil, fmt.Errorf("items rows: %w", err)
 	}
+	// 所持アイテムの種類上限(表示用)。バックエンドの購入チェックと同じ設定値。
+	p.ItemKindLimit = cfg.ItemKindLimit
 	return p, nil
 }

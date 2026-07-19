@@ -91,6 +91,7 @@ var ErrItemNotFound = errors.New("item not found")
 // (旧 zaiko_tyousetuti=2). remaining = max(1, ceil(stock_master / zaikoAdjust)).
 const zaikoAdjust = 2
 
+
 // Service applies actions.
 type Service struct {
 	pool            *pgxpool.Pool
@@ -148,11 +149,15 @@ func (s *Service) consumeStock(ctx context.Context, tx pgx.Tx, facility string, 
 		return nil // 在庫無制限
 	}
 	date := s.gameDate(time.Now())
+	adjust := s.settings.Get().StockAdjust
+	if adjust <= 0 {
+		adjust = zaikoAdjust
+	}
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO shop_daily_stock (facility, item_id, game_date, remaining)
 		 VALUES ($1, $2, $3, GREATEST(1, CEIL($4::numeric / $5)::int))
 		 ON CONFLICT (facility, item_id, game_date) DO NOTHING`,
-		facility, itemID, date, *stockMaster, zaikoAdjust); err != nil {
+		facility, itemID, date, *stockMaster, adjust); err != nil {
 		return fmt.Errorf("init stock: %w", err)
 	}
 	tag, err := tx.Exec(ctx,
@@ -1931,6 +1936,18 @@ func (s *Service) DoBuy(ctx context.Context, playerID, itemID int64, sets int, i
 		}
 		if current+add > maxSets*durability {
 			return &ConditionError{Message: fmt.Sprintf("これ以上は持てません(最大%dセット)。", maxSets)}
+		}
+		// 所持種類の上限(旧TOWN 25品目)。まだ持っていない種類は、上限に達していると買えない。
+		if limit := s.settings.Get().ItemKindLimit; limit > 0 && current == 0 {
+			var kinds int
+			if err := tx.QueryRow(ctx,
+				`SELECT COUNT(*) FROM player_items WHERE player_id = $1 AND remaining_uses > 0`,
+				playerID).Scan(&kinds); err != nil {
+				return fmt.Errorf("count item kinds: %w", err)
+			}
+			if kinds >= limit {
+				return &ConditionError{Message: fmt.Sprintf("持てる所有物は%d品目までです。", limit)}
+			}
 		}
 		// 在庫を減らす(デパート品は facility='')。
 		if err := s.consumeStock(ctx, tx, "", itemID, sets); err != nil {

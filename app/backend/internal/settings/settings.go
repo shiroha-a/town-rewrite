@@ -27,6 +27,8 @@ type Game struct {
 	DebugNoCooldown          bool  `json:"debug_no_cooldown"`
 	DepartDailyCount         int   `json:"depart_daily_count"`
 	SyokudouDailyCount       int   `json:"syokudou_daily_count"`
+	ItemKindLimit            int   `json:"item_kind_limit"`     // 所持できるアイテムの種類上限
+	StockAdjust              int   `json:"stock_adjust"`        // 店頭在庫の割り算倍率(実在庫=ceil(標準在庫/倍率))
 }
 
 // Store is a thread-safe, DB-backed holder of the current game settings.

@@ -70,6 +70,7 @@ export interface Player {
   };
   params: Params;
   items: ItemStack[];
+  item_kind_limit: number; // 所持できるアイテムの種類上限(0=無制限)
   // サーバの現在時刻(ISO8601)。クライアント時計のずれを補正しカウントダウンに使う。
   server_now: string;
 }
@@ -99,6 +100,7 @@ export interface ShopItem {
   durability: number;
   durability_unit: string; // 'use'(回) or 'day'(日)
   power_multiplier: number; // 温泉の回復速度倍率(0=温泉ではない)
+  stock: number; // 本日の店頭在庫(-1=無制限)
 }
 
 export class ApiError extends Error {
@@ -284,6 +286,7 @@ export interface AdminItem {
   price: number;
   effect: EffectOp[];
   enabled: boolean;
+  stock_master: number | null; // 標準在庫数(null=無制限)
 }
 export interface AdminJob {
   id: number;
@@ -359,6 +362,8 @@ export interface GameSettings {
   debug_no_cooldown: boolean;
   depart_daily_count: number;
   syokudou_daily_count: number;
+  item_kind_limit: number;
+  stock_adjust: number;
 }
 
 export interface TownFacility {
@@ -785,12 +790,19 @@ export const api = {
     request<AdminItem[]>('GET', '/admin/items', undefined, adminHeaders(actingId)),
   adminCreateItem: (
     actingId: number,
-    item: { name: string; category: string; price: number; effect: EffectOp[] },
+    item: { name: string; category: string; price: number; effect: EffectOp[]; stock_master: number | null },
   ) => request<AdminItem>('POST', '/admin/items', item, adminHeaders(actingId)),
   adminUpdateItem: (
     actingId: number,
     id: number,
-    item: { name: string; category: string; price: number; effect: EffectOp[]; enabled: boolean },
+    item: {
+      name: string;
+      category: string;
+      price: number;
+      effect: EffectOp[];
+      enabled: boolean;
+      stock_master: number | null;
+    },
   ) => request<AdminItem>('PUT', `/admin/items/${id}`, item, adminHeaders(actingId)),
   adminDeleteItem: (actingId: number, id: number) =>
     request<{ deleted: boolean }>('DELETE', `/admin/items/${id}`, undefined, adminHeaders(actingId)),
