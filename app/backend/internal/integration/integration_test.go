@@ -2532,3 +2532,125 @@ func TestCLeague(t *testing.T) {
 		t.Errorf("ledger zero-sum broken: %d", sum)
 	}
 }
+
+// buildHouse posts a build request to the construction company and returns the
+// updated player and HTTP status.
+func buildHouse(t *testing.T, base string, playerID int64, town, row, col int, exterior string, interiorRank int, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"town": town, "row": row, "col": col,
+		"exterior": exterior, "interior_rank": interiorRank,
+		"idempotency_key": idemKey,
+	})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/build",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("build post: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+// creditSavings tops up a player's bank savings via the ledger (test faucet),
+// preserving the double-entry zero-sum invariant.
+func creditSavings(t *testing.T, pool *pgxpool.Pool, playerID, amount int64) {
+	t.Helper()
+	ctx := context.Background()
+	led := ledger.New(pool)
+	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		return led.PostTx(ctx, tx, "test_credit", "", []ledger.Entry{
+			{Account: ledger.SavingsAccount(playerID), Delta: amount},
+			{Account: ledger.SystemAccount("test_faucet"), Delta: -amount},
+		})
+	})
+	if err != nil {
+		t.Fatalf("credit savings: %v", err)
+	}
+}
+
+// seedPlots designates buildable empty plots directly in the DB for tests.
+func seedPlots(t *testing.T, pool *pgxpool.Pool, plots [][3]int) {
+	t.Helper()
+	ctx := context.Background()
+	for _, p := range plots {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO town_plots (town, grid_row, grid_col) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+			p[0], p[1], p[2]); err != nil {
+			t.Fatalf("seed plot: %v", err)
+		}
+	}
+}
+
+func TestBuildHouse(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	p := register(t, srv.URL, "misskey.example", "builder")
+	creditSavings(t, pool, p.ID, 30_000_000) // 3000万円を普通口座へ
+	// 謎の街(4)のA1-A5と、街0の施設セル(建設会社: row4,col13)を空地に指定する。
+	seedPlots(t, pool, [][3]int{{4, 0, 1}, {4, 0, 2}, {4, 0, 3}, {4, 0, 4}, {4, 0, 5}, {0, 4, 13}})
+
+	// 空地に指定されていないマスには建てられない。
+	if _, c := buildHouse(t, srv.URL, p.ID, 4, 5, 5, "house1", 0, "bn"); c != http.StatusUnprocessableEntity {
+		t.Errorf("non-plot: status=%d, want 422", c)
+	}
+
+	// 1軒目: 謎の街(4) の A1 に house1 + D内装。費用=(250+150+100)*10000=5,000,000。
+	got, code := buildHouse(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, "b1")
+	if code != http.StatusOK {
+		t.Fatalf("build 1st: status=%d", code)
+	}
+	if got.Savings != 25_000_000 {
+		t.Errorf("savings after 1st = %d, want 25000000", got.Savings)
+	}
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM player_houses WHERE owner_id=$1`, p.ID).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("house count = %d, want 1", count)
+	}
+
+	// 同じマスには二重に建てられない(空地でない)。
+	if _, c := buildHouse(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, "b2"); c != http.StatusUnprocessableEntity {
+		t.Errorf("duplicate plot: status=%d, want 422", c)
+	}
+
+	// 街0(メイン街)の施設セル(建設会社: col13,row4)には建てられない。
+	if _, c := buildHouse(t, srv.URL, p.ID, 0, 4, 13, "house1", 0, "bf"); c != http.StatusUnprocessableEntity {
+		t.Errorf("facility cell: status=%d, want 422", c)
+	}
+
+	// 2軒目以降: 費用=(250+150*2)*10000=5,500,000。内装は無視される。
+	got, code = buildHouse(t, srv.URL, p.ID, 4, 0, 2, "house1", 0, "b3")
+	if code != http.StatusOK {
+		t.Fatalf("build 2nd: status=%d", code)
+	}
+	if got.Savings != 19_500_000 {
+		t.Errorf("savings after 2nd = %d, want 19500000", got.Savings)
+	}
+
+	// 3・4軒目まで建てられる。
+	if _, c := buildHouse(t, srv.URL, p.ID, 4, 0, 3, "house1", 0, "b4"); c != http.StatusOK {
+		t.Fatalf("build 3rd: status=%d", c)
+	}
+	if _, c := buildHouse(t, srv.URL, p.ID, 4, 0, 4, "house1", 0, "b5"); c != http.StatusOK {
+		t.Fatalf("build 4th: status=%d", c)
+	}
+
+	// 5軒目は上限(mochiie_max=4)で拒否される。
+	if _, c := buildHouse(t, srv.URL, p.ID, 4, 0, 5, "house1", 0, "b6"); c != http.StatusUnprocessableEntity {
+		t.Errorf("5th house: status=%d, want 422", c)
+	}
+
+	// 台帳ゼロ和は保たれる。
+	led := ledger.New(pool)
+	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
+		t.Errorf("ledger zero-sum broken: %d", sum)
+	}
+}

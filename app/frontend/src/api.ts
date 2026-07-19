@@ -563,6 +563,57 @@ export interface BattleResp {
   result: BattleResult;
 }
 
+// 建設会社(建築系)
+export interface BuildingTown {
+  no: number;
+  name: string;
+  land_price: number;
+}
+export interface BuildingExterior {
+  key: string;
+  price: number;
+}
+export interface BuildingInterior {
+  rank: number;
+  name: string;
+  price: number;
+  slots: number;
+}
+export interface HouseCell {
+  town: number;
+  row: number;
+  col: number;
+  exterior: string;
+  owner_name: string;
+  own: boolean;
+}
+export interface MyHouse {
+  id: number;
+  town: number;
+  row: number;
+  col: number;
+  exterior: string;
+  interior_rank: number;
+  built_at: string;
+}
+export interface PlotCell {
+  town: number;
+  row: number;
+  col: number;
+}
+export interface BuildingState {
+  towns: BuildingTown[];
+  exteriors: BuildingExterior[];
+  interiors: BuildingInterior[];
+  plots: PlotCell[];
+  houses: HouseCell[];
+  my_houses: MyHouse[];
+  house_count: number;
+  mochiie_max: number;
+  cols: number;
+  rows: number;
+}
+
 function adminHeaders(actingId: number): Record<string, string> {
   return { 'X-Acting-Player-Id': String(actingId) };
 }
@@ -783,6 +834,24 @@ export const api = {
     }),
   onsenTick: (id: number) =>
     request<Player>('POST', `/players/${id}/onsen/tick`, {
+      idempotency_key: newIdempotencyKey(),
+    }),
+
+  building: (id: number) => request<BuildingState>('GET', `/players/${id}/building`),
+  buildHouse: (
+    id: number,
+    town: number,
+    row: number,
+    col: number,
+    exterior: string,
+    interiorRank: number,
+  ) =>
+    request<Player>('POST', `/players/${id}/building/build`, {
+      town,
+      row,
+      col,
+      exterior,
+      interior_rank: interiorRank,
       idempotency_key: newIdempotencyKey(),
     }),
 
