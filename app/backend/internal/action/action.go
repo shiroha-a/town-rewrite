@@ -200,9 +200,10 @@ type WorkResult struct {
 	ThisSalary int64    // 昇給後の給料(1回あたり)
 	Pay        int64    // 今回支給された給料(支払間隔到達時のみ>0)
 	PayEvery   int      // 支払間隔(N回出勤ごと)
-	Bonus      int64    // レベルアップ時ボーナス
-	WorkBonus  int64    // 消費に見合う労働ボーナス(今回の給料に含まれる)
-	Mastered   []string // 今回新たにマスターした職業
+	Bonus       int64    // レベルアップ時ボーナス
+	WorkBonus   int64    // 消費に見合う労働ボーナス(今回の給料に含まれる)
+	WeightLossG int      // 今回の労働で減った体重(グラム)
+	Mastered    []string // 今回新たにマスターした職業
 }
 
 // DoWork works the player's current job (design 17.5 do_work). Students cannot
@@ -345,7 +346,7 @@ func (s *Service) DoWork(ctx context.Context, playerID int64, idempotencyKey str
 		result = WorkResult{
 			ExpGained: randed, NewLevel: newLevel, LeveledUp: leveledUp,
 			ThisSalary: thisSalary, Pay: pay, PayEvery: payInterval, Bonus: bonus,
-			WorkBonus: workBonus,
+			WorkBonus: workBonus, WeightLossG: econ.bodyCost * 10,
 		}
 		if masteredNow {
 			result.Mastered = []string{job}

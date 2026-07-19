@@ -23,9 +23,10 @@ type workResultResp struct {
 	ThisSalary int64    `json:"this_salary"`
 	Pay        int64    `json:"pay"`
 	PayEvery   int      `json:"pay_every"`
-	Bonus      int64    `json:"bonus"`
-	WorkBonus  int64    `json:"work_bonus"`
-	Mastered   []string `json:"mastered"`
+	Bonus       int64    `json:"bonus"`
+	WorkBonus   int64    `json:"work_bonus"`
+	WeightLossG int      `json:"weight_loss_g"`
+	Mastered    []string `json:"mastered"`
 }
 
 // workResp is the player state plus the just-completed work's summary.
@@ -77,9 +78,10 @@ func (s *Server) work(w http.ResponseWriter, r *http.Request) {
 			ThisSalary: result.ThisSalary,
 			Pay:        result.Pay,
 			PayEvery:   result.PayEvery,
-			Bonus:      result.Bonus,
-			WorkBonus:  result.WorkBonus,
-			Mastered:   mastered,
+			Bonus:       result.Bonus,
+			WorkBonus:   result.WorkBonus,
+			WeightLossG: result.WeightLossG,
+			Mastered:    mastered,
 		},
 	})
 }

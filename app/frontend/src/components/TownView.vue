@@ -184,6 +184,7 @@ function buildWorkLines(before: Player, after: WorkResponse): string[] {
   const nouUsed = before.status.nou_energy - after.status.nou_energy;
   lines.push(`身体パワーを${energyUsed}使いました。`);
   if (nouUsed > 0) lines.push(`頭脳パワーを${nouUsed}使いました。`);
+  if (r.weight_loss_g > 0) lines.push(`体重が${(r.weight_loss_g / 1000).toFixed(2)}kg減りました。`);
   return lines;
 }
 
