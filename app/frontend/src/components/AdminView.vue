@@ -13,6 +13,7 @@ import {
   type AdminPlayerPayload,
   type GameSettings,
   type TownFacility,
+  type PlotCell,
 } from '../api';
 
 const props = defineProps<{ player: Player }>();
@@ -21,7 +22,7 @@ const emit = defineEmits<{ back: [] }>();
 const isAdmin = computed(() => props.player.roles.includes('admin'));
 
 // 各セクションの開閉。既定は折りたたみ(false)。
-const open = reactive({ item: false, job: false, user: false, settings: false, map: false });
+const open = reactive({ item: false, job: false, user: false, settings: false, map: false, plots: false });
 
 // 効果/条件で対象にできるパラメータ。
 const PARAM_OPTIONS = [
@@ -105,6 +106,7 @@ async function refresh() {
     players.value = await api.adminListPlayers(props.player.id);
     settings.value = await api.adminGetSettings(props.player.id);
     townmap.value = await api.townMap();
+    plots.value = await api.adminGetPlots(props.player.id);
     selectedIdx.value = null;
   } catch (e) {
     fail(e);
@@ -133,7 +135,7 @@ const KEY_PRESETS: { key: string; label: string }[] = [
   { key: 'item', label: 'アイテム' },
   { key: 'kabu', label: '株取引場(準備中)' },
   { key: 'keiba', label: '競馬場(準備中)' },
-  { key: 'kentiku', label: '建設会社(準備中)' },
+  { key: 'kentiku', label: '建設会社' },
   { key: 'prof', label: 'プロフィール(準備中)' },
   { key: 'mail', label: 'メール(準備中)' },
   { key: 'doukyo', label: 'キャラ作成(準備中)' },
@@ -219,6 +221,49 @@ async function saveTownMap() {
     townmap.value = await api.adminUpdateTownMap(props.player.id, townmap.value);
     selectedIdx.value = null;
     message.value = 'タウンマップを更新しました。';
+    kind.value = 'ok';
+  } catch (e) {
+    fail(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
+// 空き地(建設会社): 街ごとに家を建てられるマスを指定する。
+const plots = ref<PlotCell[]>([]);
+const plotTown = ref(0);
+const plotTowns = [
+  { no: 0, name: '公園' },
+  { no: 1, name: 'シー・リゾート' },
+  { no: 2, name: 'カントリータウン' },
+  { no: 3, name: 'ダウンタウン' },
+  { no: 4, name: '謎の街' },
+];
+// 街0(メイン街)のみ、施設セルは空地にできない。
+function plotFacilityAt(col: number, rowIdx: number): boolean {
+  return plotTown.value === 0 && mapFacilityAt(col, rowIdx) >= 0;
+}
+function plotFacilityImg(col: number, rowIdx: number): string {
+  const i = mapFacilityAt(col, rowIdx);
+  return i >= 0 ? townmap.value[i].img : '';
+}
+function isPlot(col: number, rowIdx: number): boolean {
+  return plots.value.some((p) => p.town === plotTown.value && p.col === col && p.row === rowIdx);
+}
+function togglePlot(col: number, rowIdx: number) {
+  if (plotFacilityAt(col, rowIdx)) return;
+  const i = plots.value.findIndex(
+    (p) => p.town === plotTown.value && p.col === col && p.row === rowIdx,
+  );
+  if (i >= 0) plots.value.splice(i, 1);
+  else plots.value.push({ town: plotTown.value, row: rowIdx, col });
+}
+async function savePlots() {
+  busy.value = true;
+  message.value = '';
+  try {
+    plots.value = await api.adminSetPlots(props.player.id, plots.value);
+    message.value = '空き地を更新しました。';
     kind.value = 'ok';
   } catch (e) {
     fail(e);
@@ -784,6 +829,62 @@ async function deleteEdit() {
             </section>
           </div>
         </section>
+
+        <!-- 空き地(建設会社) -->
+        <section class="fold">
+          <button class="fold-head" @click="open.plots = !open.plots">
+            <span class="caret">{{ open.plots ? '▼' : '▶' }}</span> 空き地（建設会社）（{{ plots.length }}）
+          </button>
+          <div v-if="open.plots" class="fold-body">
+            <section class="panel">
+              <h3>
+                空き地の設定<span class="hint">
+                  ※街を選び、家を建てられるマスをクリックで指定/解除。緑=空地。街0(公園)は施設セルを除く。</span
+                >
+              </h3>
+              <div class="plot-towns">
+                <button
+                  v-for="t in plotTowns"
+                  :key="t.no"
+                  class="ptab"
+                  :class="{ active: plotTown === t.no }"
+                  @click="plotTown = t.no"
+                >
+                  {{ t.name }}
+                </button>
+              </div>
+              <div class="map-scroll">
+                <div class="map-grid">
+                  <div class="corner"></div>
+                  <div v-for="c in mapCols" :key="'ph' + c" class="colhead">{{ c }}</div>
+                  <template v-for="(r, ri) in mapRows" :key="'pr' + r">
+                    <div class="rowhead">{{ r }}</div>
+                    <div
+                      v-for="c in mapCols"
+                      :key="'p' + r + '-' + c"
+                      class="cell"
+                      :class="{ occ: plotFacilityAt(c, ri), plot: isPlot(c, ri) }"
+                      :title="plotFacilityAt(c, ri) ? '施設' : isPlot(c, ri) ? '空地' : ''"
+                      @click="togglePlot(c, ri)"
+                    >
+                      <img
+                        v-if="plotFacilityAt(c, ri)"
+                        :src="`/img/${plotFacilityImg(c, ri)}.gif`"
+                        width="24"
+                        height="24"
+                        alt=""
+                      />
+                    </div>
+                  </template>
+                </div>
+              </div>
+              <div class="actions">
+                <button class="btn primary" :disabled="busy" @click="savePlots">保存</button>
+                <button class="btn" :disabled="busy" @click="refresh">再読込</button>
+              </div>
+            </section>
+          </div>
+        </section>
       </div>
     </template>
 
@@ -1112,6 +1213,27 @@ async function deleteEdit() {
 }
 .map-grid .cell.occ {
   background: #fff;
+}
+.map-grid .cell.plot {
+  background: #cdeeb0;
+}
+.plot-towns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.plot-towns .ptab {
+  background: #eef3e8;
+  border: 1px solid #99a;
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.plot-towns .ptab.active {
+  background: #4a7a2a;
+  color: #fff;
+  font-weight: bold;
 }
 .map-grid .cell.movable {
   background: #e3f0ff;

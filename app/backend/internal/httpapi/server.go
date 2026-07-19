@@ -129,6 +129,8 @@ func NewServer(players *player.Service, actions *action.Service, contentSvc *con
 	mux.HandleFunc("GET /api/v1/admin/settings", s.adminGetSettings)
 	mux.HandleFunc("PUT /api/v1/admin/settings", s.adminUpdateSettings)
 	mux.HandleFunc("PUT /api/v1/admin/townmap", s.adminUpdateTownMap)
+	mux.HandleFunc("GET /api/v1/admin/building/plots", s.adminGetPlots)
+	mux.HandleFunc("PUT /api/v1/admin/building/plots", s.adminUpdatePlots)
 	mux.HandleFunc("GET /api/v1/admin/players", s.adminListPlayers)
 	mux.HandleFunc("PUT /api/v1/admin/players/{id}", s.adminUpdatePlayer)
 	mux.HandleFunc("DELETE /api/v1/admin/players/{id}", s.adminDeletePlayer)

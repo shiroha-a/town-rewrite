@@ -903,4 +903,8 @@ export const api = {
     request<GameSettings>('PUT', '/admin/settings', settings, adminHeaders(actingId)),
   adminUpdateTownMap: (actingId: number, facilities: TownFacility[]) =>
     request<TownFacility[]>('PUT', '/admin/townmap', facilities, adminHeaders(actingId)),
+  adminGetPlots: (actingId: number) =>
+    request<PlotCell[]>('GET', '/admin/building/plots', undefined, adminHeaders(actingId)),
+  adminSetPlots: (actingId: number, plots: PlotCell[]) =>
+    request<PlotCell[]>('PUT', '/admin/building/plots', plots, adminHeaders(actingId)),
 };
