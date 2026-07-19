@@ -2,6 +2,7 @@ package action
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -94,6 +95,83 @@ func (s *Service) DoBuildHouse(ctx context.Context, playerID int64, town, row, c
 			 VALUES ($1, $2, $3, $4, $5, $6, 0)`,
 			playerID, town, row, col, exterior, ir); err != nil {
 			return fmt.Errorf("insert house: %w", err)
+		}
+		return nil
+	})
+}
+
+// DoSellHouse demolishes one of the player's houses and refunds the land price
+// (地価×10000) in cash. The exterior/interior cost is not refunded, and admins
+// receive no refund (レガシー忠実). The freed plot returns to buildable state.
+func (s *Service) DoSellHouse(ctx context.Context, playerID, houseID int64, idempotencyKey string) (*player.Player, error) {
+	isAdmin, err := s.players.HasRole(ctx, playerID, "admin")
+	if err != nil {
+		return nil, err
+	}
+	return s.runAction(ctx, playerID, "sell_house", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		var town int
+		err := tx.QueryRow(ctx,
+			`SELECT town FROM player_houses WHERE id = $1 AND owner_id = $2`, houseID, playerID).Scan(&town)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &ConditionError{Message: "その家は所有していません。"}
+		}
+		if err != nil {
+			return fmt.Errorf("load house: %w", err)
+		}
+		refund, err := building.SellValue(town)
+		if err != nil {
+			return &ConditionError{Message: "家の街情報が不正です。"}
+		}
+		if isAdmin {
+			refund = 0 // 管理者は返金なし
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM player_houses WHERE id = $1`, houseID); err != nil {
+			return fmt.Errorf("delete house: %w", err)
+		}
+		if refund > 0 {
+			// 返金は地価分のみを現金へ(外装・内装費は戻らない)。
+			if err := s.ledger.PostTx(ctx, tx, "sell_house", "", []ledger.Entry{
+				{Account: ledger.SystemAccount("house_sell"), Delta: -refund},
+				{Account: ledger.PlayerAccount(playerID), Delta: refund},
+			}); err != nil {
+				return fmt.Errorf("refund: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
+// DoRebuildHouse rebuilds an existing house with a new exterior and interior
+// rank. The cost (外装+内装)×10000 is charged in cash; the land price is not
+// re-charged because it was already paid at build time.
+func (s *Service) DoRebuildHouse(ctx context.Context, playerID, houseID int64, exterior string, interiorRank int, idempotencyKey string) (*player.Player, error) {
+	return s.runAction(ctx, playerID, "rebuild_house", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		var exists bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM player_houses WHERE id = $1 AND owner_id = $2)`,
+			houseID, playerID).Scan(&exists); err != nil {
+			return fmt.Errorf("check house: %w", err)
+		}
+		if !exists {
+			return &ConditionError{Message: "その家は所有していません。"}
+		}
+		cost, err := building.RebuildCost(exterior, interiorRank)
+		if err != nil {
+			return &ConditionError{Message: "外装または内装の指定が正しくありません。"}
+		}
+		if state.Money < cost {
+			return &ConditionError{Message: fmt.Sprintf("現金が足りません。建て替え費用%d円が必要です。", cost)}
+		}
+		if err := s.ledger.PostTx(ctx, tx, "rebuild_house", "", []ledger.Entry{
+			{Account: ledger.PlayerAccount(playerID), Delta: -cost},
+			{Account: ledger.SystemAccount("house_rebuild"), Delta: cost},
+		}); err != nil {
+			return fmt.Errorf("charge rebuild: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE player_houses SET exterior = $1, interior_rank = $2 WHERE id = $3`,
+			exterior, interiorRank, houseID); err != nil {
+			return fmt.Errorf("update house: %w", err)
 		}
 		return nil
 	})

@@ -56,6 +56,58 @@ func (s *Server) buildHouse(w http.ResponseWriter, r *http.Request) {
 	writeFacilityResult(w, p, err)
 }
 
+type sellHouseReq struct {
+	HouseID        int64  `json:"house_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// sellHouse demolishes the player's house and refunds the land price (建設会社).
+func (s *Server) sellHouse(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req sellHouseReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
+		return
+	}
+	p, err := s.actions.DoSellHouse(r.Context(), id, req.HouseID, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
+type rebuildHouseReq struct {
+	HouseID        int64  `json:"house_id"`
+	Exterior       string `json:"exterior"`
+	InteriorRank   int    `json:"interior_rank"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// rebuildHouse rebuilds the player's house with a new exterior/interior (建設会社).
+func (s *Server) rebuildHouse(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req rebuildHouseReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 || req.Exterior == "" {
+		writeError(w, http.StatusBadRequest, "house_id and exterior are required")
+		return
+	}
+	p, err := s.actions.DoRebuildHouse(r.Context(), id, req.HouseID, req.Exterior, req.InteriorRank, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
 // adminGetPlots returns every admin-designated empty plot (管理者専用).
 func (s *Server) adminGetPlots(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {

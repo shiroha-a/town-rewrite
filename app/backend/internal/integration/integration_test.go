@@ -2654,3 +2654,122 @@ func TestBuildHouse(t *testing.T) {
 		t.Errorf("ledger zero-sum broken: %d", sum)
 	}
 }
+
+// creditCash tops up a player's cash via the ledger for tests.
+func creditCash(t *testing.T, pool *pgxpool.Pool, playerID, amount int64) {
+	t.Helper()
+	ctx := context.Background()
+	led := ledger.New(pool)
+	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		return led.PostTx(ctx, tx, "test_cash", "", []ledger.Entry{
+			{Account: ledger.PlayerAccount(playerID), Delta: amount},
+			{Account: ledger.SystemAccount("test_faucet"), Delta: -amount},
+		})
+	})
+	if err != nil {
+		t.Fatalf("credit cash: %v", err)
+	}
+}
+
+func rebuildHouse(t *testing.T, base string, playerID, houseID int64, exterior string, interiorRank int, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"house_id": houseID, "exterior": exterior, "interior_rank": interiorRank, "idempotency_key": idemKey,
+	})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/rebuild",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("rebuild post: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+func sellHouse(t *testing.T, base string, playerID, houseID int64, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"house_id": houseID, "idempotency_key": idemKey})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/sell",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("sell post: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+func TestSellRebuildHouse(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	register(t, srv.URL, "misskey.example", "admin0") // 1人目=admin
+	p := register(t, srv.URL, "misskey.example", "builder2")
+	creditSavings(t, pool, p.ID, 10_000_000)
+	creditCash(t, pool, p.ID, 30_000_000)
+	seedPlots(t, pool, [][3]int{{4, 0, 1}})
+
+	// 建築(謎の街 A1, house1, D内装)。savings 10M-5M=5M。
+	if _, c := buildHouse(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, "s1"); c != http.StatusOK {
+		t.Fatalf("build: %d", c)
+	}
+	var houseID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM player_houses WHERE owner_id=$1`, p.ID).Scan(&houseID); err != nil {
+		t.Fatalf("house id: %v", err)
+	}
+
+	// 建て替え(house4, A内装)。費用=(800+1200)*10000=20,000,000を現金から。
+	got, c := rebuildHouse(t, srv.URL, p.ID, houseID, "house4", 0, "s2")
+	if c != http.StatusOK {
+		t.Fatalf("rebuild: %d", c)
+	}
+	// 現金 = 初期50万 + 3000万 - 2000万 = 10,500,000
+	if got.Money != 10_500_000 {
+		t.Errorf("cash after rebuild = %d, want 10500000", got.Money)
+	}
+	var (
+		ext string
+		ir  int
+	)
+	if err := pool.QueryRow(ctx, `SELECT exterior, interior_rank FROM player_houses WHERE id=$1`, houseID).Scan(&ext, &ir); err != nil {
+		t.Fatalf("read house: %v", err)
+	}
+	if ext != "house4" || ir != 0 {
+		t.Errorf("after rebuild: exterior=%q interior=%d, want house4/0", ext, ir)
+	}
+
+	// 売却。返金=謎の街地価250万×10000=2,500,000を現金へ。
+	got2, c := sellHouse(t, srv.URL, p.ID, houseID, "s3")
+	if c != http.StatusOK {
+		t.Fatalf("sell: %d", c)
+	}
+	if got2.Money != 13_000_000 { // 10,500,000 + 2,500,000
+		t.Errorf("cash after sell = %d, want 13000000", got2.Money)
+	}
+	var cnt int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM player_houses WHERE owner_id=$1`, p.ID).Scan(&cnt); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if cnt != 0 {
+		t.Errorf("houses after sell = %d, want 0", cnt)
+	}
+
+	// 売却でマスは空地に戻り、同じ場所に再度建てられる。
+	if _, c := buildHouse(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, "s4"); c != http.StatusOK {
+		t.Errorf("rebuild on freed plot: %d", c)
+	}
+
+	led := ledger.New(pool)
+	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
+		t.Errorf("ledger zero-sum broken: %d", sum)
+	}
+}

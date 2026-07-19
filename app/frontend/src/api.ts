@@ -854,6 +854,18 @@ export const api = {
       interior_rank: interiorRank,
       idempotency_key: newIdempotencyKey(),
     }),
+  sellHouse: (id: number, houseId: number) =>
+    request<Player>('POST', `/players/${id}/building/sell`, {
+      house_id: houseId,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  rebuildHouse: (id: number, houseId: number, exterior: string, interiorRank: number) =>
+    request<Player>('POST', `/players/${id}/building/rebuild`, {
+      house_id: houseId,
+      exterior,
+      interior_rank: interiorRank,
+      idempotency_key: newIdempotencyKey(),
+    }),
 
   // 管理者API(X-Acting-Player-Idヘッダ + adminロール)。
   adminListItems: (actingId: number) =>

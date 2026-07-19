@@ -161,6 +161,21 @@ func BuildCost(townNo int, exterior string, interiorRank, houseCount int) (int64
 	return int64(man) * yenPerMan, nil
 }
 
+// RebuildCost returns the cost in 円 to rebuild an existing house with a new
+// exterior and interior rank (建て替え). The land price is excluded because it
+// was already paid when the plot was first built on; this is charged in cash.
+func RebuildCost(exterior string, interiorRank int) (int64, error) {
+	ext, ok := ExteriorPrice(exterior)
+	if !ok {
+		return 0, fmt.Errorf("unknown exterior %q", exterior)
+	}
+	in, ok := interiorByRank(interiorRank)
+	if !ok {
+		return 0, fmt.Errorf("unknown interior rank %d", interiorRank)
+	}
+	return int64(ext+in.Price) * yenPerMan, nil
+}
+
 // SellValue returns the refund in 円 when a house is demolished/sold: the town's
 // land price (地価×10000). Used from フェーズ2c.
 func SellValue(townNo int) (int64, error) {

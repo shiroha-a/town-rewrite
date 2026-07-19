@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { api, type Player, type BuildingState, type TownFacility } from '../api';
+import { api, type Player, type BuildingState, type TownFacility, type MyHouse } from '../api';
 import Toast from './Toast.vue';
 import { useToast } from '../toast';
 
@@ -157,6 +157,85 @@ async function build() {
     busy.value = false;
   }
 }
+
+// 建て替え・売却(フェーズ2c)
+const rebuildingId = ref<number | null>(null);
+const rebuildExterior = ref('');
+const rebuildInterior = ref(0);
+// 建て替え費用(外装+内装)×10000。地価は既払いのため含めない。
+const rebuildCost = computed(() => {
+  const ext = state.value?.exteriors.find((e) => e.key === rebuildExterior.value);
+  const inte = state.value?.interiors.find((i) => i.rank === rebuildInterior.value);
+  if (!ext || !inte) return 0;
+  return (ext.price + inte.price) * 10000;
+});
+// 売却の返金額(地価×10000)。
+function sellRefund(town: number): number {
+  const t = state.value?.towns.find((x) => x.no === town);
+  return t ? t.land_price * 10000 : 0;
+}
+function startRebuild(h: MyHouse) {
+  rebuildingId.value = h.id;
+  rebuildExterior.value = h.exterior;
+  rebuildInterior.value = h.interior_rank;
+}
+function cancelRebuild() {
+  rebuildingId.value = null;
+}
+async function doRebuild(h: MyHouse) {
+  busy.value = true;
+  const c = rebuildCost.value;
+  try {
+    const after = await api.rebuildHouse(props.player.id, h.id, rebuildExterior.value, rebuildInterior.value);
+    emit('update', after);
+    await refresh();
+    rebuildingId.value = null;
+    showToast({
+      variant: 'item',
+      title: '家を建て替えた',
+      lines: [`建て替え費用 ${yen(c)}円を現金で支払いました`],
+      icon: 'item',
+    });
+  } catch (e) {
+    showToast({
+      variant: 'error',
+      title: '建て替えできませんでした',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'item',
+    });
+  } finally {
+    busy.value = false;
+  }
+}
+async function doSell(h: MyHouse) {
+  const refund = sellRefund(h.town);
+  const ok = window.confirm(
+    `${townName(h.town)}／${rowLabel(h.row)}${h.col}の家を売却しますか？\n地価分 ${yen(refund)}円が現金で戻ります(外装・内装費は戻りません)。`,
+  );
+  if (!ok) return;
+  busy.value = true;
+  try {
+    const after = await api.sellHouse(props.player.id, h.id);
+    emit('update', after);
+    await refresh();
+    if (rebuildingId.value === h.id) rebuildingId.value = null;
+    showToast({
+      variant: 'item',
+      title: '家を売却した',
+      lines: [`地価分 ${yen(refund)}円が現金で戻りました`],
+      icon: 'item',
+    });
+  } catch (e) {
+    showToast({
+      variant: 'error',
+      title: '売却できませんでした',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'item',
+    });
+  } finally {
+    busy.value = false;
+  }
+}
 </script>
 
 <template>
@@ -250,10 +329,34 @@ async function build() {
         <div class="mh-head">自分の家（{{ state.house_count }}／{{ state.mochiie_max }}軒）</div>
         <div v-if="state.my_houses.length === 0" class="mh-empty">まだ家を持っていません。</div>
         <ul v-else class="mh-list">
-          <li v-for="h in state.my_houses" :key="h.id">
-            <img :src="`/img/${h.exterior}.gif`" :alt="h.exterior" />
-            <span class="mh-loc">{{ townName(h.town) }}／{{ rowLabel(h.row) }}{{ h.col }}</span>
-            <span class="mh-ext">{{ h.exterior }}</span>
+          <li v-for="h in state.my_houses" :key="h.id" class="mh-item">
+            <div class="mh-row">
+              <img :src="`/img/${h.exterior}.gif`" :alt="h.exterior" />
+              <span class="mh-loc">{{ townName(h.town) }}／{{ rowLabel(h.row) }}{{ h.col }}</span>
+              <span class="mh-ext">{{ h.exterior }}</span>
+              <span class="mh-spacer"></span>
+              <button class="btn mini" :disabled="busy" @click="startRebuild(h)">建て替え</button>
+              <button class="btn mini danger" :disabled="busy" @click="doSell(h)">売却</button>
+            </div>
+            <div v-if="rebuildingId === h.id" class="mh-rebuild">
+              <label class="mh-field">外装
+                <select v-model="rebuildExterior">
+                  <option v-for="e in state.exteriors" :key="e.key" :value="e.key">
+                    {{ e.key }}（{{ e.price }}万）
+                  </option>
+                </select>
+              </label>
+              <label class="mh-field">内装
+                <select v-model.number="rebuildInterior">
+                  <option v-for="i in state.interiors" :key="i.rank" :value="i.rank">
+                    {{ i.name }}（{{ i.price }}万）
+                  </option>
+                </select>
+              </label>
+              <span class="mh-cost">建て替え費用 {{ yen(rebuildCost) }}円（現金）</span>
+              <button class="btn mini build-btn" :disabled="busy" @click="doRebuild(h)">建て替える</button>
+              <button class="btn mini" :disabled="busy" @click="cancelRebuild">やめる</button>
+            </div>
           </li>
         </ul>
       </div>
@@ -442,22 +545,53 @@ async function build() {
   margin: 0;
   padding: 0;
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
 }
-.mh-list li {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+.mh-item {
   background: #f6faf0;
   border: 1px solid #cde0bc;
-  padding: 3px 6px;
+  padding: 4px 6px;
   font-size: 12px;
 }
-.mh-list li img {
+.mh-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mh-row img {
   width: 28px;
   height: 28px;
   object-fit: contain;
+}
+.mh-spacer {
+  flex: 1 1 auto;
+}
+.mh-rebuild {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed #cde0bc;
+}
+.mh-field {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.mh-cost {
+  color: #cc3300;
+  font-weight: bold;
+}
+.btn.mini {
+  padding: 2px 6px;
+  font-size: 11px;
+}
+.btn.danger {
+  background: #c44;
+  color: #fff;
 }
 .mh-loc {
   font-weight: bold;
