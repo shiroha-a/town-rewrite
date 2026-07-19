@@ -69,6 +69,7 @@ func Run(ctx context.Context, mode string, cfg *config.Config) error {
 		DebugNoCooldown:          cfg.Game.DebugNoCooldown,
 		DepartDailyCount:         cfg.Game.DepartDailyCount,
 		SyokudouDailyCount:       cfg.Game.SyokudouDailyCount,
+		HanbaiDailyCount:         cfg.Game.HanbaiDailyCount,
 		ItemKindLimit:            cfg.Game.ItemKindLimit,
 		StockAdjust:              cfg.Game.StockAdjust,
 	})

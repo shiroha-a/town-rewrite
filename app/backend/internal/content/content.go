@@ -126,6 +126,8 @@ func (s *Service) dailyCountFor(facility string) int {
 		return cfg.DepartDailyCount
 	case "syokudou":
 		return cfg.SyokudouDailyCount
+	case "hanbai":
+		return cfg.HanbaiDailyCount
 	default:
 		return 0 // ジム/温泉などは日替わりなし
 	}

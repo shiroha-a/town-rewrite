@@ -687,9 +687,10 @@ export const api = {
     }),
   work: (id: number) =>
     request<WorkResponse>('POST', `/players/${id}/work`, { idempotency_key: newIdempotencyKey() }),
-  buy: (id: number, itemId: number) =>
+  buy: (id: number, itemId: number, facility = '') =>
     request<Player>('POST', `/players/${id}/buy`, {
       item_id: itemId,
+      facility,
       idempotency_key: newIdempotencyKey(),
     }),
   use: (id: number, itemId: number) =>

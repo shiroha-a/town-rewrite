@@ -27,6 +27,7 @@ type Game struct {
 	DebugNoCooldown          bool  `json:"debug_no_cooldown"`
 	DepartDailyCount         int   `json:"depart_daily_count"`
 	SyokudouDailyCount       int   `json:"syokudou_daily_count"`
+	HanbaiDailyCount         int   `json:"hanbai_daily_count"` // 自販機で毎日陳列する品数
 	ItemKindLimit            int   `json:"item_kind_limit"`     // 所持できるアイテムの種類上限
 	StockAdjust              int   `json:"stock_adjust"`        // 店頭在庫の割り算倍率(実在庫=ceil(標準在庫/倍率))
 }

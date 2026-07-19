@@ -10,6 +10,7 @@ import ItemView from './components/ItemView.vue';
 import JobChangeView from './components/JobChangeView.vue';
 import SyokudouView from './components/SyokudouView.vue';
 import FacilityMenuView from './components/FacilityMenuView.vue';
+import HanbaiView from './components/HanbaiView.vue';
 import OnsenView from './components/OnsenView.vue';
 import HospitalView from './components/HospitalView.vue';
 import SchoolView from './components/SchoolView.vue';
@@ -111,6 +112,7 @@ const facilityTitles: Record<string, string> = {
     <ItemView v-else-if="view === 'item'" :player="player" @update="onUpdate" @back="back" />
     <JobChangeView v-else-if="view === 'jobchange'" :player="player" @update="onUpdate" @back="back" />
     <SyokudouView v-else-if="view === 'syokudou'" :player="player" @update="onUpdate" @back="back" />
+    <HanbaiView v-else-if="view === 'hanbai'" :player="player" @update="onUpdate" @back="back" />
     <FacilityMenuView
       v-else-if="view === 'gym'"
       :player="player"

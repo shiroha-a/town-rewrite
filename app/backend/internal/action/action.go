@@ -123,6 +123,8 @@ func (s *Service) dailyMenuCond(facility string, nextArg int) (string, []any) {
 		n = cfg.DepartDailyCount
 	case "syokudou":
 		n = cfg.SyokudouDailyCount
+	case "hanbai":
+		n = cfg.HanbaiDailyCount
 	}
 	if n <= 0 {
 		return "", nil
@@ -1910,11 +1912,11 @@ func (s *Service) loadOnsenBath(ctx context.Context, bathID int64) (price int64,
 // enforces the shop stock, the per-item ownership cap (max_sets), charges the
 // total price out of circulation and adds the durability to the inventory.
 // remaining_uses accumulates durability×sets ('use'なら残回数, 'day'なら残日数)。
-func (s *Service) DoBuy(ctx context.Context, playerID, itemID int64, sets int, idempotencyKey string) (*player.Player, error) {
+func (s *Service) DoBuy(ctx context.Context, playerID int64, facility string, itemID int64, sets int, idempotencyKey string) (*player.Player, error) {
 	if sets <= 0 {
 		sets = 1
 	}
-	price, durability, maxSets, err := s.loadItemBuy(ctx, itemID)
+	price, durability, maxSets, err := s.loadItemBuy(ctx, facility, itemID)
 	if err != nil {
 		return nil, err
 	}
@@ -1949,8 +1951,8 @@ func (s *Service) DoBuy(ctx context.Context, playerID, itemID int64, sets int, i
 				return &ConditionError{Message: fmt.Sprintf("持てる所有物は%d品目までです。", limit)}
 			}
 		}
-		// 在庫を減らす(デパート品は facility='')。
-		if err := s.consumeStock(ctx, tx, "", itemID, sets); err != nil {
+		// 在庫を減らす(デパートは facility=''、自販機は 'hanbai')。
+		if err := s.consumeStock(ctx, tx, facility, itemID, sets); err != nil {
 			return err
 		}
 		if err := s.ledger.PostTx(ctx, tx, "buy", "", []ledger.Entry{
@@ -3064,12 +3066,12 @@ func (s *Service) loadJobEconomy(ctx context.Context, name string) (jobEconomy, 
 // loadItemBuy returns a purchasable department-store item's price, durability
 // and per-item ownership cap (max_sets). Only facility=” items are sellable at
 // the department store; 食堂(syokudou)は DoEat、ジム/温泉は DoFacilityAction 経由。
-func (s *Service) loadItemBuy(ctx context.Context, itemID int64) (price int64, durability, maxSets int, err error) {
-	cond, extra := s.dailyMenuCond("", 2)
-	args := append([]any{itemID}, extra...)
+func (s *Service) loadItemBuy(ctx context.Context, facility string, itemID int64) (price int64, durability, maxSets int, err error) {
+	cond, extra := s.dailyMenuCond(facility, 3)
+	args := append([]any{itemID, facility}, extra...)
 	err = s.pool.QueryRow(ctx,
 		`SELECT price, durability, max_sets FROM content_items
-		 WHERE id = $1 AND enabled AND facility = ''`+cond, args...).Scan(&price, &durability, &maxSets)
+		 WHERE id = $1 AND enabled AND facility = $2`+cond, args...).Scan(&price, &durability, &maxSets)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, 0, 0, ErrItemNotFound
 	}
