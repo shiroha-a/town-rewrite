@@ -26,12 +26,15 @@ type BuildingState struct {
 	Rows       int                 `json:"rows"`
 }
 
-// HouseCell is a house on the map (any owner), used for grid rendering.
+// HouseCell is a house on the map (any owner), used for grid rendering and
+// visiting. Setumei is the owner's mouse-over comment (フェーズ3a).
 type HouseCell struct {
+	ID        int64  `json:"id"`
 	Town      int    `json:"town"`
 	Row       int    `json:"row"`
 	Col       int    `json:"col"`
 	Exterior  string `json:"exterior"`
+	Setumei   string `json:"setumei"`
 	OwnerName string `json:"owner_name"`
 	Own       bool   `json:"own"`
 }
@@ -43,6 +46,7 @@ type MyHouse struct {
 	Row          int    `json:"row"`
 	Col          int    `json:"col"`
 	Exterior     string `json:"exterior"`
+	Setumei      string `json:"setumei"`
 	InteriorRank int    `json:"interior_rank"`
 	BuiltAt      string `json:"built_at"` // RFC3339
 }
@@ -74,7 +78,7 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 	st.Plots = plots
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT h.town, h.grid_row, h.grid_col, h.exterior, h.owner_id, COALESCE(p.display_name, '')
+		`SELECT h.id, h.town, h.grid_row, h.grid_col, h.exterior, h.setumei, h.owner_id, COALESCE(p.display_name, '')
 		 FROM player_houses h LEFT JOIN players p ON p.id = h.owner_id
 		 ORDER BY h.town, h.grid_row, h.grid_col`)
 	if err != nil {
@@ -86,7 +90,7 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 			c       HouseCell
 			ownerID int64
 		)
-		if err := rows.Scan(&c.Town, &c.Row, &c.Col, &c.Exterior, &ownerID, &c.OwnerName); err != nil {
+		if err := rows.Scan(&c.ID, &c.Town, &c.Row, &c.Col, &c.Exterior, &c.Setumei, &ownerID, &c.OwnerName); err != nil {
 			return nil, fmt.Errorf("scan house: %w", err)
 		}
 		c.Own = ownerID == playerID
@@ -97,7 +101,7 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 	}
 
 	mrows, err := s.pool.Query(ctx,
-		`SELECT id, town, grid_row, grid_col, exterior, interior_rank, built_at
+		`SELECT id, town, grid_row, grid_col, exterior, setumei, interior_rank, built_at
 		 FROM player_houses WHERE owner_id = $1 ORDER BY built_at`, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("list my houses: %w", err)
@@ -108,7 +112,7 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 			h     MyHouse
 			built time.Time
 		)
-		if err := mrows.Scan(&h.ID, &h.Town, &h.Row, &h.Col, &h.Exterior, &h.InteriorRank, &built); err != nil {
+		if err := mrows.Scan(&h.ID, &h.Town, &h.Row, &h.Col, &h.Exterior, &h.Setumei, &h.InteriorRank, &built); err != nil {
 			return nil, fmt.Errorf("scan my house: %w", err)
 		}
 		h.BuiltAt = built.Format(time.RFC3339)

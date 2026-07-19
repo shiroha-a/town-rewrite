@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { api, type Player, type BuildingState, type TownFacility, type MyHouse } from '../api';
+import { api, type Player, type BuildingState, type TownFacility, type MyHouse, type HouseCell } from '../api';
 import Toast from './Toast.vue';
 import { useToast } from '../toast';
 
@@ -26,6 +26,7 @@ async function refresh() {
   if (!selectedExterior.value && state.value.exteriors.length > 0) {
     selectedExterior.value = state.value.exteriors[0].key;
   }
+  syncDrafts();
 }
 
 onMounted(async () => {
@@ -97,8 +98,15 @@ function cellTitle(row: number, col: number): string {
   return `${rowLabel(row)}${col}`;
 }
 function clickCell(row: number, col: number) {
-  // 空地に指定されたマス(かつ施設・家なし)だけ選べる。
-  if (!plotAt(row, col) || facilityAt(row, col) || houseAt(row, col)) return;
+  const h = houseAt(row, col);
+  if (h) {
+    // 家 → 訪問パネルを開く
+    visitingHouse.value = h;
+    saisenAmount.value = 100;
+    return;
+  }
+  // 空地に指定されたマス(施設・家なし)だけ建築選択できる。
+  if (!plotAt(row, col) || facilityAt(row, col)) return;
   selectedCell.value = { row, col };
 }
 function selectTown(no: number) {
@@ -236,6 +244,69 @@ async function doSell(h: MyHouse) {
     busy.value = false;
   }
 }
+
+// 訪問・さい銭・家コメント設定(フェーズ3a)
+const visitingHouse = ref<HouseCell | null>(null);
+const saisenChoices = [100, 500, 1000, 2000, 5000, 10000];
+const saisenAmount = ref(100);
+const commentDrafts = ref<Record<number, string>>({});
+
+function syncDrafts() {
+  const d: Record<number, string> = {};
+  for (const h of state.value?.my_houses ?? []) d[h.id] = h.setumei ?? '';
+  commentDrafts.value = d;
+}
+async function doSaisen() {
+  if (!visitingHouse.value) return;
+  busy.value = true;
+  const amt = saisenAmount.value;
+  const owner = visitingHouse.value.owner_name;
+  const houseId = visitingHouse.value.id;
+  try {
+    const after = await api.saisen(props.player.id, houseId, amt);
+    emit('update', after);
+    await refresh();
+    visitingHouse.value = null;
+    showToast({
+      variant: 'item',
+      title: 'さい銭しました',
+      lines: [`${owner}さんに ${yen(amt)}円 をさい銭しました`],
+      icon: 'item',
+    });
+  } catch (e) {
+    showToast({
+      variant: 'error',
+      title: 'さい銭できませんでした',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'item',
+    });
+  } finally {
+    busy.value = false;
+  }
+}
+async function saveComment(h: MyHouse) {
+  busy.value = true;
+  try {
+    const after = await api.setHouseComment(props.player.id, h.id, commentDrafts.value[h.id] ?? '');
+    emit('update', after);
+    await refresh();
+    showToast({
+      variant: 'item',
+      title: 'コメントを保存しました',
+      lines: [`${townName(h.town)}／${rowLabel(h.row)}${h.col} のコメントを更新しました`],
+      icon: 'item',
+    });
+  } catch (e) {
+    showToast({
+      variant: 'error',
+      title: '保存できませんでした',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'item',
+    });
+  } finally {
+    busy.value = false;
+  }
+}
 </script>
 
 <template>
@@ -282,6 +353,31 @@ async function doSell(h: MyHouse) {
               <img v-if="cellImg(row, col)" :src="cellImg(row, col)!" :alt="cellTitle(row, col)" />
             </div>
           </template>
+        </div>
+      </div>
+
+      <!-- 訪問パネル(家アイコンをクリック) -->
+      <div v-if="visitingHouse" class="visit-panel panel-white">
+        <div class="visit-head">
+          <img :src="`/img/${visitingHouse.exterior}.gif`" :alt="visitingHouse.exterior" />
+          <div class="visit-info">
+            <div class="visit-owner">{{ visitingHouse.owner_name }}さんの家</div>
+            <div class="visit-loc">
+              {{ townName(visitingHouse.town) }}／{{ rowLabel(visitingHouse.row) }}{{ visitingHouse.col }}
+            </div>
+          </div>
+          <button class="btn mini" @click="visitingHouse = null">閉じる</button>
+        </div>
+        <div v-if="visitingHouse.setumei" class="visit-comment">「{{ visitingHouse.setumei }}」</div>
+        <div v-if="visitingHouse.own" class="visit-note">
+          これはあなたの家です。コメントは下の「自分の家」欄で設定できます。
+        </div>
+        <div v-else class="saisen-box">
+          <span class="saisen-label">さい銭箱</span>
+          <select v-model.number="saisenAmount">
+            <option v-for="a in saisenChoices" :key="a" :value="a">{{ yen(a) }}円</option>
+          </select>
+          <button class="btn saisen-btn" :disabled="busy" @click="doSaisen">さい銭する</button>
         </div>
       </div>
 
@@ -356,6 +452,15 @@ async function doSell(h: MyHouse) {
               <span class="mh-cost">建て替え費用 {{ yen(rebuildCost) }}円（現金）</span>
               <button class="btn mini build-btn" :disabled="busy" @click="doRebuild(h)">建て替える</button>
               <button class="btn mini" :disabled="busy" @click="cancelRebuild">やめる</button>
+            </div>
+            <div class="mh-comment">
+              <input
+                v-model="commentDrafts[h.id]"
+                maxlength="40"
+                placeholder="家のコメント(40字・訪問者に表示)"
+                class="mh-cinput"
+              />
+              <button class="btn mini" :disabled="busy" @click="saveComment(h)">コメント保存</button>
             </div>
           </li>
         </ul>
@@ -470,7 +575,7 @@ async function doSell(h: MyHouse) {
 }
 .cell.house {
   background: #fff6e0;
-  cursor: not-allowed;
+  cursor: pointer;
 }
 .cell.house.own {
   outline: 2px solid #cc7a00;
@@ -528,6 +633,71 @@ async function doSell(h: MyHouse) {
   font-size: 12px;
   color: #567;
   text-align: center;
+}
+.visit-panel {
+  margin-top: 8px;
+}
+.visit-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.visit-head img {
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+}
+.visit-info {
+  flex: 1 1 auto;
+}
+.visit-owner {
+  font-weight: bold;
+  color: #345;
+}
+.visit-loc {
+  font-size: 11px;
+  color: #789;
+}
+.visit-comment {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #446;
+  background: #f4f8ec;
+  border-left: 3px solid #a8d488;
+  padding: 4px 8px;
+}
+.visit-note {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #888;
+}
+.saisen-box {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed #cde;
+}
+.saisen-label {
+  font-weight: bold;
+  color: #b5651d;
+}
+.saisen-btn {
+  background: #b5651d;
+  color: #fff;
+  font-weight: bold;
+}
+.mh-comment {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.mh-cinput {
+  flex: 1 1 auto;
+  font-size: 12px;
+  padding: 2px 4px;
 }
 .my-houses .mh-head {
   font-weight: bold;

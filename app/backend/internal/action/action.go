@@ -1731,6 +1731,8 @@ func statementLabel(reason string, amount int64) string {
 		return "利息"
 	case reason == "offer":
 		return "おさい銭"
+	case reason == "saisen":
+		return "おさい銭"
 	case reason == "transfer":
 		if amount < 0 {
 			return "振込(送金)"

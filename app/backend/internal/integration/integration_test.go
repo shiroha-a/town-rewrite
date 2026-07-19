@@ -2773,3 +2773,112 @@ func TestSellRebuildHouse(t *testing.T) {
 		t.Errorf("ledger zero-sum broken: %d", sum)
 	}
 }
+
+func setHouseComment(t *testing.T, base string, playerID, houseID int64, setumei, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"house_id": houseID, "setumei": setumei, "idempotency_key": idemKey})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/comment",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("comment post: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+func saisen(t *testing.T, base string, playerID, houseID, amount int64, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"house_id": houseID, "amount": amount, "idempotency_key": idemKey})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/saisen",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("saisen post: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+func TestSaisenAndComment(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	register(t, srv.URL, "misskey.example", "admin0")
+	owner := register(t, srv.URL, "misskey.example", "owner1")
+	visitor := register(t, srv.URL, "misskey.example", "visitor1")
+	creditSavings(t, pool, owner.ID, 10_000_000)
+	creditCash(t, pool, visitor.ID, 100_000)
+	seedPlots(t, pool, [][3]int{{4, 0, 1}})
+
+	// ownerが謎の街A1に家を建てる(savings 10M-5M=5M)。
+	if _, c := buildHouse(t, srv.URL, owner.ID, 4, 0, 1, "house1", 3, "o1"); c != http.StatusOK {
+		t.Fatalf("build: %d", c)
+	}
+	var houseID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM player_houses WHERE owner_id=$1`, owner.ID).Scan(&houseID); err != nil {
+		t.Fatalf("house id: %v", err)
+	}
+
+	// 家主がマウスオーバーコメントを設定。
+	if _, c := setHouseComment(t, srv.URL, owner.ID, houseID, "いらっしゃい", "c1"); c != http.StatusOK {
+		t.Fatalf("comment: %d", c)
+	}
+	var setumei string
+	if err := pool.QueryRow(ctx, `SELECT setumei FROM player_houses WHERE id=$1`, houseID).Scan(&setumei); err != nil {
+		t.Fatalf("read setumei: %v", err)
+	}
+	if setumei != "いらっしゃい" {
+		t.Errorf("setumei = %q, want いらっしゃい", setumei)
+	}
+
+	// 自分の家にはさい銭できない。
+	if _, c := saisen(t, srv.URL, owner.ID, houseID, 100, "s0"); c != http.StatusUnprocessableEntity {
+		t.Errorf("self saisen: %d, want 422", c)
+	}
+
+	// 訪問者がさい銭(5000円): 現金-5000、家主の普通口座+5000。
+	got, c := saisen(t, srv.URL, visitor.ID, houseID, 5000, "s1")
+	if c != http.StatusOK {
+		t.Fatalf("saisen: %d", c)
+	}
+	if got.Money != 595_000 { // 初期50万 + creditCash10万 - 5000
+		t.Errorf("visitor cash = %d, want 595000", got.Money)
+	}
+	var ownerSavings int64
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account=$1`,
+		"savings:"+strconv.FormatInt(owner.ID, 10)).Scan(&ownerSavings); err != nil {
+		t.Fatalf("owner savings: %v", err)
+	}
+	if ownerSavings != 5_005_000 { // 建築後5M + 5000
+		t.Errorf("owner savings = %d, want 5005000", ownerSavings)
+	}
+
+	// 同一相手への上限(20000円/日)。5000×3をさらに積んで計20000、次の100は拒否。
+	saisen(t, srv.URL, visitor.ID, houseID, 5000, "s2")
+	saisen(t, srv.URL, visitor.ID, houseID, 5000, "s3")
+	got4, c := saisen(t, srv.URL, visitor.ID, houseID, 5000, "s4")
+	if c != http.StatusOK {
+		t.Fatalf("saisen s4: %d", c)
+	}
+	if got4.Money != 580_000 { // 600000 - 20000
+		t.Errorf("visitor cash after 20000 = %d, want 580000", got4.Money)
+	}
+	if _, c := saisen(t, srv.URL, visitor.ID, houseID, 100, "s5"); c != http.StatusUnprocessableEntity {
+		t.Errorf("over per-target cap: %d, want 422", c)
+	}
+
+	led := ledger.New(pool)
+	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
+		t.Errorf("ledger zero-sum broken: %d", sum)
+	}
+}

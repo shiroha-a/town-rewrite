@@ -580,10 +580,12 @@ export interface BuildingInterior {
   slots: number;
 }
 export interface HouseCell {
+  id: number;
   town: number;
   row: number;
   col: number;
   exterior: string;
+  setumei: string;
   owner_name: string;
   own: boolean;
 }
@@ -593,6 +595,7 @@ export interface MyHouse {
   row: number;
   col: number;
   exterior: string;
+  setumei: string;
   interior_rank: number;
   built_at: string;
 }
@@ -864,6 +867,18 @@ export const api = {
       house_id: houseId,
       exterior,
       interior_rank: interiorRank,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  setHouseComment: (id: number, houseId: number, setumei: string) =>
+    request<Player>('POST', `/players/${id}/building/comment`, {
+      house_id: houseId,
+      setumei,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  saisen: (id: number, houseId: number, amount: number) =>
+    request<Player>('POST', `/players/${id}/building/saisen`, {
+      house_id: houseId,
+      amount,
       idempotency_key: newIdempotencyKey(),
     }),
 

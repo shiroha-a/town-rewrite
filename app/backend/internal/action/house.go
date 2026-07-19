@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -172,6 +175,95 @@ func (s *Service) DoRebuildHouse(ctx context.Context, playerID, houseID int64, e
 			`UPDATE player_houses SET exterior = $1, interior_rank = $2 WHERE id = $3`,
 			exterior, interiorRank, houseID); err != nil {
 			return fmt.Errorf("update house: %w", err)
+		}
+		return nil
+	})
+}
+
+// maxSetumeiLen is the mouse-over comment length limit (legacy 40字).
+const maxSetumeiLen = 40
+
+// DoSetHouseComment sets the mouse-over comment (setumei) of the player's house
+// (マイホーム設定 フェーズ3a).
+func (s *Service) DoSetHouseComment(ctx context.Context, playerID, houseID int64, setumei, idempotencyKey string) (*player.Player, error) {
+	setumei = strings.TrimSpace(setumei)
+	if utf8.RuneCountInString(setumei) > maxSetumeiLen {
+		return nil, &ConditionError{Message: fmt.Sprintf("コメントは%d文字以内で入力してください。", maxSetumeiLen)}
+	}
+	return s.runAction(ctx, playerID, "house_comment", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		ct, err := tx.Exec(ctx,
+			`UPDATE player_houses SET setumei = $1 WHERE id = $2 AND owner_id = $3`,
+			setumei, houseID, playerID)
+		if err != nil {
+			return fmt.Errorf("update setumei: %w", err)
+		}
+		if ct.RowsAffected() == 0 {
+			return &ConditionError{Message: "その家は所有していません。"}
+		}
+		return nil
+	})
+}
+
+// Allowed offering amounts and daily caps for さい銭 (レガシー忠実).
+var saisenAmounts = map[int64]bool{100: true, 500: true, 1000: true, 2000: true, 5000: true, 10000: true}
+
+const (
+	saisenPerTargetDaily   = 20000  // 同一相手への1日上限(円)
+	saisenTargetTotalDaily = 100000 // 相手が1日に受け取れる総額(円)
+)
+
+// DoSaisen offers money at a house's offering box: it moves the amount from the
+// visitor's cash to the owner's bank savings, subject to daily caps (同一相手
+// 20000円/日、相手受取総額100000円/日). A player cannot offer at their own house.
+func (s *Service) DoSaisen(ctx context.Context, playerID, houseID, amount int64, idempotencyKey string) (*player.Player, error) {
+	if !saisenAmounts[amount] {
+		return nil, &ConditionError{Message: "さい銭の金額が正しくありません。"}
+	}
+	date := s.gameDate(time.Now())
+	return s.runAction(ctx, playerID, "saisen", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		var ownerID int64
+		err := tx.QueryRow(ctx, `SELECT owner_id FROM player_houses WHERE id = $1`, houseID).Scan(&ownerID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &ConditionError{Message: "その家は存在しません。"}
+		}
+		if err != nil {
+			return fmt.Errorf("load house owner: %w", err)
+		}
+		if ownerID == playerID {
+			return &ConditionError{Message: "自分の家にはさい銭できません。"}
+		}
+		if state.Money < amount {
+			return &ConditionError{Message: "所持金が足りません。"}
+		}
+		var toPair int64
+		if err := tx.QueryRow(ctx,
+			`SELECT COALESCE(SUM(amount), 0) FROM saisen_log WHERE from_id = $1 AND to_id = $2 AND game_date = $3`,
+			playerID, ownerID, date).Scan(&toPair); err != nil {
+			return fmt.Errorf("sum pair saisen: %w", err)
+		}
+		if toPair+amount > saisenPerTargetDaily {
+			return &ConditionError{Message: fmt.Sprintf("同じ相手へのさい銭は1日%d円までです。", saisenPerTargetDaily)}
+		}
+		var toTotal int64
+		if err := tx.QueryRow(ctx,
+			`SELECT COALESCE(SUM(amount), 0) FROM saisen_log WHERE to_id = $1 AND game_date = $2`,
+			ownerID, date).Scan(&toTotal); err != nil {
+			return fmt.Errorf("sum total saisen: %w", err)
+		}
+		if toTotal+amount > saisenTargetTotalDaily {
+			return &ConditionError{Message: "この家は今日のさい銭受け取り上限に達しています。"}
+		}
+		// 送金は現金→相手の普通口座。
+		if err := s.ledger.PostTx(ctx, tx, "saisen", "", []ledger.Entry{
+			{Account: ledger.PlayerAccount(playerID), Delta: -amount},
+			{Account: ledger.SavingsAccount(ownerID), Delta: amount},
+		}); err != nil {
+			return fmt.Errorf("saisen transfer: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO saisen_log (from_id, to_id, amount, game_date) VALUES ($1, $2, $3, $4)`,
+			playerID, ownerID, amount, date); err != nil {
+			return fmt.Errorf("insert saisen log: %w", err)
 		}
 		return nil
 	})

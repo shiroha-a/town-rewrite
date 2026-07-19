@@ -108,6 +108,58 @@ func (s *Server) rebuildHouse(w http.ResponseWriter, r *http.Request) {
 	writeFacilityResult(w, p, err)
 }
 
+type houseCommentReq struct {
+	HouseID        int64  `json:"house_id"`
+	Setumei        string `json:"setumei"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// houseComment sets the mouse-over comment of the player's house (マイホーム設定).
+func (s *Server) houseComment(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req houseCommentReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
+		return
+	}
+	p, err := s.actions.DoSetHouseComment(r.Context(), id, req.HouseID, req.Setumei, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
+type saisenReq struct {
+	HouseID        int64  `json:"house_id"`
+	Amount         int64  `json:"amount"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// saisen offers money at a house's offering box (さい銭).
+func (s *Server) saisen(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req saisenReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 || req.Amount <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id and amount are required")
+		return
+	}
+	p, err := s.actions.DoSaisen(r.Context(), id, req.HouseID, req.Amount, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
 // adminGetPlots returns every admin-designated empty plot (管理者専用).
 func (s *Server) adminGetPlots(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
