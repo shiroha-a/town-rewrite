@@ -2882,3 +2882,161 @@ func TestSaisenAndComment(t *testing.T) {
 		t.Errorf("ledger zero-sum broken: %d", sum)
 	}
 }
+
+func openShop(t *testing.T, base string, playerID, houseID int64, title, syubetu string, markup float64, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"house_id": houseID, "title": title, "syubetu": syubetu, "markup": markup, "idempotency_key": idemKey,
+	})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/shop/open",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("open shop post: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+func TestOpenHouseShop(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	register(t, srv.URL, "misskey.example", "admin0")
+	p := register(t, srv.URL, "misskey.example", "shopowner")
+	creditSavings(t, pool, p.ID, 10_000_000)
+	seedPlots(t, pool, [][3]int{{4, 0, 1}})
+	if _, c := buildHouse(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, "b1"); c != http.StatusOK {
+		t.Fatalf("build: %d", c)
+	}
+	var houseID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM player_houses WHERE owner_id=$1`, p.ID).Scan(&houseID); err != nil {
+		t.Fatalf("house id: %v", err)
+	}
+
+	// 店を開く(食料品, 掛け率2)。
+	if _, c := openShop(t, srv.URL, p.ID, houseID, "駄菓子屋", "食料品", 2.0, "o1"); c != http.StatusOK {
+		t.Fatalf("open shop: %d", c)
+	}
+	var (
+		syubetu string
+		markup  float64
+	)
+	if err := pool.QueryRow(ctx, `SELECT syubetu, markup FROM house_shops WHERE house_id=$1`, houseID).Scan(&syubetu, &markup); err != nil {
+		t.Fatalf("read shop: %v", err)
+	}
+	if syubetu != "食料品" || markup != 2.0 {
+		t.Errorf("shop = %q/%v, want 食料品/2", syubetu, markup)
+	}
+
+	// 掛け率の制約(0.3<率<=3)。
+	if _, c := openShop(t, srv.URL, p.ID, houseID, "", "食料品", 3.5, "o2"); c != http.StatusUnprocessableEntity {
+		t.Errorf("markup>3: %d, want 422", c)
+	}
+	if _, c := openShop(t, srv.URL, p.ID, houseID, "", "食料品", 0.2, "o3"); c != http.StatusUnprocessableEntity {
+		t.Errorf("markup<=0.3: %d, want 422", c)
+	}
+	// 無効な種類。
+	if _, c := openShop(t, srv.URL, p.ID, houseID, "", "存在しない種類", 2, "o4"); c != http.StatusUnprocessableEntity {
+		t.Errorf("invalid syubetu: %d, want 422", c)
+	}
+	// 他人は所有していない家に店を開けない。
+	visitor := register(t, srv.URL, "misskey.example", "shopvisitor")
+	if _, c := openShop(t, srv.URL, visitor.ID, houseID, "", "食料品", 2, "o5"); c != http.StatusUnprocessableEntity {
+		t.Errorf("non-owner: %d, want 422", c)
+	}
+}
+
+func shiire(t *testing.T, base string, playerID, houseID, itemID int64, qty int, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"house_id": houseID, "item_id": itemID, "qty": qty, "idempotency_key": idemKey,
+	})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/shiire",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("shiire post: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+func TestShiire(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	register(t, srv.URL, "misskey.example", "admin0")
+	p := register(t, srv.URL, "misskey.example", "shopowner2")
+	creditSavings(t, pool, p.ID, 20_000_000)
+	seedPlots(t, pool, [][3]int{{4, 0, 1}})
+	if _, c := buildHouse(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, "b1"); c != http.StatusOK {
+		t.Fatalf("build: %d", c)
+	}
+	var houseID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM player_houses WHERE owner_id=$1`, p.ID).Scan(&houseID); err != nil {
+		t.Fatalf("house id: %v", err)
+	}
+	if _, c := openShop(t, srv.URL, p.ID, houseID, "本屋", "書籍", 2.0, "o1"); c != http.StatusOK {
+		t.Fatalf("open shop: %d", c)
+	}
+
+	var (
+		itemID int64
+		price  int64
+	)
+	if err := pool.QueryRow(ctx,
+		`SELECT id, price FROM content_items WHERE category='書籍' AND facility='' AND enabled ORDER BY price LIMIT 1`).
+		Scan(&itemID, &price); err != nil {
+		t.Fatalf("pick book: %v", err)
+	}
+
+	// 書籍を3個仕入れる。普通口座 -= price*3。
+	got, c := shiire(t, srv.URL, p.ID, houseID, itemID, 3, "s1")
+	if c != http.StatusOK {
+		t.Fatalf("shiire: %d", c)
+	}
+	if got.Savings != 20_000_000-5_000_000-price*3 { // 建築後15M - 仕入れ
+		t.Errorf("savings = %d, want %d", got.Savings, 15_000_000-price*3)
+	}
+	var (
+		stock    int
+		buyPrice int64
+	)
+	if err := pool.QueryRow(ctx,
+		`SELECT stock, buy_price FROM house_shop_stock WHERE house_id=$1 AND item_id=$2`, houseID, itemID).
+		Scan(&stock, &buyPrice); err != nil {
+		t.Fatalf("read stock: %v", err)
+	}
+	if stock != 3 || buyPrice != price {
+		t.Errorf("stock=%d buy_price=%d, want 3/%d", stock, buyPrice, price)
+	}
+
+	// 書籍店に食料品は仕入れられない。
+	var foodID int64
+	if err := pool.QueryRow(ctx,
+		`SELECT id FROM content_items WHERE category='食料品' AND facility='' AND enabled LIMIT 1`).Scan(&foodID); err != nil {
+		t.Fatalf("pick food: %v", err)
+	}
+	if _, c := shiire(t, srv.URL, p.ID, houseID, foodID, 1, "s2"); c != http.StatusUnprocessableEntity {
+		t.Errorf("wrong category: %d, want 422", c)
+	}
+
+	// 在庫上限80超過(3+79=82)。
+	if _, c := shiire(t, srv.URL, p.ID, houseID, itemID, 79, "s3"); c != http.StatusUnprocessableEntity {
+		t.Errorf("over stock limit: %d, want 422", c)
+	}
+
+	led := ledger.New(pool)
+	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
+		t.Errorf("ledger zero-sum broken: %d", sum)
+	}
+}

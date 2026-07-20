@@ -598,6 +598,10 @@ export interface MyHouse {
   setumei: string;
   interior_rank: number;
   built_at: string;
+  has_shop: boolean;
+  shop_title: string;
+  shop_kind: string;
+  shop_markup: number;
 }
 export interface PlotCell {
   town: number;
@@ -611,10 +615,27 @@ export interface BuildingState {
   plots: PlotCell[];
   houses: HouseCell[];
   my_houses: MyHouse[];
+  shop_kinds: string[];
   house_count: number;
   mochiie_max: number;
   cols: number;
   rows: number;
+}
+export interface OrosiItem {
+  item_id: number;
+  name: string;
+  category: string;
+  buy_price: number;
+  in_stock: number;
+}
+export interface OrosiState {
+  syubetu: string;
+  markup: number;
+  savings: number;
+  stock_kinds: number;
+  max_kinds: number;
+  max_stock: number;
+  items: OrosiItem[];
 }
 
 function adminHeaders(actingId: number): Record<string, string> {
@@ -879,6 +900,23 @@ export const api = {
     request<Player>('POST', `/players/${id}/building/saisen`, {
       house_id: houseId,
       amount,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  openHouseShop: (id: number, houseId: number, title: string, syubetu: string, markup: number) =>
+    request<Player>('POST', `/players/${id}/building/shop/open`, {
+      house_id: houseId,
+      title,
+      syubetu,
+      markup,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  orosi: (id: number, houseId: number) =>
+    request<OrosiState>('GET', `/players/${id}/building/orosi?house_id=${houseId}`),
+  shiire: (id: number, houseId: number, itemId: number, qty: number) =>
+    request<Player>('POST', `/players/${id}/building/shiire`, {
+      house_id: houseId,
+      item_id: itemId,
+      qty,
       idempotency_key: newIdempotencyKey(),
     }),
 

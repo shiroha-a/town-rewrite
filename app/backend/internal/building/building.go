@@ -185,3 +185,45 @@ func SellValue(townNo int) (int64, error) {
 	}
 	return int64(t.LandPrice) * yenPerMan, nil
 }
+
+// shopKinds are the sellable shop categories (店の種類, town_ini.cgi:112).
+// アダルト/DVDは対象外として除外している。
+var shopKinds = []string{
+	"スーパー", "書籍", "食料品", "薬", "スポーツ用品", "電化製品", "美容",
+	"ファーストフード", "日用品", "お花", "デザート", "ギフト", "アルコール",
+	"ゲーム", "ドリンク", "秘密の商品", "沖縄名産店", "サンリオ", "ペット",
+}
+
+// ShopKinds returns a copy of the shop category list.
+func ShopKinds() []string {
+	out := make([]string, len(shopKinds))
+	copy(out, shopKinds)
+	return out
+}
+
+// IsShopKind reports whether s is a valid shop category.
+func IsShopKind(s string) bool {
+	for _, k := range shopKinds {
+		if k == s {
+			return true
+		}
+	}
+	return false
+}
+
+// SuperMarketKind is the one category that can stock every kind, at a 1.5×
+// purchase-cost premium (スーパー).
+const SuperMarketKind = "スーパー"
+
+// Shop markup (掛け率) bounds (レガシー忠実): 0.3 < markup <= 3.0.
+const (
+	ShopMarkupDefault = 2.0
+	ShopMarkupMax     = 3.0
+	ShopMarkupMin     = 0.3
+)
+
+// Shop stock limits (レガシー忠実): 40 kinds per shop, 80 per item.
+const (
+	ShopMaxKinds = 40
+	ShopMaxStock = 80
+)

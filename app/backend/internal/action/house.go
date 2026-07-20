@@ -268,3 +268,153 @@ func (s *Service) DoSaisen(ctx context.Context, playerID, houseID, amount int64,
 		return nil
 	})
 }
+
+// maxShopTitleLen caps a shop title length.
+const maxShopTitleLen = 50
+
+// DoOpenHouseShop opens (or reconfigures) the shop attached to the player's
+// house: its title, category (syubetu), and base markup (掛け率, 0.3<率<=3).
+// Changing the category clears the existing stock (店の種類変更で在庫全消去).
+func (s *Service) DoOpenHouseShop(ctx context.Context, playerID, houseID int64, title, syubetu string, markup float64, idempotencyKey string) (*player.Player, error) {
+	title = strings.TrimSpace(title)
+	if utf8.RuneCountInString(title) > maxShopTitleLen {
+		return nil, &ConditionError{Message: fmt.Sprintf("店名は%d文字以内で入力してください。", maxShopTitleLen)}
+	}
+	if !building.IsShopKind(syubetu) {
+		return nil, &ConditionError{Message: "店の種類が正しくありません。"}
+	}
+	if markup <= building.ShopMarkupMin || markup > building.ShopMarkupMax {
+		return nil, &ConditionError{Message: fmt.Sprintf("販売掛け率は%gより大きく%g以下にしてください。", building.ShopMarkupMin, building.ShopMarkupMax)}
+	}
+	return s.runAction(ctx, playerID, "open_house_shop", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		var exists bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM player_houses WHERE id = $1 AND owner_id = $2)`,
+			houseID, playerID).Scan(&exists); err != nil {
+			return fmt.Errorf("check house: %w", err)
+		}
+		if !exists {
+			return &ConditionError{Message: "その家は所有していません。"}
+		}
+		// 店の種類を変更した場合は在庫を全消去する(レガシー忠実)。
+		var oldSyubetu string
+		err := tx.QueryRow(ctx, `SELECT syubetu FROM house_shops WHERE house_id = $1`, houseID).Scan(&oldSyubetu)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("load shop: %w", err)
+		}
+		if err == nil && oldSyubetu != syubetu {
+			if _, err := tx.Exec(ctx, `DELETE FROM house_shop_stock WHERE house_id = $1`, houseID); err != nil {
+				return fmt.Errorf("clear stock: %w", err)
+			}
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO house_shops (house_id, title, syubetu, markup) VALUES ($1, $2, $3, $4)
+			 ON CONFLICT (house_id) DO UPDATE SET title = $2, syubetu = $3, markup = $4`,
+			houseID, title, syubetu, markup); err != nil {
+			return fmt.Errorf("upsert shop: %w", err)
+		}
+		return nil
+	})
+}
+
+// DoShiire purchases qty of an item from the wholesaler into the player's house
+// shop stock (卸問屋での仕入れ フェーズ4b). The cost is drawn from the bank
+// savings. スーパーは店の全種類を1.5倍で扱える。
+func (s *Service) DoShiire(ctx context.Context, playerID, houseID, itemID int64, qty int, idempotencyKey string) (*player.Player, error) {
+	if qty <= 0 {
+		return nil, &ConditionError{Message: "数量が正しくありません。"}
+	}
+	return s.runAction(ctx, playerID, "shiire", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		var syubetu string
+		err := tx.QueryRow(ctx,
+			`SELECT hs.syubetu FROM house_shops hs JOIN player_houses h ON h.id = hs.house_id
+			 WHERE hs.house_id = $1 AND h.owner_id = $2`, houseID, playerID).Scan(&syubetu)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &ConditionError{Message: "その家に自分の店がありません。"}
+		}
+		if err != nil {
+			return fmt.Errorf("load shop: %w", err)
+		}
+		var (
+			category string
+			price    int64
+			facility string
+		)
+		err = tx.QueryRow(ctx,
+			`SELECT category, price, facility FROM content_items WHERE id = $1 AND enabled`, itemID).
+			Scan(&category, &price, &facility)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &ConditionError{Message: "その商品は仕入れられません。"}
+		}
+		if err != nil {
+			return fmt.Errorf("load item: %w", err)
+		}
+		if facility != "" {
+			return &ConditionError{Message: "その商品は仕入れられません。"}
+		}
+		super := syubetu == building.SuperMarketKind
+		if super {
+			if !building.IsShopKind(category) || category == building.SuperMarketKind {
+				return &ConditionError{Message: "その商品は扱えません。"}
+			}
+		} else if category != syubetu {
+			return &ConditionError{Message: "この店ではその商品を扱えません。"}
+		}
+		buyPrice := price
+		if super {
+			buyPrice = price * 3 / 2 // スーパーは1.5倍
+		}
+		total := buyPrice * int64(qty)
+
+		var curStock int
+		exists := true
+		err = tx.QueryRow(ctx,
+			`SELECT stock FROM house_shop_stock WHERE house_id = $1 AND item_id = $2`, houseID, itemID).Scan(&curStock)
+		if errors.Is(err, pgx.ErrNoRows) {
+			exists = false
+		} else if err != nil {
+			return fmt.Errorf("load stock: %w", err)
+		}
+		if curStock+qty > building.ShopMaxStock {
+			return &ConditionError{Message: fmt.Sprintf("在庫は1商品%d個までです(現在%d個)。", building.ShopMaxStock, curStock)}
+		}
+		if !exists {
+			var kinds int
+			if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM house_shop_stock WHERE house_id = $1`, houseID).Scan(&kinds); err != nil {
+				return fmt.Errorf("count kinds: %w", err)
+			}
+			if kinds >= building.ShopMaxKinds {
+				return &ConditionError{Message: fmt.Sprintf("店に置ける商品は%d種類までです。", building.ShopMaxKinds)}
+			}
+		}
+		var savings int64
+		if err := tx.QueryRow(ctx,
+			`SELECT COALESCE(SUM(delta), 0) FROM ledger_entry WHERE account = $1`,
+			ledger.SavingsAccount(playerID)).Scan(&savings); err != nil {
+			return fmt.Errorf("read savings: %w", err)
+		}
+		if savings < total {
+			return &ConditionError{Message: fmt.Sprintf("普通口座の残高が足りません(仕入れ額%d円)。", total)}
+		}
+		if err := s.ledger.PostTx(ctx, tx, "shiire", "", []ledger.Entry{
+			{Account: ledger.SavingsAccount(playerID), Delta: -total},
+			{Account: ledger.SystemAccount("shiire"), Delta: total},
+		}); err != nil {
+			return fmt.Errorf("charge shiire: %w", err)
+		}
+		if exists {
+			if _, err := tx.Exec(ctx,
+				`UPDATE house_shop_stock SET stock = stock + $1 WHERE house_id = $2 AND item_id = $3`,
+				qty, houseID, itemID); err != nil {
+				return fmt.Errorf("update stock: %w", err)
+			}
+		} else {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO house_shop_stock (house_id, item_id, buy_price, stock) VALUES ($1, $2, $3, $4)`,
+				houseID, itemID, buyPrice, qty); err != nil {
+				return fmt.Errorf("insert stock: %w", err)
+			}
+		}
+		return nil
+	})
+}

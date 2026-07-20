@@ -160,6 +160,81 @@ func (s *Server) saisen(w http.ResponseWriter, r *http.Request) {
 	writeFacilityResult(w, p, err)
 }
 
+type openShopReq struct {
+	HouseID        int64   `json:"house_id"`
+	Title          string  `json:"title"`
+	Syubetu        string  `json:"syubetu"`
+	Markup         float64 `json:"markup"`
+	IdempotencyKey string  `json:"idempotency_key"`
+}
+
+// openHouseShop opens or reconfigures the shop attached to a house (店設定).
+func (s *Server) openHouseShop(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req openShopReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 || req.Syubetu == "" {
+		writeError(w, http.StatusBadRequest, "house_id and syubetu are required")
+		return
+	}
+	p, err := s.actions.DoOpenHouseShop(r.Context(), id, req.HouseID, req.Title, req.Syubetu, req.Markup, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
+// orosi returns the wholesaler catalog for a house shop (卸問屋).
+func (s *Server) orosi(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	houseID, err := strconv.ParseInt(r.URL.Query().Get("house_id"), 10, 64)
+	if err != nil || houseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
+		return
+	}
+	st, err := s.content.Orosi(r.Context(), id, houseID)
+	if err != nil {
+		writeContentErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+type shiireReq struct {
+	HouseID        int64  `json:"house_id"`
+	ItemID         int64  `json:"item_id"`
+	Qty            int    `json:"qty"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// shiire purchases items from the wholesaler into the house shop (仕入れ).
+func (s *Server) shiire(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req shiireReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 || req.ItemID <= 0 || req.Qty <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id, item_id, qty are required")
+		return
+	}
+	p, err := s.actions.DoShiire(r.Context(), id, req.HouseID, req.ItemID, req.Qty, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
 // adminGetPlots returns every admin-designated empty plot (管理者専用).
 func (s *Server) adminGetPlots(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {

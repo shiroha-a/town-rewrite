@@ -2,7 +2,9 @@ package content
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -20,6 +22,7 @@ type BuildingState struct {
 	Plots      []PlotCell          `json:"plots"`       // 管理者が指定した空地マス
 	Houses     []HouseCell         `json:"houses"`      // 全プレイヤーの家(グリッド描画用)
 	MyHouses   []MyHouse           `json:"my_houses"`   // 自分の家(一覧)
+	ShopKinds  []string            `json:"shop_kinds"`  // 店の種類の選択肢
 	HouseCount int                 `json:"house_count"` // 自分の所有軒数
 	MochiieMax int                 `json:"mochiie_max"`
 	Cols       int                 `json:"cols"`
@@ -46,9 +49,13 @@ type MyHouse struct {
 	Row          int    `json:"row"`
 	Col          int    `json:"col"`
 	Exterior     string `json:"exterior"`
-	Setumei      string `json:"setumei"`
-	InteriorRank int    `json:"interior_rank"`
-	BuiltAt      string `json:"built_at"` // RFC3339
+	Setumei      string  `json:"setumei"`
+	InteriorRank int     `json:"interior_rank"`
+	BuiltAt      string  `json:"built_at"` // RFC3339
+	HasShop      bool    `json:"has_shop"`
+	ShopTitle    string  `json:"shop_title"`
+	ShopKind     string  `json:"shop_kind"`
+	ShopMarkup   float64 `json:"shop_markup"`
 }
 
 // PlotCell is an admin-designated empty plot on which a house may be built.
@@ -67,6 +74,7 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 		MochiieMax: building.MochiieMax,
 		Cols:       townmap.Cols,
 		Rows:       townmap.Rows,
+		ShopKinds:  building.ShopKinds(),
 		Houses:     []HouseCell{},
 		MyHouses:   []MyHouse{},
 	}
@@ -101,8 +109,10 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 	}
 
 	mrows, err := s.pool.Query(ctx,
-		`SELECT id, town, grid_row, grid_col, exterior, setumei, interior_rank, built_at
-		 FROM player_houses WHERE owner_id = $1 ORDER BY built_at`, playerID)
+		`SELECT h.id, h.town, h.grid_row, h.grid_col, h.exterior, h.setumei, h.interior_rank, h.built_at,
+		        (hs.house_id IS NOT NULL), COALESCE(hs.title, ''), COALESCE(hs.syubetu, ''), COALESCE(hs.markup, 0)::float8
+		 FROM player_houses h LEFT JOIN house_shops hs ON hs.house_id = h.id
+		 WHERE h.owner_id = $1 ORDER BY h.built_at`, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("list my houses: %w", err)
 	}
@@ -112,7 +122,8 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 			h     MyHouse
 			built time.Time
 		)
-		if err := mrows.Scan(&h.ID, &h.Town, &h.Row, &h.Col, &h.Exterior, &h.Setumei, &h.InteriorRank, &built); err != nil {
+		if err := mrows.Scan(&h.ID, &h.Town, &h.Row, &h.Col, &h.Exterior, &h.Setumei, &h.InteriorRank, &built,
+			&h.HasShop, &h.ShopTitle, &h.ShopKind, &h.ShopMarkup); err != nil {
 			return nil, fmt.Errorf("scan my house: %w", err)
 		}
 		h.BuiltAt = built.Format(time.RFC3339)
@@ -166,4 +177,118 @@ func (s *Service) SetPlots(ctx context.Context, plots []PlotCell) error {
 		}
 		return nil
 	})
+}
+
+// OrosiItem is one item available at the wholesaler for the shop's category.
+type OrosiItem struct {
+	ItemID   int64  `json:"item_id"`
+	Name     string `json:"name"`
+	Category string `json:"category"`
+	BuyPrice int64  `json:"buy_price"` // 仕入れ値(スーパーは1.5倍込み)
+	InStock  int    `json:"in_stock"`  // 現在の店在庫
+}
+
+// OrosiState is the wholesaler screen for a house shop (卸問屋 フェーズ4b).
+type OrosiState struct {
+	Syubetu    string      `json:"syubetu"`
+	Markup     float64     `json:"markup"`
+	Savings    int64       `json:"savings"`     // 普通口座残高
+	StockKinds int         `json:"stock_kinds"` // 現在の在庫種類数
+	MaxKinds   int         `json:"max_kinds"`
+	MaxStock   int         `json:"max_stock"`
+	Items      []OrosiItem `json:"items"`
+}
+
+// Orosi returns the wholesaler catalog for the player's house shop: the items
+// the shop's category can stock, their purchase price (スーパーは1.5倍), and the
+// shop's current per-item stock.
+func (s *Service) Orosi(ctx context.Context, playerID, houseID int64) (*OrosiState, error) {
+	var (
+		syubetu string
+		markup  float64
+	)
+	err := s.pool.QueryRow(ctx,
+		`SELECT hs.syubetu, hs.markup
+		 FROM house_shops hs JOIN player_houses h ON h.id = hs.house_id
+		 WHERE hs.house_id = $1 AND h.owner_id = $2`, houseID, playerID).Scan(&syubetu, &markup)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, &ValidationError{Message: "その家に自分の店がありません。"}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load shop: %w", err)
+	}
+
+	super := syubetu == building.SuperMarketKind
+	items := []OrosiItem{}
+	var rows pgx.Rows
+	if super {
+		rows, err = s.pool.Query(ctx,
+			`SELECT id, name, category, price FROM content_items
+			 WHERE enabled AND facility = '' AND category = ANY($1) AND category <> $2
+			 ORDER BY category, name`, building.ShopKinds(), building.SuperMarketKind)
+	} else {
+		rows, err = s.pool.Query(ctx,
+			`SELECT id, name, category, price FROM content_items
+			 WHERE enabled AND facility = '' AND category = $1
+			 ORDER BY name`, syubetu)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list orosi: %w", err)
+	}
+	for rows.Next() {
+		var it OrosiItem
+		if err := rows.Scan(&it.ItemID, &it.Name, &it.Category, &it.BuyPrice); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan orosi: %w", err)
+		}
+		if super {
+			it.BuyPrice = it.BuyPrice * 3 / 2 // スーパーは1.5倍
+		}
+		items = append(items, it)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate orosi: %w", err)
+	}
+
+	// 現在の店在庫を先に読み切ってからマップ化する。
+	stockMap := map[int64]int{}
+	srows, err := s.pool.Query(ctx, `SELECT item_id, stock FROM house_shop_stock WHERE house_id = $1`, houseID)
+	if err != nil {
+		return nil, fmt.Errorf("load stock: %w", err)
+	}
+	for srows.Next() {
+		var (
+			id  int64
+			stk int
+		)
+		if err := srows.Scan(&id, &stk); err != nil {
+			srows.Close()
+			return nil, fmt.Errorf("scan stock: %w", err)
+		}
+		stockMap[id] = stk
+	}
+	srows.Close()
+	if err := srows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate stock: %w", err)
+	}
+
+	var savings int64
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(SUM(delta), 0) FROM ledger_entry WHERE account = $1`,
+		"savings:"+strconv.FormatInt(playerID, 10)).Scan(&savings); err != nil {
+		return nil, fmt.Errorf("load savings: %w", err)
+	}
+	for i := range items {
+		items[i].InStock = stockMap[items[i].ItemID]
+	}
+	return &OrosiState{
+		Syubetu:    syubetu,
+		Markup:     markup,
+		Savings:    savings,
+		StockKinds: len(stockMap),
+		MaxKinds:   building.ShopMaxKinds,
+		MaxStock:   building.ShopMaxStock,
+		Items:      items,
+	}, nil
 }

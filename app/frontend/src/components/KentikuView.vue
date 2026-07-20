@@ -1,6 +1,15 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { api, type Player, type BuildingState, type TownFacility, type MyHouse, type HouseCell } from '../api';
+import {
+  api,
+  type Player,
+  type BuildingState,
+  type TownFacility,
+  type MyHouse,
+  type HouseCell,
+  type OrosiState,
+  type OrosiItem,
+} from '../api';
 import Toast from './Toast.vue';
 import { useToast } from '../toast';
 
@@ -307,6 +316,101 @@ async function saveComment(h: MyHouse) {
     busy.value = false;
   }
 }
+
+// 家の店 設定(フェーズ4a)
+const shopEditId = ref<number | null>(null);
+const shopDraft = ref<{ title: string; syubetu: string; markup: number }>({
+  title: '',
+  syubetu: '',
+  markup: 2,
+});
+function startShop(h: MyHouse) {
+  shopEditId.value = h.id;
+  shopDraft.value = {
+    title: h.shop_title || '',
+    syubetu: h.shop_kind || state.value?.shop_kinds[0] || '',
+    markup: h.shop_markup || 2,
+  };
+}
+async function saveShop(h: MyHouse) {
+  busy.value = true;
+  try {
+    const after = await api.openHouseShop(
+      props.player.id,
+      h.id,
+      shopDraft.value.title,
+      shopDraft.value.syubetu,
+      shopDraft.value.markup,
+    );
+    emit('update', after);
+    await refresh();
+    shopEditId.value = null;
+    showToast({
+      variant: 'item',
+      title: '店を設定しました',
+      lines: [`${shopDraft.value.syubetu}の店を開きました（掛け率${shopDraft.value.markup}倍）`],
+      icon: 'item',
+    });
+  } catch (e) {
+    showToast({
+      variant: 'error',
+      title: '店を設定できませんでした',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'item',
+    });
+  } finally {
+    busy.value = false;
+  }
+}
+
+// 卸問屋で仕入れ(フェーズ4b)
+const orosiState = ref<OrosiState | null>(null);
+const orosiHouseId = ref<number | null>(null);
+const shiireQty = ref<Record<number, number>>({});
+
+async function startOrosi(h: MyHouse) {
+  try {
+    orosiState.value = await api.orosi(props.player.id, h.id);
+    orosiHouseId.value = h.id;
+  } catch (e) {
+    showToast({
+      variant: 'error',
+      title: '卸問屋を開けませんでした',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'item',
+    });
+  }
+}
+function closeOrosi() {
+  orosiState.value = null;
+  orosiHouseId.value = null;
+}
+async function doShiire(it: OrosiItem) {
+  if (!orosiHouseId.value) return;
+  const qty = shiireQty.value[it.item_id] || 1;
+  busy.value = true;
+  try {
+    const after = await api.shiire(props.player.id, orosiHouseId.value, it.item_id, qty);
+    emit('update', after);
+    orosiState.value = await api.orosi(props.player.id, orosiHouseId.value);
+    await refresh();
+    showToast({
+      variant: 'item',
+      title: '仕入れました',
+      lines: [`${it.name} を${qty}個 仕入れました`],
+      icon: 'item',
+    });
+  } catch (e) {
+    showToast({
+      variant: 'error',
+      title: '仕入れできませんでした',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'item',
+    });
+  } finally {
+    busy.value = false;
+  }
+}
 </script>
 
 <template>
@@ -462,8 +566,96 @@ async function saveComment(h: MyHouse) {
               />
               <button class="btn mini" :disabled="busy" @click="saveComment(h)">コメント保存</button>
             </div>
+            <div class="mh-shop">
+              <span v-if="h.has_shop" class="shop-badge">
+                店: {{ h.shop_title || '(無題)' }}／{{ h.shop_kind }}／掛け率{{ h.shop_markup }}倍
+              </span>
+              <span v-else class="shop-none">この家に店はありません</span>
+              <button class="btn mini" :disabled="busy" @click="startShop(h)">
+                {{ h.has_shop ? '店設定を変更' : '店を開く' }}
+              </button>
+              <button v-if="h.has_shop" class="btn mini" :disabled="busy" @click="startOrosi(h)">
+                仕入れる
+              </button>
+            </div>
+            <div v-if="shopEditId === h.id" class="shop-form">
+              <label class="mh-field">店名
+                <input v-model="shopDraft.title" maxlength="50" class="mh-cinput" />
+              </label>
+              <label class="mh-field">種類
+                <select v-model="shopDraft.syubetu">
+                  <option v-for="k in state.shop_kinds" :key="k" :value="k">{{ k }}</option>
+                </select>
+              </label>
+              <label class="mh-field">掛け率
+                <input
+                  v-model.number="shopDraft.markup"
+                  type="number"
+                  step="0.1"
+                  min="0.3"
+                  max="3"
+                  class="markup-input"
+                />倍
+              </label>
+              <button class="btn mini build-btn" :disabled="busy" @click="saveShop(h)">保存</button>
+              <button class="btn mini" :disabled="busy" @click="shopEditId = null">やめる</button>
+            </div>
           </li>
         </ul>
+      </div>
+
+      <!-- 卸問屋(仕入れ) -->
+      <div v-if="orosiState" class="orosi-panel panel-white">
+        <div class="orosi-head">
+          <span class="orosi-title">卸問屋（{{ orosiState.syubetu }}）</span>
+          <span class="orosi-info">
+            普通口座 {{ yen(orosiState.savings) }}円／在庫種類 {{ orosiState.stock_kinds }}／{{ orosiState.max_kinds }}
+          </span>
+          <button class="btn mini" @click="closeOrosi">閉じる</button>
+        </div>
+        <div v-if="orosiState.items.length === 0" class="orosi-empty">仕入れられる商品がありません。</div>
+        <div v-else class="orosi-scroll">
+          <table class="orosi-table">
+            <thead>
+              <tr>
+                <th class="l">品名</th>
+                <th>種類</th>
+                <th>仕入れ値</th>
+                <th>店在庫</th>
+                <th>数量</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="it in orosiState.items" :key="it.item_id">
+                <td class="l">{{ it.name }}</td>
+                <td>{{ it.category }}</td>
+                <td class="price">{{ yen(it.buy_price) }}円</td>
+                <td :class="{ full: it.in_stock >= orosiState.max_stock }">
+                  {{ it.in_stock }}/{{ orosiState.max_stock }}
+                </td>
+                <td>
+                  <input
+                    v-model.number="shiireQty[it.item_id]"
+                    type="number"
+                    min="1"
+                    :max="orosiState.max_stock"
+                    class="qty-input"
+                  />
+                </td>
+                <td>
+                  <button
+                    class="btn mini"
+                    :disabled="busy || it.in_stock >= orosiState.max_stock"
+                    @click="doShiire(it)"
+                  >
+                    仕入れる
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </template>
 
@@ -698,6 +890,101 @@ async function saveComment(h: MyHouse) {
   flex: 1 1 auto;
   font-size: 12px;
   padding: 2px 4px;
+}
+.mh-shop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.shop-badge {
+  font-size: 12px;
+  color: #7a4a00;
+  background: #fff3e0;
+  border: 1px solid #e0c080;
+  padding: 2px 6px;
+  flex: 1 1 auto;
+}
+.shop-none {
+  font-size: 12px;
+  color: #999;
+  flex: 1 1 auto;
+}
+.shop-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed #cde0bc;
+  font-size: 12px;
+}
+.markup-input {
+  width: 56px;
+  font-size: 12px;
+  padding: 2px 4px;
+}
+.orosi-panel {
+  margin-top: 8px;
+}
+.orosi-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.orosi-title {
+  font-weight: bold;
+  color: #7a4a00;
+  font-size: 14px;
+}
+.orosi-info {
+  font-size: 12px;
+  color: #567;
+  flex: 1 1 auto;
+}
+.orosi-empty {
+  font-size: 12px;
+  color: #888;
+}
+.orosi-scroll {
+  overflow-x: auto;
+}
+.orosi-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  white-space: nowrap;
+  width: 100%;
+}
+.orosi-table th {
+  background: #f0e0c0;
+  color: #634;
+  padding: 3px 6px;
+  border: 1px solid #dc9;
+}
+.orosi-table td {
+  padding: 3px 6px;
+  border: 1px solid #eee;
+  text-align: center;
+}
+.orosi-table th.l,
+.orosi-table td.l {
+  text-align: left;
+}
+.orosi-table td.price {
+  color: #cc3300;
+  text-align: right;
+}
+.orosi-table td.full {
+  color: #cc0000;
+  font-weight: bold;
+}
+.qty-input {
+  width: 50px;
+  font-size: 12px;
+  padding: 2px;
 }
 .my-houses .mh-head {
   font-weight: bold;
