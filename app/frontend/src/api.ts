@@ -374,6 +374,7 @@ export interface TownFacility {
   town: number;
   col: number;
   row: number;
+  dest: number; // 移動施設(key=walk/bus)の行き先の街
   ready: boolean;
 }
 
@@ -701,6 +702,13 @@ export const api = {
   playerProfile: (id: number) => request<PublicProfile>('GET', `/players/${id}/profile`),
   townMap: () => request<TownFacility[]>('GET', '/townmap'),
   townAssets: () => request<TownAsset[]>('GET', '/townassets'),
+  // 街移動(徒歩/バス)。行き先の街と手段を送る。
+  moveTown: (id: number, dest: number, means: 'walk' | 'bus') =>
+    request<Player>('POST', `/players/${id}/move`, {
+      dest,
+      means,
+      idempotency_key: newIdempotencyKey(),
+    }),
   stocks: () => request<StocksResp>('GET', '/stocks'),
   playerStocks: (id: number) => request<PlayerStocksResp>('GET', `/players/${id}/stocks`),
   stockBuy: (id: number, symbol: string, quantity: number) =>

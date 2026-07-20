@@ -11,6 +11,29 @@ import (
 	"github.com/shiroha-a/town/internal/player"
 )
 
+type moveTownReq struct {
+	Dest           int    `json:"dest"`
+	Means          string `json:"means"` // "walk"(徒歩) or "bus"(バス)
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// moveTown moves the player to another town (walk/bus). Charges fare and sets a
+// travel cooldown.
+func (s *Server) moveTown(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req moveTownReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	p, err := s.actions.DoMoveTown(r.Context(), id, req.Dest, req.Means, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
 // facilityMenu lists a facility's menu (e.g. 食堂 = syokudou). Public.
 func (s *Server) facilityMenu(w http.ResponseWriter, r *http.Request) {
 	menu, err := s.content.ListFacilityMenu(r.Context(), r.PathValue("facility"))

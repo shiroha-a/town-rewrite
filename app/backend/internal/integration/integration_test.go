@@ -42,11 +42,12 @@ import (
 )
 
 type playerResp struct {
-	ID      int64    `json:"id"`
-	Roles   []string `json:"roles"`
-	Money   int64    `json:"money"`
-	Savings int64    `json:"savings"`
-	Status  struct {
+	ID          int64    `json:"id"`
+	Roles       []string `json:"roles"`
+	Money       int64    `json:"money"`
+	Savings     int64    `json:"savings"`
+	CurrentTown int      `json:"current_town"`
+	Status      struct {
 		Job          string   `json:"job"`
 		JobLevel     int      `json:"job_level"`
 		JobExp       int      `json:"job_exp"`
@@ -2584,6 +2585,76 @@ func seedPlots(t *testing.T, pool *pgxpool.Pool, plots [][3]int) {
 			p[0], p[1], p[2]); err != nil {
 			t.Fatalf("seed plot: %v", err)
 		}
+	}
+}
+
+func moveTown(t *testing.T, base string, playerID int64, dest int, means, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"dest": dest, "means": means, "idempotency_key": idemKey})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/move",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("move post: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+func TestMoveTown(t *testing.T) {
+	srv, pool := setup(t)
+	p := register(t, srv.URL, "misskey.example", "traveler")
+
+	// 徒歩で街2へ移動(無料)。current_townが変わる。
+	got, code := moveTown(t, srv.URL, p.ID, 2, "walk", "mv1")
+	if code != http.StatusOK {
+		t.Fatalf("walk move: status=%d", code)
+	}
+	if got.CurrentTown != 2 {
+		t.Errorf("current_town after walk = %d, want 2", got.CurrentTown)
+	}
+	if got.Money != 500_000 {
+		t.Errorf("money after walk = %d, want 500000 (無料)", got.Money)
+	}
+
+	// 移動直後は移動時間(クールタイム)中で再移動不可。
+	if _, c := moveTown(t, srv.URL, p.ID, 3, "walk", "mv2"); c != http.StatusUnprocessableEntity {
+		t.Errorf("move during cooldown: status=%d, want 422", c)
+	}
+
+	// クールタイムを解除し、バスで街0へ移動(500円課金)。
+	if _, err := pool.Exec(context.Background(),
+		`DELETE FROM player_facility_cooldowns WHERE player_id=$1 AND facility='move'`, p.ID); err != nil {
+		t.Fatalf("clear cooldown: %v", err)
+	}
+	got, code = moveTown(t, srv.URL, p.ID, 0, "bus", "mv3")
+	if code != http.StatusOK {
+		t.Fatalf("bus move: status=%d", code)
+	}
+	if got.CurrentTown != 0 {
+		t.Errorf("current_town after bus = %d, want 0", got.CurrentTown)
+	}
+	if got.Money != 499_500 {
+		t.Errorf("money after bus = %d, want 499500 (500円課金)", got.Money)
+	}
+
+	// 同じ街への移動は拒否。
+	if _, err := pool.Exec(context.Background(),
+		`DELETE FROM player_facility_cooldowns WHERE player_id=$1 AND facility='move'`, p.ID); err != nil {
+		t.Fatalf("clear cooldown: %v", err)
+	}
+	if _, c := moveTown(t, srv.URL, p.ID, 0, "walk", "mv4"); c != http.StatusUnprocessableEntity {
+		t.Errorf("move to same town: status=%d, want 422", c)
+	}
+
+	// 不正な手段は拒否。
+	if _, c := moveTown(t, srv.URL, p.ID, 1, "teleport", "mv5"); c != http.StatusUnprocessableEntity {
+		t.Errorf("invalid means: status=%d, want 422", c)
 	}
 }
 

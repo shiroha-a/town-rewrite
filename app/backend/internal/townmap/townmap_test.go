@@ -82,6 +82,16 @@ func TestValidate(t *testing.T) {
 			[]Facility{{Key: "bank", Img: "bank", Town: -1, Col: 1, Row: 0}},
 			true,
 		},
+		{
+			"dest above range",
+			[]Facility{{Key: "walk", Img: "mati_link", Col: 1, Row: 0, Dest: Towns}},
+			true,
+		},
+		{
+			"move facility with valid dest ok",
+			[]Facility{{Key: "walk", Img: "mati_link", Town: 0, Col: 1, Row: 0, Dest: 2}},
+			false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -142,10 +142,14 @@ const KEY_PRESETS: { key: string; label: string }[] = [
   { key: 'mail', label: 'メール(準備中)' },
   { key: 'doukyo', label: 'キャラ作成(準備中)' },
   { key: 'aisatu', label: 'あいさつ(準備中)' },
+  { key: 'walk', label: '街移動(徒歩)' },
+  { key: 'bus', label: '街移動(バス・500円)' },
 ];
+// 移動施設の遷移先key(選択時に行き先セレクタを出す)。
+const MOVE_KEYS = ['walk', 'bus'];
 // 施設用に用意されているgif(public/img)。
 const IMG_PRESETS = [
-  'depart', 'bank', 'syokudou', 'gym', 'onsen', 'hospital', 'work', 'yakuba', 'kabu', 'keiba', 'kentiku', 'prof', 'mail',
+  'depart', 'bank', 'syokudou', 'gym', 'onsen', 'hospital', 'work', 'yakuba', 'kabu', 'keiba', 'kentiku', 'prof', 'mail', 'mati_link', 'bus',
 ];
 
 // 施設レイヤーで編集中の街(0..4)。施設はマルチ街化済み。
@@ -217,6 +221,7 @@ function addFacility() {
     town: facilityTown.value,
     col: cell.col,
     row: cell.row,
+    dest: 0,
     ready: true,
   });
   selectedIdx.value = townmap.value.length - 1;
@@ -925,6 +930,11 @@ async function deleteEdit() {
                     <label>遷移先
                       <select v-model="selectedFacility.key">
                         <option v-for="k in KEY_PRESETS" :key="k.key" :value="k.key">{{ k.label }}</option>
+                      </select>
+                    </label>
+                    <label v-if="MOVE_KEYS.includes(selectedFacility.key)">行き先の街
+                      <select v-model.number="selectedFacility.dest">
+                        <option v-for="t in plotTowns" :key="t.no" :value="t.no">{{ t.name }}</option>
                       </select>
                     </label>
                     <label>画像

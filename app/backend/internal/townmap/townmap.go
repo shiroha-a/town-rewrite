@@ -24,14 +24,16 @@ const (
 )
 
 // Facility is a single placed facility on the town map (functional layer).
+// key="walk"(徒歩)/"bus"(バス) は街移動施設で、Dest が行き先の街になる。
 type Facility struct {
-	Key   string `json:"key"`   // ビュー遷移先(プリセット)。空不可
+	Key   string `json:"key"`   // ビュー遷移先 or 移動施設(walk/bus)。空不可
 	Img   string `json:"img"`   // gif名(拡張子なし)。空不可
 	Alt   string `json:"alt"`   // 表示名(ツールチップ)
 	Town  int    `json:"town"`  // 街番号(0..Towns-1)。既定0=メイン街
 	Col   int    `json:"col"`   // 1..Cols
 	Row   int    `json:"row"`   // 0..Rows-1
-	Ready bool   `json:"ready"` // 有効なら遷移可能
+	Dest  int    `json:"dest"`  // 移動施設の行き先の街(0..Towns-1)。非移動施設は無視
+	Ready bool   `json:"ready"` // 有効なら遷移/移動可能
 }
 
 // Asset is a single placed background asset (decorative layer). It has no
@@ -141,6 +143,9 @@ func Validate(fs []Facility) error {
 		}
 		if f.Row < 0 || f.Row >= Rows {
 			return fmt.Errorf("facility %d (%s): row %d out of range 0..%d", i, f.Key, f.Row, Rows-1)
+		}
+		if f.Dest < 0 || f.Dest >= Towns {
+			return fmt.Errorf("facility %d (%s): dest %d out of range 0..%d", i, f.Key, f.Dest, Towns-1)
 		}
 		cell := [3]int{f.Town, f.Col, f.Row}
 		if seen[cell] {

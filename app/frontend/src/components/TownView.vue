@@ -127,8 +127,36 @@ const tickerItems = computed(() =>
 );
 const dirMark = (d: PriceDir) => (d === 'up' ? '▲' : d === 'down' ? '▼' : '');
 
+// 移動施設(徒歩/バス)クリックで街移動する。current_town変化後はリロードで再描画。
+async function doMoveTown(f: TownFacility) {
+  const means = f.key === 'bus' ? 'bus' : 'walk';
+  const destName = TOWN_NAMES[f.dest] ?? '';
+  try {
+    await api.moveTown(props.player.id, f.dest, means);
+    showToast({
+      variant: 'work',
+      title: `${destName}へ移動しました`,
+      lines: [means === 'bus' ? 'バスで移動（500円）' : '徒歩で移動'],
+      icon: f.img,
+    });
+    emit('reload');
+  } catch (e) {
+    showToast({
+      variant: 'error',
+      title: '移動できません',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: f.img,
+    });
+  }
+}
+
 function clickFacility(f: TownFacility) {
-  if (f.ready) emit('navigate', f.key);
+  if (!f.ready) return;
+  if (f.key === 'walk' || f.key === 'bus') {
+    doMoveTown(f);
+    return;
+  }
+  emit('navigate', f.key);
 }
 
 // 管理者のみ管理者画面への導線を出す。
