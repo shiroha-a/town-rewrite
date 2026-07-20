@@ -20,6 +20,7 @@ import (
 	"github.com/shiroha-a/town/internal/action"
 	"github.com/shiroha-a/town/internal/attendance"
 	"github.com/shiroha-a/town/internal/bank"
+	"github.com/shiroha-a/town/internal/building"
 	"github.com/shiroha-a/town/internal/cleague"
 	"github.com/shiroha-a/town/internal/content"
 	"github.com/shiroha-a/town/internal/db"
@@ -100,6 +101,9 @@ func setup(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 		t.Skip("TOWN_TEST_DATABASE_URL not set; skipping integration test")
 	}
 	ctx := context.Background()
+	// building は街リストをプロセス共有のグローバルに持つため、テスト間の汚染を
+	// 避けて既定の5街にリセットする(TestTownsが変更するため)。
+	building.SetTowns(building.DefaultTowns())
 	if err := db.Migrate(url); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -2910,6 +2914,55 @@ func TestUploadAsset(t *testing.T) {
 	}
 	if c := delTile1(); c != http.StatusOK {
 		t.Errorf("delete unused asset: status=%d, want 200", c)
+	}
+}
+
+// TestTowns covers the town config API: GET is public, PUT is admin-only,
+// updates the count/names/land price and reflects in move bounds.
+func TestTowns(t *testing.T) {
+	srv, _ := setup(t)
+	admin := register(t, srv.URL, "misskey.example", "root")
+	user := register(t, srv.URL, "misskey.example", "alice")
+
+	// GETは公開。既定の5街。
+	resp, err := http.Get(srv.URL + "/api/v1/towns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []struct {
+		No        int    `json:"no"`
+		Name      string `json:"name"`
+		LandPrice int    `json:"land_price"`
+	}
+	json.NewDecoder(resp.Body).Decode(&got)
+	resp.Body.Close()
+	if len(got) != 5 || got[0].Name != "公園" {
+		t.Fatalf("default towns = %v", got)
+	}
+
+	// 非adminのPUTは403。
+	if code, _ := adminPut(t, srv.URL, "/api/v1/admin/towns", user.ID,
+		[]map[string]any{{"name": "x", "land_price": 1}}); code != http.StatusForbidden {
+		t.Errorf("non-admin update towns: status=%d, want 403", code)
+	}
+	// 空名は400。
+	if code, _ := adminPut(t, srv.URL, "/api/v1/admin/towns", admin.ID,
+		[]map[string]any{{"name": "", "land_price": 1}}); code != http.StatusBadRequest {
+		t.Errorf("empty name: status=%d, want 400", code)
+	}
+
+	// adminが6街に更新(6番目を追加)。
+	six := []map[string]any{
+		{"name": "A", "land_price": 100}, {"name": "B", "land_price": 100},
+		{"name": "C", "land_price": 100}, {"name": "D", "land_price": 100},
+		{"name": "E", "land_price": 100}, {"name": "F", "land_price": 100},
+	}
+	if code, body := adminPut(t, srv.URL, "/api/v1/admin/towns", admin.ID, six); code != http.StatusOK {
+		t.Fatalf("update towns: status=%d, body=%s", code, body)
+	}
+	// 移動先の上限が6街に広がる: dest=5 が通る(以前は422)。
+	if _, c := moveTown(t, srv.URL, admin.ID, 5, "walk", "tw6"); c != http.StatusOK {
+		t.Errorf("move to town 5 (6 towns): status=%d, want 200", c)
 	}
 }
 

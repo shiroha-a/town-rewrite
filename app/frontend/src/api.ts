@@ -368,6 +368,20 @@ export interface GameSettings {
   move_maigo_enabled: boolean;
   move_walk_secs: number;
   move_bus_secs: number;
+  towns: TownConfig[]; // 街の一覧(round-trip用。編集は専用エディタ)
+}
+
+// 街設定(名前・地価)。街番号は並び順(0始まり)。
+export interface TownConfig {
+  name: string;
+  land_price: number;
+}
+
+// 街(番号付き)。GET /towns の戻り値。
+export interface Town {
+  no: number;
+  name: string;
+  land_price: number;
 }
 
 export interface TownFacility {
@@ -729,6 +743,7 @@ export const api = {
   playerProfile: (id: number) => request<PublicProfile>('GET', `/players/${id}/profile`),
   townMap: () => request<TownFacility[]>('GET', '/townmap'),
   townAssets: () => request<TownAsset[]>('GET', '/townassets'),
+  towns: () => request<Town[]>('GET', '/towns'),
   // 街移動(徒歩/バス)。行き先の街と手段を送る。移動結果(能力上昇等)を含む。
   moveTown: (id: number, dest: number, means: 'walk' | 'bus') =>
     request<MoveResp>('POST', `/players/${id}/move`, {
@@ -1103,4 +1118,7 @@ export const api = {
   // アップロード画像を削除(配置中は422)。
   adminDeleteAsset: (actingId: number, name: string) =>
     request<{ ok: boolean }>('DELETE', `/admin/assets/${encodeURIComponent(name)}`, undefined, adminHeaders(actingId)),
+  // 街の一覧(名前・地価)を更新。街番号は並び順で決まる。
+  adminUpdateTowns: (actingId: number, towns: TownConfig[]) =>
+    request<Town[]>('PUT', '/admin/towns', towns, adminHeaders(actingId)),
 };

@@ -11,6 +11,7 @@ import (
 
 	"github.com/shiroha-a/town/internal/action"
 	"github.com/shiroha-a/town/internal/attendance"
+	"github.com/shiroha-a/town/internal/building"
 	"github.com/shiroha-a/town/internal/cleague"
 	"github.com/shiroha-a/town/internal/config"
 	"github.com/shiroha-a/town/internal/content"
@@ -74,10 +75,13 @@ func Run(ctx context.Context, mode string, cfg *config.Config) error {
 		StockAdjust:              cfg.Game.StockAdjust,
 		MoveWalkSecs:             cfg.Game.MoveWalkSecs,
 		MoveBusSecs:              cfg.Game.MoveBusSecs,
+		Towns:                    defaultTownConfigs(),
 	})
 	if err != nil {
 		return fmt.Errorf("load settings: %w", err)
 	}
+	// 街の一覧(名前・地価)を実行時キャッシュ(building)へ同期する。
+	syncTowns(st.Get().Towns)
 
 	// 実行時に編集可能な街マップ(初回は既定の施設配置をシード)。webのみ使用。
 	tmap, err := townmap.NewStore(ctx, pool, townmap.Default())
@@ -127,4 +131,26 @@ func runWeb(ctx context.Context, cfg *config.Config, logger *slog.Logger, player
 		return fmt.Errorf("http serve: %w", err)
 	}
 	return nil
+}
+
+// defaultTownConfigs returns the legacy default towns as settings.TownConfig
+// (for seeding fresh installs).
+func defaultTownConfigs() []settings.TownConfig {
+	out := []settings.TownConfig{}
+	for _, t := range building.DefaultTowns() {
+		out = append(out, settings.TownConfig{Name: t.Name, LandPrice: t.LandPrice})
+	}
+	return out
+}
+
+// syncTowns pushes the persisted town list into the building runtime cache.
+func syncTowns(tcs []settings.TownConfig) {
+	if len(tcs) == 0 {
+		return // 空なら組み込みの既定を維持
+	}
+	ts := make([]building.Town, len(tcs))
+	for i, tc := range tcs {
+		ts[i] = building.Town{No: i, Name: tc.Name, LandPrice: tc.LandPrice}
+	}
+	building.SetTowns(ts)
 }

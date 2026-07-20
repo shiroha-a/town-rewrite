@@ -74,7 +74,7 @@ func TestValidate(t *testing.T) {
 		},
 		{
 			"town above range",
-			[]Facility{{Key: "bank", Img: "bank", Town: Towns, Col: 1, Row: 0}},
+			[]Facility{{Key: "bank", Img: "bank", Town: MaxTowns, Col: 1, Row: 0}},
 			true,
 		},
 		{
@@ -84,7 +84,7 @@ func TestValidate(t *testing.T) {
 		},
 		{
 			"dest above range",
-			[]Facility{{Key: "walk", Img: "mati_link", Col: 1, Row: 0, Dest: Towns}},
+			[]Facility{{Key: "walk", Img: "mati_link", Col: 1, Row: 0, Dest: MaxTowns}},
 			true,
 		},
 		{
@@ -141,7 +141,7 @@ func TestValidateAssets(t *testing.T) {
 		},
 		{
 			"town out of range",
-			[]Asset{{Img: "kusa", Town: Towns, Col: 1, Row: 0}},
+			[]Asset{{Img: "kusa", Town: MaxTowns, Col: 1, Row: 0}},
 			true,
 		},
 	}

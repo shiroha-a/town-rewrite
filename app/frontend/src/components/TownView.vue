@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue';
-import { api, WARP_FEE, assetUrl, type Player, type Params, type TownFacility, type TownAsset, type MoveResult, type WorkResponse } from '../api';
+import { api, WARP_FEE, assetUrl, type Player, type Params, type TownFacility, type TownAsset, type Town, type MoveResult, type WorkResponse } from '../api';
 import { satietyLabel } from '../params';
 import CommandIcon from './CommandIcon.vue';
 import PowerBar from './PowerBar.vue';
@@ -29,11 +29,12 @@ const displayTown = computed(() =>
   moving.value && departTown.value !== null ? departTown.value : props.player.current_town,
 );
 
-// 5つの街の名前と地価(万円)。建設会社/バックエンドと対応。表示中の街の情報に使う。
-const TOWN_NAMES = ['公園', 'シー・リゾート', 'カントリータウン', 'ダウンタウン', '謎の街'];
-const TOWN_LAND_PRICES = [2000, 1000, 500, 250, 250];
-const currentTownName = computed(() => TOWN_NAMES[displayTown.value] ?? '');
-const currentTownLandPrice = computed(() => TOWN_LAND_PRICES[displayTown.value] ?? 0);
+// 街の一覧(名前・地価)は管理画面で設定でき、起動時にAPIから取得する。
+const townList = ref<Town[]>([]);
+const townName = (no: number) => townList.value.find((t) => t.no === no)?.name ?? '';
+const townLandPrice = (no: number) => townList.value.find((t) => t.no === no)?.land_price ?? 0;
+const currentTownName = computed(() => townName(displayTown.value));
+const currentTownLandPrice = computed(() => townLandPrice(displayTown.value));
 
 // 施設は全街ぶんをまとめて取得し、表示中の街のものだけを描画する。
 // 空き地(akichi)は建設会社で扱う建築マスなのでメイン街には出さない。
@@ -61,8 +62,13 @@ onMounted(async () => {
   try {
     assets.value = await api.townAssets();
   } catch {
-    // 背景は装飾のため、取得失敗時は空(空の色のみ)で継続する。
     assets.value = [];
+  }
+  try {
+    townList.value = await api.towns();
+  } catch {
+    // 街一覧が取れなくても他機能は使えるよう空で継続する。
+    townList.value = [];
   }
   try {
     const s = await api.stocks();
@@ -149,7 +155,7 @@ let movingTimer: number | undefined;
 async function doMoveTown(f: TownFacility) {
   if (moving.value) return; // 移動中は多重移動不可
   const means = f.key === 'bus' ? 'bus' : 'walk';
-  const destName = TOWN_NAMES[f.dest] ?? '';
+  const destName = townName(f.dest);
   departTown.value = props.player.current_town; // 出発の街を固定
   let res;
   try {
@@ -164,7 +170,7 @@ async function doMoveTown(f: TownFacility) {
     return;
   }
   const mr = res.move_result;
-  const arrivedName = TOWN_NAMES[mr.arrived_town] ?? destName;
+  const arrivedName = townName(mr.arrived_town) || destName;
   const secs = Math.max(0, mr.travel_secs);
   if (secs <= 0) {
     arriveMove(mr, arrivedName, f.img);
@@ -224,7 +230,7 @@ function nav(view: string) {
 // ワープ(高額・即時)。トップ画面の持ち物欄の下のプルダウンで行き先を選び移動する。
 const warpFee = WARP_FEE;
 const warpDests = computed(() =>
-  TOWN_NAMES.map((name, no) => ({ no, name })).filter((t) => t.no !== props.player.current_town),
+  townList.value.filter((t) => t.no !== props.player.current_town),
 );
 const warpDest = ref<number>(warpDests.value[0]?.no ?? 0);
 // 現在の街が変わったら、行き先候補から現在地を除いて既定を選び直す。
@@ -240,7 +246,7 @@ const warpBusy = ref(false);
 async function doWarp() {
   if (warpBusy.value || moving.value) return;
   warpBusy.value = true;
-  const destName = TOWN_NAMES[warpDest.value] ?? '';
+  const destName = townName(warpDest.value);
   try {
     await api.warp(props.player.id, warpDest.value);
     showToast({

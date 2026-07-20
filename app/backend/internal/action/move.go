@@ -9,10 +9,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/shiroha-a/town/internal/building"
 	"github.com/shiroha-a/town/internal/effects"
 	"github.com/shiroha-a/town/internal/ledger"
 	"github.com/shiroha-a/town/internal/player"
-	"github.com/shiroha-a/town/internal/townmap"
 )
 
 // 街移動の料金(円)と時間(秒)。レガシー忠実: 徒歩は無料10秒、バスは500円5秒。
@@ -34,26 +34,26 @@ const (
 // (レガシー town_ini.cgi の %idou_syudan)。所持する最速の乗り物が移動時間になる。
 // 自転車/ローラースルーゴーゴーは徒歩より遅いが、自転車は能力が上がる。
 var vehicleTime = map[string]int{
-	rollerItem:      30,
-	"自転車":           20,
-	"ベスパ":           10,
-	"スーパーカブ":        10,
-	"ドゥカティ":         7,
-	"ナナハン":          7,
-	"カローラ":          7,
-	"ボルボ":           6,
-	"キャデラック":        6,
-	"ベンツ":           5,
-	"ロールスロイス":       5,
-	"フェアレディZ":       5,
-	"スカイラインGTR":     4,
-	"ロータスヨーロッパ":     4,
-	"アルファロメオ":       4,
-	"ジャガー":          4,
-	"BMW":           4,
-	"ポルシェ":          3,
-	"フェラーリ":         2,
-	"ミグ25":          1,
+	rollerItem:  30,
+	"自転車":       20,
+	"ベスパ":       10,
+	"スーパーカブ":    10,
+	"ドゥカティ":     7,
+	"ナナハン":      7,
+	"カローラ":      7,
+	"ボルボ":       6,
+	"キャデラック":    6,
+	"ベンツ":       5,
+	"ロールスロイス":   5,
+	"フェアレディZ":   5,
+	"スカイラインGTR": 4,
+	"ロータスヨーロッパ": 4,
+	"アルファロメオ":   4,
+	"ジャガー":      4,
+	"BMW":       4,
+	"ポルシェ":      3,
+	"フェラーリ":     2,
+	"ミグ25":      1,
 }
 
 // walkStatKeys are the 5 physical stats a walk (or 自転車) can raise。
@@ -91,7 +91,7 @@ func (s *Service) DoMoveTown(ctx context.Context, playerID int64, dest int, mean
 	if means != "walk" && means != "bus" {
 		return nil, nil, &ConditionError{Message: "移動手段の指定が正しくありません。"}
 	}
-	if dest < 0 || dest >= townmap.Towns {
+	if dest < 0 || dest >= building.TownCount() {
 		return nil, nil, &ConditionError{Message: "行き先の街の指定が正しくありません。"}
 	}
 	fare := int64(0)
@@ -231,7 +231,7 @@ func (s *Service) DoMoveTown(ctx context.Context, playerID int64, dest int, mean
 // (WarpFee). It is safe (no accident/getting-lost) and has no travel time,
 // mirroring the legacy top-screen warp dropdown.
 func (s *Service) DoWarp(ctx context.Context, playerID int64, dest int, idempotencyKey string) (*player.Player, error) {
-	if dest < 0 || dest >= townmap.Towns {
+	if dest < 0 || dest >= building.TownCount() {
 		return nil, &ConditionError{Message: "行き先の街の指定が正しくありません。"}
 	}
 	return s.runAction(ctx, playerID, "warp", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {

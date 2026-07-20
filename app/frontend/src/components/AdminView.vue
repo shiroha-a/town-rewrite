@@ -16,6 +16,7 @@ import {
   type TownFacility,
   type TownAsset,
   type PlotCell,
+  type Town,
 } from '../api';
 
 const props = defineProps<{ player: Player }>();
@@ -24,7 +25,7 @@ const emit = defineEmits<{ back: [] }>();
 const isAdmin = computed(() => props.player.roles.includes('admin'));
 
 // 各セクションの開閉。既定は折りたたみ(false)。
-const open = reactive({ item: false, job: false, user: false, settings: false, map: false });
+const open = reactive({ item: false, job: false, user: false, settings: false, towns: false, map: false });
 
 // 効果/条件で対象にできるパラメータ。
 const PARAM_OPTIONS = [
@@ -111,6 +112,8 @@ async function refresh() {
     assets.value = await api.townAssets();
     houseCells.value = await api.adminHouseCells(props.player.id);
     uploadedAssets.value = await api.adminListAssets(props.player.id);
+    townList.value = await api.towns();
+    syncTownDraft();
     selectedIdx.value = null;
   } catch (e) {
     fail(e);
@@ -403,15 +406,37 @@ function onBgDrop(col: number, rowIdx: number) {
   assets.value[srcIdx].row = rowIdx;
 }
 
-// マップ編集で使う5つの街(施設レイヤーの街セレクタ用)。空き地は施設(key='akichi')に
-// 統合したため、専用の空き地レイヤーは廃止し、施設レイヤーで空き地施設を配置する。
-const plotTowns = [
-  { no: 0, name: '公園' },
-  { no: 1, name: 'シー・リゾート' },
-  { no: 2, name: 'カントリータウン' },
-  { no: 3, name: 'ダウンタウン' },
-  { no: 4, name: '謎の街' },
-];
+// 街の一覧(管理画面で設定可能。名前・地価)。マップ編集の街セレクタや街エディタで使う。
+const townList = ref<Town[]>([]);
+// マップ編集の街セレクタ用(no+name)。街は設定で可変。
+const plotTowns = computed(() => townList.value.map((t) => ({ no: t.no, name: t.name })));
+
+// 街エディタの編集用ドラフト(名前・地価)。保存で adminUpdateTowns。
+const townDraft = ref<{ name: string; land_price: number }[]>([]);
+function syncTownDraft() {
+  townDraft.value = townList.value.map((t) => ({ name: t.name, land_price: t.land_price }));
+}
+function addTown() {
+  townDraft.value.push({ name: '新しい街', land_price: 250 });
+}
+function removeTown(i: number) {
+  townDraft.value.splice(i, 1);
+}
+async function saveTowns() {
+  busy.value = true;
+  message.value = '';
+  try {
+    await api.adminUpdateTowns(props.player.id, townDraft.value);
+    townList.value = await api.towns();
+    syncTownDraft();
+    message.value = '街の設定を更新しました。';
+    kind.value = 'ok';
+  } catch (e) {
+    fail(e);
+  } finally {
+    busy.value = false;
+  }
+}
 
 // サーバー設定(数値項目)の入力欄メタデータ。ラベルと簡単な補足を持つ。
 const SETTINGS_FIELDS: { key: keyof GameSettings; label: string; hint?: string }[] = [
@@ -886,6 +911,40 @@ async function deleteEdit() {
               </div>
               <div class="actions">
                 <button class="btn primary" :disabled="busy || !settings" @click="saveSettings">保存</button>
+                <button class="btn" :disabled="busy" @click="refresh">再読込</button>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <!-- 街(名前・地価) -->
+        <section class="fold">
+          <button class="fold-head" @click="open.towns = !open.towns">
+            <span class="caret">{{ open.towns ? '▼' : '▶' }}</span> 街（{{ townDraft.length }}）
+          </button>
+          <div v-if="open.towns" class="fold-body">
+            <section class="panel">
+              <h3>
+                街の設定<span class="hint">
+                  ※上から順に街番号0,1,2…。名前と地価(万円)を編集。地価は建築費に使われる。最大{{ 12 }}街。</span
+                >
+              </h3>
+              <table class="town-edit">
+                <thead>
+                  <tr><th>#</th><th>名前</th><th>地価(万)</th><th></th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(t, i) in townDraft" :key="i">
+                    <td>{{ i }}</td>
+                    <td><input v-model="t.name" /></td>
+                    <td><input type="number" v-model.number="t.land_price" min="0" /></td>
+                    <td><button class="btn danger mini" :disabled="townDraft.length <= 1" @click="removeTown(i)">削除</button></td>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="actions">
+                <button class="btn" :disabled="townDraft.length >= 12" @click="addTown">＋街を追加</button>
+                <button class="btn primary" :disabled="busy" @click="saveTowns">保存</button>
                 <button class="btn" :disabled="busy" @click="refresh">再読込</button>
               </div>
             </section>
@@ -1527,6 +1586,23 @@ async function deleteEdit() {
   margin-bottom: 8px;
   /* fold-body(flex-wrap)の中で全幅を占め、マップ編集パネルを下段(タブの下)に送る。 */
   flex-basis: 100%;
+}
+.town-edit {
+  border-collapse: collapse;
+  margin-bottom: 8px;
+}
+.town-edit th,
+.town-edit td {
+  border: 1px solid #dfe3ea;
+  padding: 3px 6px;
+  font-size: 13px;
+}
+.town-edit input {
+  font-size: 13px;
+  padding: 2px 4px;
+}
+.town-edit input[type='number'] {
+  width: 80px;
 }
 .layer-tabs button {
   background: #e2e8f0;

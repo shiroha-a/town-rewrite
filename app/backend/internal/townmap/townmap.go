@@ -16,11 +16,13 @@ import (
 )
 
 // Grid dimensions of the town map (columns 1..Cols, rows 0..Rows-1 = A..L).
-// Towns is the number of towns (0=公園..4=謎の街); the map is per-town.
+// MaxTowns is the hard upper bound for a facility/asset's town field. The actual
+// number of towns is admin-configurable (building.TownCount); this is only a
+// validation ceiling so the field cannot be absurd.
 const (
-	Cols  = 16
-	Rows  = 12
-	Towns = 5
+	Cols     = 16
+	Rows     = 12
+	MaxTowns = 12
 )
 
 // Facility is a single placed facility on the town map (functional layer).
@@ -136,8 +138,8 @@ func Validate(fs []Facility) error {
 		if f.Img == "" {
 			return fmt.Errorf("facility %d (%s): img is required", i, f.Key)
 		}
-		if f.Town < 0 || f.Town >= Towns {
-			return fmt.Errorf("facility %d (%s): town %d out of range 0..%d", i, f.Key, f.Town, Towns-1)
+		if f.Town < 0 || f.Town >= MaxTowns {
+			return fmt.Errorf("facility %d (%s): town %d out of range 0..%d", i, f.Key, f.Town, MaxTowns-1)
 		}
 		if f.Col < 1 || f.Col > Cols {
 			return fmt.Errorf("facility %d (%s): col %d out of range 1..%d", i, f.Key, f.Col, Cols)
@@ -145,8 +147,8 @@ func Validate(fs []Facility) error {
 		if f.Row < 0 || f.Row >= Rows {
 			return fmt.Errorf("facility %d (%s): row %d out of range 0..%d", i, f.Key, f.Row, Rows-1)
 		}
-		if f.Dest < 0 || f.Dest >= Towns {
-			return fmt.Errorf("facility %d (%s): dest %d out of range 0..%d", i, f.Key, f.Dest, Towns-1)
+		if f.Dest < 0 || f.Dest >= MaxTowns {
+			return fmt.Errorf("facility %d (%s): dest %d out of range 0..%d", i, f.Key, f.Dest, MaxTowns-1)
 		}
 		cell := [3]int{f.Town, f.Col, f.Row}
 		if seen[cell] {
@@ -184,8 +186,8 @@ func ValidateAssets(as []Asset) error {
 		if a.Img == "" {
 			return fmt.Errorf("asset %d: img is required", i)
 		}
-		if a.Town < 0 || a.Town >= Towns {
-			return fmt.Errorf("asset %d: town %d out of range 0..%d", i, a.Town, Towns-1)
+		if a.Town < 0 || a.Town >= MaxTowns {
+			return fmt.Errorf("asset %d: town %d out of range 0..%d", i, a.Town, MaxTowns-1)
 		}
 		if a.Col < 1 || a.Col > Cols {
 			return fmt.Errorf("asset %d: col %d out of range 1..%d", i, a.Col, Cols)
