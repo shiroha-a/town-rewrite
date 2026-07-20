@@ -85,28 +85,11 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 	}
 	st.Plots = plots
 
-	rows, err := s.pool.Query(ctx,
-		`SELECT h.id, h.town, h.grid_row, h.grid_col, h.exterior, h.setumei, h.owner_id, COALESCE(p.display_name, '')
-		 FROM player_houses h LEFT JOIN players p ON p.id = h.owner_id
-		 ORDER BY h.town, h.grid_row, h.grid_col`)
+	houses, err := s.ListHouses(ctx, playerID)
 	if err != nil {
-		return nil, fmt.Errorf("list houses: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			c       HouseCell
-			ownerID int64
-		)
-		if err := rows.Scan(&c.ID, &c.Town, &c.Row, &c.Col, &c.Exterior, &c.Setumei, &ownerID, &c.OwnerName); err != nil {
-			return nil, fmt.Errorf("scan house: %w", err)
-		}
-		c.Own = ownerID == playerID
-		st.Houses = append(st.Houses, c)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate houses: %w", err)
-	}
+	st.Houses = houses
 
 	mrows, err := s.pool.Query(ctx,
 		`SELECT h.id, h.town, h.grid_row, h.grid_col, h.exterior, h.setumei, h.interior_rank, h.built_at,
@@ -134,6 +117,32 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 	}
 	st.HouseCount = len(st.MyHouses)
 	return st, nil
+}
+
+// ListHouses returns every house across all towns (for map rendering). Own is
+// set relative to playerID (pass 0 for none).
+func (s *Service) ListHouses(ctx context.Context, playerID int64) ([]HouseCell, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT h.id, h.town, h.grid_row, h.grid_col, h.exterior, h.setumei, h.owner_id, COALESCE(p.display_name, '')
+		 FROM player_houses h LEFT JOIN players p ON p.id = h.owner_id
+		 ORDER BY h.town, h.grid_row, h.grid_col`)
+	if err != nil {
+		return nil, fmt.Errorf("list houses: %w", err)
+	}
+	defer rows.Close()
+	out := []HouseCell{}
+	for rows.Next() {
+		var (
+			c       HouseCell
+			ownerID int64
+		)
+		if err := rows.Scan(&c.ID, &c.Town, &c.Row, &c.Col, &c.Exterior, &c.Setumei, &ownerID, &c.OwnerName); err != nil {
+			return nil, fmt.Errorf("scan house: %w", err)
+		}
+		c.Own = ownerID == playerID
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // ListHouseCells returns every cell that currently has a house (any owner),

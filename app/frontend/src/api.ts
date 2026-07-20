@@ -746,6 +746,8 @@ export const api = {
   townMap: () => request<TownFacility[]>('GET', '/townmap'),
   townAssets: () => request<TownAsset[]>('GET', '/townassets'),
   towns: () => request<Town[]>('GET', '/towns'),
+  // 全街の家(メイン画面のグリッド描画用)。ownは呼び出し元プレイヤー基準。
+  houses: (id: number) => request<HouseCell[]>('GET', `/players/${id}/houses`),
   // 街移動(徒歩/バス)。行き先の街と手段を送る。移動結果(能力上昇等)を含む。
   moveTown: (id: number, dest: number, means: 'walk' | 'bus') =>
     request<MoveResp>('POST', `/players/${id}/move`, {

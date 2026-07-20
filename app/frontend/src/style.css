@@ -228,6 +228,16 @@ body {
   object-fit: cover;
   pointer-events: none;
 }
+/* 空き地(akichi)マス: うっすらと敷く(建築可能マスの目印)。 */
+.townmap-grid .cell-akichi {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.55;
+  pointer-events: none;
+}
 .facility {
   width: 100%;
   height: 100%;

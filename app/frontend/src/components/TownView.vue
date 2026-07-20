@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue';
-import { api, WARP_FEE, assetUrl, type Player, type Params, type TownFacility, type TownAsset, type Town, type MoveResult, type WorkResponse } from '../api';
+import { api, WARP_FEE, assetUrl, type Player, type Params, type TownFacility, type TownAsset, type Town, type HouseCell, type MoveResult, type WorkResponse } from '../api';
 import { satietyLabel } from '../params';
 import CommandIcon from './CommandIcon.vue';
 import PowerBar from './PowerBar.vue';
@@ -37,12 +37,22 @@ const currentTownName = computed(() => townName(displayTown.value));
 const currentTownLandPrice = computed(() => townLandPrice(displayTown.value));
 
 // 施設は全街ぶんをまとめて取得し、表示中の街のものだけを描画する。
-// 空き地(akichi)は建設会社で扱う建築マスなのでメイン街には出さない。
+// 空き地(akichi)は施設アイコンとしては描画せず、空き地マスとして別扱いする。
 const facilities = ref<TownFacility[]>([]);
 const facilityAt = (col: number, row: number) =>
   facilities.value.find(
     (f) => f.key !== 'akichi' && f.town === displayTown.value && f.col === col && f.row === row,
   );
+// 空き地(akichi)マスか(表示中の街)。家が建っていれば空き地扱いしない。
+const akichiAt = (col: number, row: number) =>
+  facilities.value.some(
+    (f) => f.key === 'akichi' && f.town === displayTown.value && f.col === col && f.row === row,
+  );
+
+// 全街の家。表示中の街のものをグリッドに描画する(外装アイコン)。
+const houses = ref<HouseCell[]>([]);
+const houseAt = (col: number, row: number) =>
+  houses.value.find((h) => h.town === displayTown.value && h.col === col && h.row === row);
 
 // 背景アセット(装飾レイヤー)。施設の下にセル単位で敷く。表示中の街のものを描画する。
 const assets = ref<TownAsset[]>([]);
@@ -69,6 +79,11 @@ onMounted(async () => {
   } catch {
     // 街一覧が取れなくても他機能は使えるよう空で継続する。
     townList.value = [];
+  }
+  try {
+    houses.value = await api.houses(props.player.id);
+  } catch {
+    houses.value = [];
   }
   try {
     const s = await api.stocks();
@@ -531,6 +546,23 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
                 :src="assetUrl(assetAt(c, ri)!.img)"
                 alt=""
               />
+              <!-- 空き地(家が建っていないakichiマス)。うっすら表示。 -->
+              <img
+                v-if="akichiAt(c, ri) && !houseAt(c, ri) && !facilityAt(c, ri)"
+                class="cell-akichi"
+                src="/img/akiti.gif"
+                :title="`${r}${c}（空き地）`"
+                alt="空き地"
+              />
+              <!-- 家。クリックで建設会社(訪問)へ。 -->
+              <button
+                v-else-if="houseAt(c, ri)"
+                class="facility house-cell"
+                :title="`${houseAt(c, ri)!.owner_name}さんの家`"
+                @click="nav('kentiku')"
+              >
+                <img :src="`/img/${houseAt(c, ri)!.exterior}.gif`" :alt="`${houseAt(c, ri)!.owner_name}さんの家`" />
+              </button>
               <button
                 v-if="facilityAt(c, ri)"
                 class="facility"

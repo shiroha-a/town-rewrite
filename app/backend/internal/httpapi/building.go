@@ -25,6 +25,22 @@ func (s *Server) building(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
+// houses returns every house across all towns (for main-screen grid rendering).
+// Own is relative to the caller (playerID).
+func (s *Server) houses(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	list, err := s.content.ListHouses(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
 type buildHouseReq struct {
 	Town           int    `json:"town"`
 	Row            int    `json:"row"`
