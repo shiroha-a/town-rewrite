@@ -235,6 +235,53 @@ func (s *Server) shiire(w http.ResponseWriter, r *http.Request) {
 	writeFacilityResult(w, p, err)
 }
 
+// houseShop returns a house shop's on-sale items for a visitor (店表示).
+func (s *Server) houseShop(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	houseID, err := strconv.ParseInt(r.URL.Query().Get("house_id"), 10, 64)
+	if err != nil || houseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
+		return
+	}
+	view, err := s.content.HouseShop(r.Context(), id, houseID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+type buyHouseShopReq struct {
+	HouseID        int64  `json:"house_id"`
+	ItemID         int64  `json:"item_id"`
+	Qty            int    `json:"qty"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// buyFromHouseShop buys an item from a house shop (訪問販売).
+func (s *Server) buyFromHouseShop(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req buyHouseShopReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 || req.ItemID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id and item_id are required")
+		return
+	}
+	p, err := s.actions.DoBuyFromHouseShop(r.Context(), id, req.HouseID, req.ItemID, req.Qty, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
 // adminGetPlots returns every admin-designated empty plot (管理者専用).
 func (s *Server) adminGetPlots(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {

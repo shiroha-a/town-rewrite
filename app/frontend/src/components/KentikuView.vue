@@ -9,6 +9,8 @@ import {
   type HouseCell,
   type OrosiState,
   type OrosiItem,
+  type HouseShopView,
+  type HouseShopItem,
 } from '../api';
 import Toast from './Toast.vue';
 import { useToast } from '../toast';
@@ -112,6 +114,7 @@ function clickCell(row: number, col: number) {
     // 家 → 訪問パネルを開く
     visitingHouse.value = h;
     saisenAmount.value = 100;
+    loadVisitShop(h);
     return;
   }
   // 空地に指定されたマス(施設・家なし)だけ建築選択できる。
@@ -411,6 +414,48 @@ async function doShiire(it: OrosiItem) {
     busy.value = false;
   }
 }
+
+// 訪問先の店・購入(フェーズ4c)
+const visitShop = ref<HouseShopView | null>(null);
+const buyQty = ref<Record<number, number>>({});
+
+async function loadVisitShop(h: HouseCell) {
+  visitShop.value = null;
+  try {
+    visitShop.value = await api.houseShop(props.player.id, h.id);
+  } catch {
+    visitShop.value = null;
+  }
+}
+function closeVisit() {
+  visitingHouse.value = null;
+  visitShop.value = null;
+}
+async function doBuyFromShop(it: HouseShopItem) {
+  if (!visitingHouse.value) return;
+  const qty = buyQty.value[it.item_id] || 1;
+  busy.value = true;
+  try {
+    const after = await api.buyFromHouseShop(props.player.id, visitingHouse.value.id, it.item_id, qty);
+    emit('update', after);
+    visitShop.value = await api.houseShop(props.player.id, visitingHouse.value.id);
+    showToast({
+      variant: 'item',
+      title: '買いました',
+      lines: [`${it.name} を${qty}個 買いました`],
+      icon: 'item',
+    });
+  } catch (e) {
+    showToast({
+      variant: 'error',
+      title: '購入できませんでした',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'item',
+    });
+  } finally {
+    busy.value = false;
+  }
+}
 </script>
 
 <template>
@@ -470,7 +515,7 @@ async function doShiire(it: OrosiItem) {
               {{ townName(visitingHouse.town) }}／{{ rowLabel(visitingHouse.row) }}{{ visitingHouse.col }}
             </div>
           </div>
-          <button class="btn mini" @click="visitingHouse = null">閉じる</button>
+          <button class="btn mini" @click="closeVisit">閉じる</button>
         </div>
         <div v-if="visitingHouse.setumei" class="visit-comment">「{{ visitingHouse.setumei }}」</div>
         <div v-if="visitingHouse.own" class="visit-note">
@@ -482,6 +527,47 @@ async function doShiire(it: OrosiItem) {
             <option v-for="a in saisenChoices" :key="a" :value="a">{{ yen(a) }}円</option>
           </select>
           <button class="btn saisen-btn" :disabled="busy" @click="doSaisen">さい銭する</button>
+        </div>
+
+        <!-- 家の店(訪問販売) -->
+        <div v-if="visitShop && visitShop.has_shop" class="visit-shop">
+          <div class="vs-title">{{ visitShop.title || 'お店' }}（{{ visitShop.syubetu }}）</div>
+          <div v-if="visitShop.own" class="visit-note">
+            あなたの店です。仕入れ・設定は「自分の家」欄から行えます。
+          </div>
+          <div v-else-if="visitShop.items.length === 0" class="orosi-empty">売り切れです。</div>
+          <div v-else class="orosi-scroll">
+            <table class="orosi-table">
+              <thead>
+                <tr>
+                  <th class="l">品名</th>
+                  <th>価格</th>
+                  <th>在庫</th>
+                  <th>数量</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="it in visitShop.items" :key="it.item_id">
+                  <td class="l">{{ it.name }}</td>
+                  <td class="price">{{ yen(it.price) }}円</td>
+                  <td>{{ it.stock }}</td>
+                  <td>
+                    <input
+                      v-model.number="buyQty[it.item_id]"
+                      type="number"
+                      min="1"
+                      :max="it.stock"
+                      class="qty-input"
+                    />
+                  </td>
+                  <td>
+                    <button class="btn mini" :disabled="busy" @click="doBuyFromShop(it)">買う</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
@@ -985,6 +1071,16 @@ async function doShiire(it: OrosiItem) {
   width: 50px;
   font-size: 12px;
   padding: 2px;
+}
+.visit-shop {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed #cde;
+}
+.vs-title {
+  font-weight: bold;
+  color: #7a4a00;
+  margin-bottom: 4px;
 }
 .my-houses .mh-head {
   font-weight: bold;

@@ -3040,3 +3040,104 @@ func TestShiire(t *testing.T) {
 		t.Errorf("ledger zero-sum broken: %d", sum)
 	}
 }
+
+func buyFromShop(t *testing.T, base string, playerID, houseID, itemID int64, qty int, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"house_id": houseID, "item_id": itemID, "qty": qty, "idempotency_key": idemKey,
+	})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/shop/buy",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("buy post: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+func TestBuyFromHouseShop(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	register(t, srv.URL, "misskey.example", "admin0")
+	owner := register(t, srv.URL, "misskey.example", "shopowner3")
+	visitor := register(t, srv.URL, "misskey.example", "buyer1")
+	creditSavings(t, pool, owner.ID, 20_000_000)
+	creditCash(t, pool, visitor.ID, 1_000_000)
+	seedPlots(t, pool, [][3]int{{4, 0, 1}})
+	if _, c := buildHouse(t, srv.URL, owner.ID, 4, 0, 1, "house1", 3, "b1"); c != http.StatusOK {
+		t.Fatalf("build: %d", c)
+	}
+	var houseID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM player_houses WHERE owner_id=$1`, owner.ID).Scan(&houseID); err != nil {
+		t.Fatalf("house id: %v", err)
+	}
+	if _, c := openShop(t, srv.URL, owner.ID, houseID, "本屋", "書籍", 2.0, "o1"); c != http.StatusOK {
+		t.Fatalf("open shop: %d", c)
+	}
+	var (
+		itemID int64
+		price  int64
+	)
+	if err := pool.QueryRow(ctx,
+		`SELECT id, price FROM content_items WHERE category='書籍' AND facility='' AND enabled ORDER BY price LIMIT 1`).
+		Scan(&itemID, &price); err != nil {
+		t.Fatalf("pick book: %v", err)
+	}
+	if _, c := shiire(t, srv.URL, owner.ID, houseID, itemID, 3, "s1"); c != http.StatusOK {
+		t.Fatalf("shiire: %d", c)
+	}
+
+	// 訪問者が2個購入。店頭価格 = 仕入れ値×掛け率2。
+	shelf := price * 2
+	got, c := buyFromShop(t, srv.URL, visitor.ID, houseID, itemID, 2, "buy1")
+	if c != http.StatusOK {
+		t.Fatalf("buy: %d", c)
+	}
+	if got.Money != 1_500_000-shelf*2 { // 初期50万 + credit100万 - 店頭価格×2
+		t.Errorf("buyer cash = %d, want %d", got.Money, 1_500_000-shelf*2)
+	}
+	var stock int
+	if err := pool.QueryRow(ctx, `SELECT stock FROM house_shop_stock WHERE house_id=$1 AND item_id=$2`, houseID, itemID).Scan(&stock); err != nil {
+		t.Fatalf("read stock: %v", err)
+	}
+	if stock != 1 { // 3 - 2
+		t.Errorf("shop stock = %d, want 1", stock)
+	}
+	var qty int
+	if err := pool.QueryRow(ctx, `SELECT quantity FROM player_items WHERE player_id=$1 AND item_id=$2`, visitor.ID, itemID).Scan(&qty); err != nil {
+		t.Fatalf("read buyer items: %v", err)
+	}
+	if qty != 2 {
+		t.Errorf("buyer items = %d, want 2", qty)
+	}
+	// 家主の売上(普通口座)= 建築後15M - 仕入れ + 売上。
+	var ownerSav int64
+	if err := pool.QueryRow(ctx,
+		`SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account=$1`,
+		"savings:"+strconv.FormatInt(owner.ID, 10)).Scan(&ownerSav); err != nil {
+		t.Fatalf("owner savings: %v", err)
+	}
+	if ownerSav != 15_000_000-price*3+shelf*2 {
+		t.Errorf("owner savings = %d, want %d", ownerSav, 15_000_000-price*3+shelf*2)
+	}
+
+	// 自分の店では買えない。
+	if _, c := buyFromShop(t, srv.URL, owner.ID, houseID, itemID, 1, "buy2"); c != http.StatusUnprocessableEntity {
+		t.Errorf("self buy: %d, want 422", c)
+	}
+	// 在庫不足(残1に5個)。
+	if _, c := buyFromShop(t, srv.URL, visitor.ID, houseID, itemID, 5, "buy3"); c != http.StatusUnprocessableEntity {
+		t.Errorf("over stock: %d, want 422", c)
+	}
+
+	led := ledger.New(pool)
+	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
+		t.Errorf("ledger zero-sum broken: %d", sum)
+	}
+}

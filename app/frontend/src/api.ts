@@ -637,6 +637,21 @@ export interface OrosiState {
   max_stock: number;
   items: OrosiItem[];
 }
+export interface HouseShopItem {
+  item_id: number;
+  name: string;
+  category: string;
+  price: number;
+  stock: number;
+}
+export interface HouseShopView {
+  has_shop: boolean;
+  title: string;
+  syubetu: string;
+  owner_name: string;
+  own: boolean;
+  items: HouseShopItem[];
+}
 
 function adminHeaders(actingId: number): Record<string, string> {
   return { 'X-Acting-Player-Id': String(actingId) };
@@ -914,6 +929,15 @@ export const api = {
     request<OrosiState>('GET', `/players/${id}/building/orosi?house_id=${houseId}`),
   shiire: (id: number, houseId: number, itemId: number, qty: number) =>
     request<Player>('POST', `/players/${id}/building/shiire`, {
+      house_id: houseId,
+      item_id: itemId,
+      qty,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  houseShop: (id: number, houseId: number) =>
+    request<HouseShopView>('GET', `/players/${id}/building/shop?house_id=${houseId}`),
+  buyFromHouseShop: (id: number, houseId: number, itemId: number, qty: number) =>
+    request<Player>('POST', `/players/${id}/building/shop/buy`, {
       house_id: houseId,
       item_id: itemId,
       qty,

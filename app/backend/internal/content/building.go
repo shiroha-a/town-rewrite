@@ -292,3 +292,84 @@ func (s *Service) Orosi(ctx context.Context, playerID, houseID int64) (*OrosiSta
 		Items:      items,
 	}, nil
 }
+
+// HouseShopItem is one item on sale at a house shop (訪問時の店表示).
+type HouseShopItem struct {
+	ItemID   int64  `json:"item_id"`
+	Name     string `json:"name"`
+	Category string `json:"category"`
+	Price    int64  `json:"price"` // 店頭価格(個別価格 or 仕入れ値×掛け率)
+	Stock    int    `json:"stock"`
+}
+
+// HouseShopView is a house shop as seen by a visitor (店表示 フェーズ4c).
+type HouseShopView struct {
+	HasShop   bool            `json:"has_shop"`
+	Title     string          `json:"title"`
+	Syubetu   string          `json:"syubetu"`
+	OwnerName string          `json:"owner_name"`
+	Own       bool            `json:"own"`
+	Items     []HouseShopItem `json:"items"`
+}
+
+// HouseShop returns a house shop's on-sale items for a visitor. The shelf price
+// is the per-item price if set, otherwise 仕入れ値×掛け率. Sold-out items are
+// omitted.
+func (s *Service) HouseShop(ctx context.Context, viewerID, houseID int64) (*HouseShopView, error) {
+	var (
+		ownerID   int64
+		ownerName string
+		title     string
+		syubetu   string
+		markup    float64
+	)
+	err := s.pool.QueryRow(ctx,
+		`SELECT h.owner_id, COALESCE(p.display_name, ''), hs.title, hs.syubetu, hs.markup
+		 FROM house_shops hs
+		 JOIN player_houses h ON h.id = hs.house_id
+		 LEFT JOIN players p ON p.id = h.owner_id
+		 WHERE hs.house_id = $1`, houseID).Scan(&ownerID, &ownerName, &title, &syubetu, &markup)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &HouseShopView{HasShop: false, Items: []HouseShopItem{}}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load shop: %w", err)
+	}
+	view := &HouseShopView{
+		HasShop:   true,
+		Title:     title,
+		Syubetu:   syubetu,
+		OwnerName: ownerName,
+		Own:       ownerID == viewerID,
+		Items:     []HouseShopItem{},
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT ss.item_id, ci.name, ci.category, ss.buy_price, ss.sell_price, ss.stock
+		 FROM house_shop_stock ss JOIN content_items ci ON ci.id = ss.item_id
+		 WHERE ss.house_id = $1 AND ss.stock > 0
+		 ORDER BY ci.category, ci.name`, houseID)
+	if err != nil {
+		return nil, fmt.Errorf("list shop stock: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			it        HouseShopItem
+			buyPrice  int64
+			sellPrice *int64
+		)
+		if err := rows.Scan(&it.ItemID, &it.Name, &it.Category, &buyPrice, &sellPrice, &it.Stock); err != nil {
+			return nil, fmt.Errorf("scan shop stock: %w", err)
+		}
+		if sellPrice != nil {
+			it.Price = *sellPrice
+		} else {
+			it.Price = int64(float64(buyPrice) * markup)
+		}
+		view.Items = append(view.Items, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate shop stock: %w", err)
+	}
+	return view, nil
+}

@@ -418,3 +418,94 @@ func (s *Service) DoShiire(ctx context.Context, playerID, houseID, itemID int64,
 		return nil
 	})
 }
+
+// DoBuyFromHouseShop buys qty of an item from a house shop (訪問販売 フェーズ4c).
+// The shelf price is the per-item price if set, otherwise 仕入れ値×掛け率. Payment
+// goes to the owner's bank savings and the item transfers to the buyer. A player
+// cannot buy from their own shop.
+func (s *Service) DoBuyFromHouseShop(ctx context.Context, buyerID, houseID, itemID int64, qty int, idempotencyKey string) (*player.Player, error) {
+	if qty <= 0 {
+		qty = 1
+	}
+	return s.runAction(ctx, buyerID, "house_shop_buy", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		var (
+			ownerID int64
+			markup  float64
+		)
+		err := tx.QueryRow(ctx,
+			`SELECT h.owner_id, hs.markup FROM house_shops hs JOIN player_houses h ON h.id = hs.house_id
+			 WHERE hs.house_id = $1`, houseID).Scan(&ownerID, &markup)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &ConditionError{Message: "その家に店がありません。"}
+		}
+		if err != nil {
+			return fmt.Errorf("load shop: %w", err)
+		}
+		if ownerID == buyerID {
+			return &ConditionError{Message: "自分の店では買えません。"}
+		}
+		var (
+			buyPrice  int64
+			sellPrice *int64
+			stock     int
+		)
+		err = tx.QueryRow(ctx,
+			`SELECT buy_price, sell_price, stock FROM house_shop_stock WHERE house_id = $1 AND item_id = $2`,
+			houseID, itemID).Scan(&buyPrice, &sellPrice, &stock)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &ConditionError{Message: "その商品はありません。"}
+		}
+		if err != nil {
+			return fmt.Errorf("load stock: %w", err)
+		}
+		if stock < qty {
+			return &ConditionError{Message: "在庫が足りません。"}
+		}
+		var price int64
+		if sellPrice != nil {
+			price = *sellPrice
+		} else {
+			price = int64(float64(buyPrice) * markup)
+		}
+		cost := price * int64(qty)
+		if state.Money < cost {
+			return &ConditionError{Message: "お金が足りません。"}
+		}
+		var durability, maxSets int
+		if err := tx.QueryRow(ctx,
+			`SELECT GREATEST(1, durability), max_sets FROM content_items WHERE id = $1`, itemID).
+			Scan(&durability, &maxSets); err != nil {
+			return fmt.Errorf("item: %w", err)
+		}
+		add := durability * qty
+		var current int
+		if err := tx.QueryRow(ctx,
+			`SELECT COALESCE(remaining_uses, 0) FROM player_items WHERE player_id = $1 AND item_id = $2`,
+			buyerID, itemID).Scan(&current); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if maxSets > 0 && current+add > maxSets*durability {
+			return &ConditionError{Message: fmt.Sprintf("これ以上は持てません(最大%dセット)。", maxSets)}
+		}
+		// 代金は店主の普通口座へ。
+		if err := s.ledger.PostTx(ctx, tx, "house_shop_buy", "", []ledger.Entry{
+			{Account: ledger.PlayerAccount(buyerID), Delta: -cost},
+			{Account: ledger.SavingsAccount(ownerID), Delta: cost},
+		}); err != nil {
+			return fmt.Errorf("pay: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE house_shop_stock SET stock = stock - $3 WHERE house_id = $1 AND item_id = $2`,
+			houseID, itemID, qty); err != nil {
+			return fmt.Errorf("reduce stock: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO player_items (player_id, item_id, quantity, remaining_uses) VALUES ($1, $2, $3, $4)
+			 ON CONFLICT (player_id, item_id) DO UPDATE SET quantity = player_items.quantity + $3,
+			   remaining_uses = player_items.remaining_uses + $4, updated_at = now()`,
+			buyerID, itemID, qty, add); err != nil {
+			return fmt.Errorf("grant item: %w", err)
+		}
+		return nil
+	})
+}
