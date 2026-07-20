@@ -30,6 +30,7 @@ type Game struct {
 	HanbaiDailyCount         int   `json:"hanbai_daily_count"` // 自販機で毎日陳列する品数
 	ItemKindLimit            int   `json:"item_kind_limit"`     // 所持できるアイテムの種類上限
 	StockAdjust              int   `json:"stock_adjust"`        // 店頭在庫の割り算倍率(実在庫=ceil(標準在庫/倍率))
+	MoveMaigoEnabled         bool  `json:"move_maigo_enabled"`  // 街移動の迷子(徒歩)を有効化(レガシー既定OFF)
 }
 
 // Store is a thread-safe, DB-backed holder of the current game settings.

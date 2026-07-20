@@ -133,15 +133,25 @@ async function doMoveTown(f: TownFacility) {
   const destName = TOWN_NAMES[f.dest] ?? '';
   try {
     const res = await api.moveTown(props.player.id, f.dest, means);
-    const lines = [means === 'bus' ? 'バスで移動（500円）' : '徒歩で移動'];
-    // 徒歩で能力が上がったらトーストに列挙する。
-    const gains = Object.entries(res.move_result.stat_gains);
+    const mr = res.move_result;
+    // 移動手段の1行目(バス / 乗り物名 / 徒歩)。
+    let howLine: string;
+    if (means === 'bus') howLine = 'バスで移動（500円）';
+    else if (mr.vehicle) howLine = `${mr.vehicle}で移動`;
+    else howLine = '徒歩で移動';
+    const lines = [howLine];
+    // 徒歩/自転車で能力が上がったら列挙する。
+    const gains = Object.entries(mr.stat_gains);
     if (gains.length > 0) {
       lines.push(gains.map(([name, up]) => `${name}+${up}`).join(' '));
     }
+    if (mr.accident) lines.push(`交通事故！${mr.accident_item}の耐久度-1`);
+    if (mr.lost) lines.push('迷子になった…ダウンタウンに着いた');
+    // 迷子で目的地と違う街に着いたら実際の到着街名を出す。
+    const arrivedName = TOWN_NAMES[mr.arrived_town] ?? destName;
     showToast({
-      variant: 'work',
-      title: `${destName}へ移動しました`,
+      variant: mr.accident || mr.lost ? 'event-bad' : 'work',
+      title: `${arrivedName}へ移動しました`,
       lines,
       icon: f.img,
     });

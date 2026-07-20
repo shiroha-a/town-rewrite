@@ -2683,6 +2683,88 @@ func TestMoveTown(t *testing.T) {
 	}
 }
 
+// giveItem inserts a catalog item into a player's inventory for tests.
+func giveItem(t *testing.T, pool *pgxpool.Pool, playerID int64, name string, qty int) {
+	t.Helper()
+	ctx := context.Background()
+	var id int64
+	var durability int
+	if err := pool.QueryRow(ctx,
+		`SELECT id, GREATEST(durability, 1) FROM content_items WHERE name = $1`, name).Scan(&id, &durability); err != nil {
+		t.Fatalf("find item %s: %v", name, err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO player_items (player_id, item_id, quantity, remaining_uses) VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (player_id, item_id) DO UPDATE SET
+		   quantity = player_items.quantity + $3, remaining_uses = player_items.remaining_uses + $4`,
+		playerID, id, qty, durability*qty); err != nil {
+		t.Fatalf("give item %s: %v", name, err)
+	}
+}
+
+type moveResultT struct {
+	ArrivedTown int            `json:"arrived_town"`
+	Vehicle     string         `json:"vehicle"`
+	StatGains   map[string]int `json:"stat_gains"`
+	Accident    bool           `json:"accident"`
+	Lost        bool           `json:"lost"`
+}
+
+func moveTownR(t *testing.T, base string, playerID int64, dest int, means, idemKey string) (moveResultT, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"dest": dest, "means": means, "idempotency_key": idemKey})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/move",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("move post: %v", err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		MoveResult moveResultT `json:"move_result"`
+	}
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return out.MoveResult, resp.StatusCode
+}
+
+func TestMoveVehicle(t *testing.T) {
+	srv, pool := setup(t)
+	p := register(t, srv.URL, "misskey.example", "driver")
+
+	// ベンツ(乗り物, 移動5秒)を持って徒歩移動 → ベンツを使い、車なので能力は上がらない。
+	giveItem(t, pool, p.ID, "ベンツ", 1)
+	mr, code := moveTownR(t, srv.URL, p.ID, 1, "walk", "veh1")
+	if code != http.StatusOK {
+		t.Fatalf("move with benz: status=%d", code)
+	}
+	if mr.Vehicle != "ベンツ" {
+		t.Errorf("vehicle = %q, want ベンツ", mr.Vehicle)
+	}
+	if len(mr.StatGains) != 0 {
+		t.Errorf("car should not raise stats, got %v", mr.StatGains)
+	}
+	if mr.ArrivedTown != 1 {
+		t.Errorf("arrived = %d, want 1", mr.ArrivedTown)
+	}
+
+	// 自転車(移動20秒)も持つと、最速の乗り物(ベンツ5秒)が選ばれる。
+	if _, err := pool.Exec(context.Background(),
+		`DELETE FROM player_facility_cooldowns WHERE player_id=$1 AND facility='move'`, p.ID); err != nil {
+		t.Fatalf("clear cooldown: %v", err)
+	}
+	giveItem(t, pool, p.ID, "自転車", 1)
+	mr, code = moveTownR(t, srv.URL, p.ID, 2, "walk", "veh2")
+	if code != http.StatusOK {
+		t.Fatalf("move with benz+bike: status=%d", code)
+	}
+	if mr.Vehicle != "ベンツ" {
+		t.Errorf("fastest vehicle = %q, want ベンツ(5秒 < 自転車20秒)", mr.Vehicle)
+	}
+}
+
 func TestBuildHouse(t *testing.T) {
 	srv, pool := setup(t)
 	ctx := context.Background()

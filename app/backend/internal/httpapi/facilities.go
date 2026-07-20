@@ -18,10 +18,14 @@ type moveTownReq struct {
 }
 
 type moveResultResp struct {
-	ArrivedTown int            `json:"arrived_town"`
-	Means       string         `json:"means"`
-	Fare        int64          `json:"fare"`
-	StatGains   map[string]int `json:"stat_gains"`
+	ArrivedTown  int            `json:"arrived_town"`
+	Means        string         `json:"means"`
+	Vehicle      string         `json:"vehicle"`
+	Fare         int64          `json:"fare"`
+	StatGains    map[string]int `json:"stat_gains"`
+	Accident     bool           `json:"accident"`
+	AccidentItem string         `json:"accident_item"`
+	Lost         bool           `json:"lost"`
 }
 
 // moveResp is the player state plus the just-completed move's summary.
@@ -63,10 +67,14 @@ func (s *Server) moveTown(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, moveResp{
 		playerResp: toResp(p),
 		MoveResult: moveResultResp{
-			ArrivedTown: result.ArrivedTown,
-			Means:       result.Means,
-			Fare:        result.Fare,
-			StatGains:   gains,
+			ArrivedTown:  result.ArrivedTown,
+			Means:        result.Means,
+			Vehicle:      result.Vehicle,
+			Fare:         result.Fare,
+			StatGains:    gains,
+			Accident:     result.Accident,
+			AccidentItem: result.AccidentItem,
+			Lost:         result.Lost,
 		},
 	})
 }

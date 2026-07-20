@@ -828,6 +828,10 @@ async function deleteEdit() {
                   <span class="setting-label">デバッグ: 間隔ゼロ</span>
                   <span class="chk-line"><input type="checkbox" v-model="settings.debug_no_cooldown" /> 仕事/使用/食事などの間隔制限を無視</span>
                 </label>
+                <label class="setting chk-setting">
+                  <span class="setting-label">街移動: 迷子</span>
+                  <span class="chk-line"><input type="checkbox" v-model="settings.move_maigo_enabled" /> 徒歩移動で迷子(ダウンタウンへ)を有効化</span>
+                </label>
               </div>
               <div class="actions">
                 <button class="btn primary" :disabled="busy || !settings" @click="saveSettings">保存</button>

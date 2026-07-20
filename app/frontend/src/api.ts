@@ -365,6 +365,7 @@ export interface GameSettings {
   syokudou_daily_count: number;
   item_kind_limit: number;
   stock_adjust: number;
+  move_maigo_enabled: boolean;
 }
 
 export interface TownFacility {
@@ -385,12 +386,16 @@ export interface TownAsset {
   row: number;
 }
 
-// 街移動の結果。徒歩の能力上昇(表示名→上昇量)などを含む。
+// 街移動の結果。徒歩/自転車の能力上昇、乗り物、事故、迷子などを含む。
 export interface MoveResult {
   arrived_town: number;
   means: string;
+  vehicle: string; // 使った乗り物名(徒歩なら空)
   fare: number;
   stat_gains: Record<string, number>;
+  accident: boolean;
+  accident_item: string;
+  lost: boolean;
 }
 export type MoveResp = Player & { move_result: MoveResult };
 
