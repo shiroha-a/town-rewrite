@@ -652,6 +652,14 @@ export interface HouseShopView {
   own: boolean;
   items: HouseShopItem[];
 }
+export interface BbsPost {
+  id: number;
+  kind: string;
+  author_id: number;
+  author_name: string;
+  body: string;
+  created_at: string;
+}
 
 function adminHeaders(actingId: number): Record<string, string> {
   return { 'X-Acting-Player-Id': String(actingId) };
@@ -941,6 +949,20 @@ export const api = {
       house_id: houseId,
       item_id: itemId,
       qty,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  houseBbs: (id: number, houseId: number) =>
+    request<BbsPost[]>('GET', `/players/${id}/building/bbs?house_id=${houseId}`),
+  postBbs: (id: number, houseId: number, kind: string, body: string) =>
+    request<Player>('POST', `/players/${id}/building/bbs/post`, {
+      house_id: houseId,
+      kind,
+      body,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  deleteBbs: (id: number, postId: number) =>
+    request<Player>('POST', `/players/${id}/building/bbs/delete`, {
+      post_id: postId,
       idempotency_key: newIdempotencyKey(),
     }),
 

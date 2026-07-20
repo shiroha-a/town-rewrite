@@ -11,6 +11,7 @@ import {
   type OrosiItem,
   type HouseShopView,
   type HouseShopItem,
+  type BbsPost,
 } from '../api';
 import Toast from './Toast.vue';
 import { useToast } from '../toast';
@@ -115,6 +116,7 @@ function clickCell(row: number, col: number) {
     visitingHouse.value = h;
     saisenAmount.value = 100;
     loadVisitShop(h);
+    loadVisitBbs(h);
     return;
   }
   // 空地に指定されたマス(施設・家なし)だけ建築選択できる。
@@ -430,6 +432,7 @@ async function loadVisitShop(h: HouseCell) {
 function closeVisit() {
   visitingHouse.value = null;
   visitShop.value = null;
+  visitBbs.value = [];
 }
 async function doBuyFromShop(it: HouseShopItem) {
   if (!visitingHouse.value) return;
@@ -449,6 +452,65 @@ async function doBuyFromShop(it: HouseShopItem) {
     showToast({
       variant: 'error',
       title: '購入できませんでした',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'item',
+    });
+  } finally {
+    busy.value = false;
+  }
+}
+
+// 家の掲示板(フェーズ3b)
+const visitBbs = ref<BbsPost[]>([]);
+const bbsBody = ref('');
+const nushiBody = ref('');
+const normalPosts = computed(() => visitBbs.value.filter((p) => p.kind === 'normal'));
+const nushiPosts = computed(() => visitBbs.value.filter((p) => p.kind === 'nushi'));
+function canDeletePost(post: BbsPost): boolean {
+  return (visitingHouse.value?.own ?? false) || post.author_id === props.player.id;
+}
+async function loadVisitBbs(h: HouseCell) {
+  visitBbs.value = [];
+  try {
+    visitBbs.value = await api.houseBbs(props.player.id, h.id);
+  } catch {
+    visitBbs.value = [];
+  }
+}
+async function doPostBbs(kind: string) {
+  if (!visitingHouse.value) return;
+  const body = kind === 'nushi' ? nushiBody.value : bbsBody.value;
+  if (!body.trim()) return;
+  busy.value = true;
+  try {
+    const after = await api.postBbs(props.player.id, visitingHouse.value.id, kind, body);
+    emit('update', after);
+    if (kind === 'nushi') nushiBody.value = '';
+    else bbsBody.value = '';
+    visitBbs.value = await api.houseBbs(props.player.id, visitingHouse.value.id);
+    showToast({ variant: 'item', title: '書き込みました', lines: [], icon: 'item' });
+  } catch (e) {
+    showToast({
+      variant: 'error',
+      title: '書き込めませんでした',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'item',
+    });
+  } finally {
+    busy.value = false;
+  }
+}
+async function doDeleteBbs(post: BbsPost) {
+  if (!visitingHouse.value) return;
+  busy.value = true;
+  try {
+    const after = await api.deleteBbs(props.player.id, post.id);
+    emit('update', after);
+    visitBbs.value = await api.houseBbs(props.player.id, visitingHouse.value.id);
+  } catch (e) {
+    showToast({
+      variant: 'error',
+      title: '削除できませんでした',
       lines: [e instanceof Error ? e.message : String(e)],
       icon: 'item',
     });
@@ -568,6 +630,34 @@ async function doBuyFromShop(it: HouseShopItem) {
               </tbody>
             </table>
           </div>
+        </div>
+
+        <!-- 掲示板 -->
+        <div class="visit-bbs">
+          <div class="vs-title">通常掲示板</div>
+          <div class="bbs-form">
+            <input v-model="bbsBody" maxlength="500" placeholder="コメントを書く" class="bbs-input" />
+            <button class="btn mini" :disabled="busy" @click="doPostBbs('normal')">書き込む</button>
+          </div>
+          <ul class="bbs-list">
+            <li v-if="normalPosts.length === 0" class="bbs-empty">まだ書き込みはありません。</li>
+            <li v-for="p in normalPosts" :key="p.id">
+              <span class="bbs-author">{{ p.author_name }}</span>：{{ p.body }}
+              <button v-if="canDeletePost(p)" class="bbs-del" :disabled="busy" @click="doDeleteBbs(p)">×</button>
+            </li>
+          </ul>
+          <div class="vs-title">家主板</div>
+          <div v-if="visitingHouse.own" class="bbs-form">
+            <input v-model="nushiBody" maxlength="500" placeholder="家主板に書く" class="bbs-input" />
+            <button class="btn mini" :disabled="busy" @click="doPostBbs('nushi')">書き込む</button>
+          </div>
+          <ul class="bbs-list">
+            <li v-if="nushiPosts.length === 0" class="bbs-empty">まだ書き込みはありません。</li>
+            <li v-for="p in nushiPosts" :key="p.id">
+              <span class="bbs-author">{{ p.author_name }}</span>：{{ p.body }}
+              <button v-if="canDeletePost(p)" class="bbs-del" :disabled="busy" @click="doDeleteBbs(p)">×</button>
+            </li>
+          </ul>
         </div>
       </div>
 
@@ -1081,6 +1171,46 @@ async function doBuyFromShop(it: HouseShopItem) {
   font-weight: bold;
   color: #7a4a00;
   margin-bottom: 4px;
+}
+.visit-bbs {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed #cde;
+}
+.bbs-form {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.bbs-input {
+  flex: 1 1 auto;
+  font-size: 12px;
+  padding: 2px 4px;
+}
+.bbs-list {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  font-size: 12px;
+}
+.bbs-list li {
+  padding: 2px 0;
+  border-bottom: 1px solid #eee;
+  color: #445;
+}
+.bbs-author {
+  font-weight: bold;
+  color: #367;
+}
+.bbs-del {
+  border: none;
+  background: none;
+  color: #c44;
+  cursor: pointer;
+  font-weight: bold;
+}
+.bbs-empty {
+  color: #999;
 }
 .my-houses .mh-head {
   font-weight: bold;

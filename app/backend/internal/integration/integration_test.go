@@ -3141,3 +3141,97 @@ func TestBuyFromHouseShop(t *testing.T) {
 		t.Errorf("ledger zero-sum broken: %d", sum)
 	}
 }
+
+func postBbs(t *testing.T, base string, playerID, houseID int64, kind, body, idemKey string) (playerResp, int) {
+	t.Helper()
+	reqBody, _ := json.Marshal(map[string]any{
+		"house_id": houseID, "kind": kind, "body": body, "idempotency_key": idemKey,
+	})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/bbs/post",
+		"application/json", bytes.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("post bbs: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+func deleteBbs(t *testing.T, base string, playerID, postID int64, idemKey string) (playerResp, int) {
+	t.Helper()
+	reqBody, _ := json.Marshal(map[string]any{"post_id": postID, "idempotency_key": idemKey})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/bbs/delete",
+		"application/json", bytes.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("delete bbs: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+func TestHouseBbs(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	register(t, srv.URL, "misskey.example", "admin0")
+	owner := register(t, srv.URL, "misskey.example", "bbsowner")
+	visitor := register(t, srv.URL, "misskey.example", "bbsvisitor")
+	creditSavings(t, pool, owner.ID, 10_000_000)
+	seedPlots(t, pool, [][3]int{{4, 0, 1}})
+	if _, c := buildHouse(t, srv.URL, owner.ID, 4, 0, 1, "house1", 3, "b1"); c != http.StatusOK {
+		t.Fatalf("build: %d", c)
+	}
+	var houseID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM player_houses WHERE owner_id=$1`, owner.ID).Scan(&houseID); err != nil {
+		t.Fatalf("house id: %v", err)
+	}
+
+	// 訪問者が通常掲示板に投稿。
+	if _, c := postBbs(t, srv.URL, visitor.ID, houseID, "normal", "こんにちは", "p1"); c != http.StatusOK {
+		t.Fatalf("post normal: %d", c)
+	}
+	// 家主が家主板に投稿。
+	if _, c := postBbs(t, srv.URL, owner.ID, houseID, "nushi", "家主です", "p2"); c != http.StatusOK {
+		t.Fatalf("post nushi: %d", c)
+	}
+	// 非家主は家主板に書けない。
+	if _, c := postBbs(t, srv.URL, visitor.ID, houseID, "nushi", "だめ", "p3"); c != http.StatusUnprocessableEntity {
+		t.Errorf("visitor nushi: %d, want 422", c)
+	}
+
+	var normalCnt, nushiCnt int
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM house_bbs WHERE house_id=$1 AND kind='normal'`, houseID).Scan(&normalCnt)
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM house_bbs WHERE house_id=$1 AND kind='nushi'`, houseID).Scan(&nushiCnt)
+	if normalCnt != 1 || nushiCnt != 1 {
+		t.Errorf("counts = %d/%d, want 1/1", normalCnt, nushiCnt)
+	}
+
+	// visitorの投稿を取得。
+	var postID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM house_bbs WHERE author_id=$1`, visitor.ID).Scan(&postID); err != nil {
+		t.Fatalf("post id: %v", err)
+	}
+	// 無関係の第三者は削除できない。
+	other := register(t, srv.URL, "misskey.example", "bbsother")
+	if _, c := deleteBbs(t, srv.URL, other.ID, postID, "d1"); c != http.StatusUnprocessableEntity {
+		t.Errorf("other delete: %d, want 422", c)
+	}
+	// 家主は訪問者の投稿を削除できる。
+	if _, c := deleteBbs(t, srv.URL, owner.ID, postID, "d2"); c != http.StatusOK {
+		t.Fatalf("owner delete: %d", c)
+	}
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM house_bbs WHERE house_id=$1 AND kind='normal'`, houseID).Scan(&normalCnt)
+	if normalCnt != 0 {
+		t.Errorf("normal after delete = %d, want 0", normalCnt)
+	}
+}

@@ -509,3 +509,74 @@ func (s *Service) DoBuyFromHouseShop(ctx context.Context, buyerID, houseID, item
 		return nil
 	})
 }
+
+// maxBbsBodyLen caps a bulletin-board post body length.
+const maxBbsBodyLen = 500
+
+// DoPostBbs posts a message to a house's bulletin board (フェーズ3b). kind is
+// "normal" (anyone) or "nushi" (家主板, owner only).
+func (s *Service) DoPostBbs(ctx context.Context, playerID, houseID int64, kind, body, idempotencyKey string) (*player.Player, error) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return nil, &ConditionError{Message: "本文を入力してください。"}
+	}
+	if utf8.RuneCountInString(body) > maxBbsBodyLen {
+		return nil, &ConditionError{Message: fmt.Sprintf("本文は%d文字以内で入力してください。", maxBbsBodyLen)}
+	}
+	if kind != "normal" && kind != "nushi" {
+		return nil, &ConditionError{Message: "掲示板の種類が正しくありません。"}
+	}
+	return s.runAction(ctx, playerID, "house_bbs_post", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		var ownerID int64
+		err := tx.QueryRow(ctx, `SELECT owner_id FROM player_houses WHERE id = $1`, houseID).Scan(&ownerID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &ConditionError{Message: "その家は存在しません。"}
+		}
+		if err != nil {
+			return fmt.Errorf("load house: %w", err)
+		}
+		if kind == "nushi" && ownerID != playerID {
+			return &ConditionError{Message: "家主板には家主しか書き込めません。"}
+		}
+		var name string
+		if err := tx.QueryRow(ctx, `SELECT display_name FROM players WHERE id = $1`, playerID).Scan(&name); err != nil {
+			return fmt.Errorf("load name: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO house_bbs (house_id, kind, author_id, author_name, body) VALUES ($1, $2, $3, $4, $5)`,
+			houseID, kind, playerID, name, body); err != nil {
+			return fmt.Errorf("insert bbs: %w", err)
+		}
+		return nil
+	})
+}
+
+// DoDeleteBbs deletes a bulletin-board post. The house owner or the post's
+// author may delete it.
+func (s *Service) DoDeleteBbs(ctx context.Context, playerID, postID int64, idempotencyKey string) (*player.Player, error) {
+	return s.runAction(ctx, playerID, "house_bbs_delete", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		var (
+			houseID  int64
+			authorID int64
+		)
+		err := tx.QueryRow(ctx, `SELECT house_id, COALESCE(author_id, 0) FROM house_bbs WHERE id = $1`, postID).
+			Scan(&houseID, &authorID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &ConditionError{Message: "その投稿はありません。"}
+		}
+		if err != nil {
+			return fmt.Errorf("load post: %w", err)
+		}
+		var ownerID int64
+		if err := tx.QueryRow(ctx, `SELECT owner_id FROM player_houses WHERE id = $1`, houseID).Scan(&ownerID); err != nil {
+			return fmt.Errorf("load owner: %w", err)
+		}
+		if playerID != ownerID && playerID != authorID {
+			return &ConditionError{Message: "その投稿は削除できません。"}
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM house_bbs WHERE id = $1`, postID); err != nil {
+			return fmt.Errorf("delete bbs: %w", err)
+		}
+		return nil
+	})
+}

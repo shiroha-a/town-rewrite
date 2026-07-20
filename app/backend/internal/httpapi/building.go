@@ -282,6 +282,73 @@ func (s *Server) buyFromHouseShop(w http.ResponseWriter, r *http.Request) {
 	writeFacilityResult(w, p, err)
 }
 
+// houseBbs returns a house's bulletin-board posts (誰でも閲覧可).
+func (s *Server) houseBbs(w http.ResponseWriter, r *http.Request) {
+	houseID, err := strconv.ParseInt(r.URL.Query().Get("house_id"), 10, 64)
+	if err != nil || houseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
+		return
+	}
+	posts, err := s.content.HouseBbs(r.Context(), houseID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, posts)
+}
+
+type postBbsReq struct {
+	HouseID        int64  `json:"house_id"`
+	Kind           string `json:"kind"`
+	Body           string `json:"body"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// postBbs writes a message to a house's bulletin board (掲示板書き込み).
+func (s *Server) postBbs(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req postBbsReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 || req.Body == "" {
+		writeError(w, http.StatusBadRequest, "house_id and body are required")
+		return
+	}
+	p, err := s.actions.DoPostBbs(r.Context(), id, req.HouseID, req.Kind, req.Body, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
+type deleteBbsReq struct {
+	PostID         int64  `json:"post_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// deleteBbs deletes a bulletin-board post (家主または投稿者).
+func (s *Server) deleteBbs(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req deleteBbsReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.PostID <= 0 {
+		writeError(w, http.StatusBadRequest, "post_id is required")
+		return
+	}
+	p, err := s.actions.DoDeleteBbs(r.Context(), id, req.PostID, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
 // adminGetPlots returns every admin-designated empty plot (管理者専用).
 func (s *Server) adminGetPlots(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {

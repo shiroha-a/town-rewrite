@@ -373,3 +373,37 @@ func (s *Service) HouseShop(ctx context.Context, viewerID, houseID int64) (*Hous
 	}
 	return view, nil
 }
+
+// BbsPost is one bulletin-board message on a house board (フェーズ3b).
+type BbsPost struct {
+	ID         int64  `json:"id"`
+	Kind       string `json:"kind"` // normal / nushi
+	AuthorID   int64  `json:"author_id"`
+	AuthorName string `json:"author_name"`
+	Body       string `json:"body"`
+	CreatedAt  string `json:"created_at"` // RFC3339
+}
+
+// HouseBbs returns a house's bulletin-board posts (newest first, both boards).
+func (s *Service) HouseBbs(ctx context.Context, houseID int64) ([]BbsPost, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, kind, COALESCE(author_id, 0), author_name, body, created_at
+		 FROM house_bbs WHERE house_id = $1 ORDER BY created_at DESC LIMIT 100`, houseID)
+	if err != nil {
+		return nil, fmt.Errorf("list bbs: %w", err)
+	}
+	defer rows.Close()
+	out := []BbsPost{}
+	for rows.Next() {
+		var (
+			p       BbsPost
+			created time.Time
+		)
+		if err := rows.Scan(&p.ID, &p.Kind, &p.AuthorID, &p.AuthorName, &p.Body, &created); err != nil {
+			return nil, fmt.Errorf("scan bbs: %w", err)
+		}
+		p.CreatedAt = created.Format(time.RFC3339)
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
