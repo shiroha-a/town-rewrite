@@ -233,6 +233,19 @@ onUnmounted(() => {
 });
 const serverCorrectedNow = computed(() => nowMs.value + skewMs.value);
 
+// 街マップの空の色は時間帯で変わる(レガシー matikakunin.cgi の $sotonoiro を再現)。
+// サーバー時刻(JST)の「時」で6段階に切り替える。epochミリ秒からUTC時に+9して
+// JST時を求めるため、閲覧者のタイムゾーンに依存せず全員が同じ空を見る。
+const skyColor = computed(() => {
+  const jstHour = (new Date(serverCorrectedNow.value).getUTCHours() + 9) % 24;
+  if (jstHour >= 22) return '#333366'; // 夜(濃紺)
+  if (jstHour >= 18) return '#666699'; // 宵(青紫)
+  if (jstHour >= 16) return '#ff9966'; // 夕方(橙)
+  if (jstHour >= 10) return '#ffff99'; // 昼(淡黄)
+  if (jstHour >= 7) return '#ffcc66'; // 朝(金色)
+  return '#333366'; // 深夜(濃紺, 0-6時)
+});
+
 // 就労クールタイム中の残り時間ラベル(可能ならnull)。
 const workCooldown = computed<string | null>(() => {
   const at = props.player.status.work_available_at;
@@ -334,7 +347,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
     <!-- 左カラム: 街マップ -->
     <div class="col-left">
       <div class="mapwrap">
-        <div class="townmap-grid">
+        <div class="townmap-grid" :style="{ backgroundColor: skyColor }">
           <div class="th corner"></div>
           <div v-for="c in cols" :key="'h' + c" class="th">{{ c }}</div>
           <template v-for="(r, ri) in rows" :key="r">

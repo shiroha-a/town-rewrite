@@ -162,20 +162,29 @@ body {
   padding: 4px;
 }
 /* 街マップ: 全幅にフィットするCSSグリッド。行ラベル列 + 16列を1frで並べ、
-   セルはaspect-ratioで正方形を保つ(画像は上限32px)。 */
+   セルはaspect-ratioで正方形を保つ(画像は上限32px)。
+   背景色(空の色)は時間帯でTownView側からインラインbackground-colorが上書きする。
+   下の値は取得前のフォールバック。時刻変化を滑らかに見せるためtransitionを付ける。 */
 .townmap-grid {
   display: grid;
-  grid-template-columns: 1.1fr repeat(16, 1fr);
+  grid-template-columns: 16px repeat(16, 1fr);
+  grid-template-rows: 16px;
   width: 100%;
-  background-image: url(/img/sima.gif);
-  background-color: #66ccff;
+  background-color: #ffff99;
+  transition: background-color 2s ease;
 }
+/* 行/列ラベル(枠)は細い白帯。上端の見出し行(16px)と左端のラベル列(16px)を
+   同じ太さにして四辺の枠を揃える。データセルはtcell側のaspect-ratioで正方形を保つ。
+   夜間(濃紺)でも文字が読める。 */
 .townmap-grid .th {
+  min-width: 0;
   font-size: 10px;
   color: #333;
   display: flex;
   align-items: center;
   justify-content: center;
+  background: #fff;
+  overflow: hidden;
 }
 .townmap-grid .tcell {
   aspect-ratio: 1 / 1;
