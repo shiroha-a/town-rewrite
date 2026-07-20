@@ -1414,6 +1414,8 @@ async function deleteEdit() {
   display: flex;
   gap: 4px;
   margin-bottom: 8px;
+  /* fold-body(flex-wrap)の中で全幅を占め、マップ編集パネルを下段(タブの下)に送る。 */
+  flex-basis: 100%;
 }
 .layer-tabs button {
   background: #e2e8f0;
