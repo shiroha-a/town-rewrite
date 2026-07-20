@@ -2886,6 +2886,31 @@ func TestUploadAsset(t *testing.T) {
 		map[string]any{"name": "tile2", "mime": "application/pdf", "data": png}); code != http.StatusBadRequest {
 		t.Errorf("bad mime: status=%d, want 400", code)
 	}
+
+	// 配置中の画像は削除できない(422)。配置を外せば削除できる(200)。
+	delTile1 := func() int {
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/v1/admin/assets/tile1", nil)
+		req.Header.Set("X-Acting-Player-Id", strconv.FormatInt(admin.ID, 10))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	place := []map[string]any{{"img": "u:tile1", "town": 0, "col": 1, "row": 0}}
+	if code, _ := adminPut(t, srv.URL, "/api/v1/admin/townassets", admin.ID, place); code != http.StatusOK {
+		t.Fatalf("place asset: status=%d", code)
+	}
+	if c := delTile1(); c != http.StatusUnprocessableEntity {
+		t.Errorf("delete in-use asset: status=%d, want 422", c)
+	}
+	if code, _ := adminPut(t, srv.URL, "/api/v1/admin/townassets", admin.ID, []map[string]any{}); code != http.StatusOK {
+		t.Fatalf("clear townassets: status=%d", code)
+	}
+	if c := delTile1(); c != http.StatusOK {
+		t.Errorf("delete unused asset: status=%d, want 200", c)
+	}
 }
 
 func TestBuildHouse(t *testing.T) {

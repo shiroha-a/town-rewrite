@@ -347,6 +347,25 @@ async function onUploadAsset(e: Event) {
     input.value = ''; // 同じファイルを再選択できるようにクリア
   }
 }
+// アップロード画像を削除する('u:name'形式のパレット項目のみ)。
+async function deleteUploadedAsset(img: string) {
+  if (!img.startsWith('u:')) return;
+  const name = img.slice(2);
+  if (!confirm(`背景アセット「${name}」を削除しますか?`)) return;
+  busy.value = true;
+  message.value = '';
+  try {
+    await api.adminDeleteAsset(props.player.id, name);
+    uploadedAssets.value = await api.adminListAssets(props.player.id);
+    if (assetBrush.value === img) assetBrush.value = BG_PRESETS[0]; // 筆が消えたら組み込みに戻す
+    message.value = `背景アセット「${name}」を削除しました。`;
+    kind.value = 'ok';
+  } catch (e) {
+    fail(e);
+  } finally {
+    busy.value = false;
+  }
+}
 
 // 背景レイヤーのドラッグ&ドロップ。パレットからの新規配置と、置いたタイルの移動に対応。
 type BgDrag = { kind: 'palette'; img: string } | { kind: 'tile'; col: number; row: number };
@@ -1026,18 +1045,27 @@ async function deleteEdit() {
                 </button>
               </div>
               <div class="bg-palette">
-                <button
-                  v-for="a in bgPalette"
-                  :key="a"
-                  :class="['bg-swatch', { active: assetBrush === a }]"
-                  :title="a"
-                  draggable="true"
-                  @click="assetBrush = a"
-                  @dragstart="onBgPaletteDragStart(a)"
-                  @dragend="onBgDragEnd"
-                >
-                  <img :src="assetUrl(a)" width="24" height="24" :alt="a" draggable="false" />
-                </button>
+                <div v-for="a in bgPalette" :key="a" class="bg-swatch-wrap">
+                  <button
+                    :class="['bg-swatch', { active: assetBrush === a }]"
+                    :title="a"
+                    draggable="true"
+                    @click="assetBrush = a"
+                    @dragstart="onBgPaletteDragStart(a)"
+                    @dragend="onBgDragEnd"
+                  >
+                    <img :src="assetUrl(a)" width="24" height="24" :alt="a" draggable="false" />
+                  </button>
+                  <button
+                    v-if="a.startsWith('u:')"
+                    class="bg-del"
+                    title="このアップロード画像を削除"
+                    :disabled="busy"
+                    @click="deleteUploadedAsset(a)"
+                  >
+                    ×
+                  </button>
+                </div>
                 <label class="bg-upload" title="背景アセットを画像から追加">
                   ＋画像を追加
                   <input type="file" accept="image/png,image/gif,image/jpeg,image/webp" :disabled="busy" @change="onUploadAsset" />
@@ -1532,6 +1560,29 @@ async function deleteEdit() {
   width: 24px;
   height: 24px;
   object-fit: cover;
+}
+/* アップロード画像のスウォッチ + 削除ボタン。 */
+.bg-swatch-wrap {
+  position: relative;
+  line-height: 0;
+}
+.bg-del {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid #b33;
+  background: #cc3333;
+  color: #fff;
+  font-size: 11px;
+  line-height: 13px;
+  cursor: pointer;
+}
+.bg-del:disabled {
+  opacity: 0.5;
 }
 /* 背景アセットのアップロードボタン(パレット末尾)。 */
 .bg-upload {

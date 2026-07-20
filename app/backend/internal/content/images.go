@@ -37,6 +37,28 @@ func (s *Service) GetImage(ctx context.Context, name string) (string, []byte, er
 	return mime, data, nil
 }
 
+// ImageInUse reports whether an uploaded image is placed on the background layer
+// (town_map.assets の img が 'u:'+name のマスがあるか)。
+func (s *Service) ImageInUse(ctx context.Context, name string) (bool, error) {
+	var used bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(
+		   SELECT 1 FROM town_map, jsonb_array_elements(assets) a
+		   WHERE id = 1 AND a->>'img' = $1)`, "u:"+name).Scan(&used)
+	if err != nil {
+		return false, fmt.Errorf("check image use: %w", err)
+	}
+	return used, nil
+}
+
+// DeleteImage removes an uploaded image by name.
+func (s *Service) DeleteImage(ctx context.Context, name string) error {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM uploaded_images WHERE name = $1`, name); err != nil {
+		return fmt.Errorf("delete image: %w", err)
+	}
+	return nil
+}
+
 // ListImageNames returns every uploaded image name (for the asset palette).
 func (s *Service) ListImageNames(ctx context.Context) ([]string, error) {
 	rows, err := s.pool.Query(ctx, `SELECT name FROM uploaded_images ORDER BY created_at`)

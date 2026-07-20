@@ -72,6 +72,28 @@ func (s *Server) adminListAssets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, names)
 }
 
+// adminDeleteAsset deletes an uploaded image (admin). 配置中は拒否する。
+func (s *Server) adminDeleteAsset(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	name := r.PathValue("name")
+	used, err := s.content.ImageInUse(r.Context(), name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if used {
+		writeError(w, http.StatusUnprocessableEntity, "この画像は背景に配置されています。先に配置を外してください。")
+		return
+	}
+	if err := s.content.DeleteImage(r.Context(), name); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 // serveAsset serves an uploaded image by name (public; players load it).
 func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")

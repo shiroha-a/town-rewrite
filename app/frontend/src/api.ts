@@ -1097,4 +1097,7 @@ export const api = {
   // 背景アセット画像をアップロード(base64)。nameはURLスラッグ。
   adminUploadAsset: (actingId: number, name: string, mime: string, data: string) =>
     request<{ name: string }>('POST', '/admin/assets', { name, mime, data }, adminHeaders(actingId)),
+  // アップロード画像を削除(配置中は422)。
+  adminDeleteAsset: (actingId: number, name: string) =>
+    request<{ ok: boolean }>('DELETE', `/admin/assets/${encodeURIComponent(name)}`, undefined, adminHeaders(actingId)),
 };
