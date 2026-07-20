@@ -69,6 +69,9 @@ type GameConfig struct {
 	ItemKindLimit int `yaml:"item_kind_limit"`
 	// StockAdjust: 店頭在庫の割り算倍率(旧 zaiko_tyousetuti)。実在庫=ceil(標準在庫/倍率)。
 	StockAdjust int `yaml:"stock_adjust"`
+	// MoveWalkSecs/MoveBusSecs: 街移動にかかる秒数(旧 matiidou_time)。徒歩/バス。
+	MoveWalkSecs int `yaml:"move_walk_secs"`
+	MoveBusSecs  int `yaml:"move_bus_secs"`
 }
 
 type WorkerConfig struct {

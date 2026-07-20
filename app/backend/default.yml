@@ -29,6 +29,8 @@ game:
   hanbai_daily_count: 3            # 自販機で毎日表示する品数(旧仕様。0以下=全件)
   item_kind_limit: 25              # 所持できるアイテムの種類上限(旧TOWN 25品目。0以下=無制限)
   stock_adjust: 2                  # 店頭在庫の割り算倍率(旧zaiko_tyousetuti。実在庫=ceil(標準在庫/倍率))
+  move_walk_secs: 10               # 徒歩の街移動にかかる秒数(旧matiidou_time)
+  move_bus_secs: 5                 # バスの街移動にかかる秒数
 
 worker:
   tick_interval: "10s"

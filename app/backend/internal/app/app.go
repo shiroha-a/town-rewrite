@@ -72,6 +72,8 @@ func Run(ctx context.Context, mode string, cfg *config.Config) error {
 		HanbaiDailyCount:         cfg.Game.HanbaiDailyCount,
 		ItemKindLimit:            cfg.Game.ItemKindLimit,
 		StockAdjust:              cfg.Game.StockAdjust,
+		MoveWalkSecs:             cfg.Game.MoveWalkSecs,
+		MoveBusSecs:              cfg.Game.MoveBusSecs,
 	})
 	if err != nil {
 		return fmt.Errorf("load settings: %w", err)

@@ -426,6 +426,8 @@ const SETTINGS_FIELDS: { key: keyof GameSettings; label: string; hint?: string }
   { key: 'syokudou_daily_count', label: '食堂日次件数', hint: '0で全件(日次ローテ無効)' },
   { key: 'item_kind_limit', label: '所持アイテム種類上限', hint: '0で無制限(旧TOWN 25品目)' },
   { key: 'stock_adjust', label: '店頭在庫倍率', hint: '実在庫=ceil(標準在庫÷倍率)。大きいほど品薄' },
+  { key: 'move_walk_secs', label: '徒歩の移動時間', hint: '街移動(徒歩)にかかる秒数。0以下で既定10秒' },
+  { key: 'move_bus_secs', label: 'バスの移動時間', hint: '街移動(バス)にかかる秒数。0以下で既定5秒' },
 ];
 async function saveSettings() {
   if (!settings.value) return;

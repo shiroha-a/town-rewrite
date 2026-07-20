@@ -366,6 +366,8 @@ export interface GameSettings {
   item_kind_limit: number;
   stock_adjust: number;
   move_maigo_enabled: boolean;
+  move_walk_secs: number;
+  move_bus_secs: number;
 }
 
 export interface TownFacility {

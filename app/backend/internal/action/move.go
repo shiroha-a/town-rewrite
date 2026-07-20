@@ -98,6 +98,16 @@ func (s *Service) DoMoveTown(ctx context.Context, playerID int64, dest int, mean
 	if means == "bus" {
 		fare = busFare
 	}
+	// 移動時間は管理画面の設定から。0以下なら既定(徒歩10秒/バス5秒)にフォールバック。
+	cfg := s.settings.Get()
+	walkSecs := cfg.MoveWalkSecs
+	if walkSecs <= 0 {
+		walkSecs = walkMoveSecs
+	}
+	busSecs := cfg.MoveBusSecs
+	if busSecs <= 0 {
+		busSecs = busMoveSecs
+	}
 	result := &MoveResult{ArrivedTown: dest, Means: means, Fare: fare, StatGains: map[string]int{}}
 	p, err := s.runAction(ctx, playerID, "move", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
 		// 現在いる街を取得。同じ街へは移動不可。
@@ -130,15 +140,15 @@ func (s *Service) DoMoveTown(ctx context.Context, playerID int64, dest int, mean
 				return fmt.Errorf("charge bus fare: %w", err)
 			}
 		}
-		moveSecs := busMoveSecs
+		moveSecs := busSecs
 		arrived := dest
 		if means == "walk" {
-			// 所持する乗り物のうち最速のものを使う(徒歩10秒が基準)。
+			// 所持する乗り物のうち最速のものを使う(徒歩は設定の秒数が基準)。
 			vehName, vehItemID, hasRoller, err := s.fastestVehicle(ctx, tx, playerID)
 			if err != nil {
 				return err
 			}
-			moveSecs = walkMoveSecs
+			moveSecs = walkSecs
 			if vehName != "" {
 				moveSecs = vehicleTime[vehName]
 				result.Vehicle = vehName
