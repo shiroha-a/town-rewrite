@@ -18,24 +18,35 @@ const weightKg = computed(() => (props.player.status.weight_g / 1000).toFixed(1)
 
 // 街マップに置く施設。配置は管理者が編集可能で、起動時にAPIから取得する。
 // 職業安定所(work.gif)で転職する。
-// 5つの街の名前と地価(万円)。建設会社/バックエンドと対応。現在いる街の表示に使う。
+// 街移動中の状態(移動時間ぶん「移動中」を表示し、完了後に画面を切り替える)。
+type Moving = { destName: string; remain: number; icon: string };
+const moving = ref<Moving | null>(null);
+// 移動中に固定する出発の街(ポーリングでcurrent_townが先に変わっても画面を変えない)。
+const departTown = ref<number | null>(null);
+
+// 画面に表示する街。移動中は出発の街に固定し、到着(moving解除)後にcurrent_townへ。
+const displayTown = computed(() =>
+  moving.value && departTown.value !== null ? departTown.value : props.player.current_town,
+);
+
+// 5つの街の名前と地価(万円)。建設会社/バックエンドと対応。表示中の街の情報に使う。
 const TOWN_NAMES = ['公園', 'シー・リゾート', 'カントリータウン', 'ダウンタウン', '謎の街'];
 const TOWN_LAND_PRICES = [2000, 1000, 500, 250, 250];
-const currentTownName = computed(() => TOWN_NAMES[props.player.current_town] ?? '');
-const currentTownLandPrice = computed(() => TOWN_LAND_PRICES[props.player.current_town] ?? 0);
+const currentTownName = computed(() => TOWN_NAMES[displayTown.value] ?? '');
+const currentTownLandPrice = computed(() => TOWN_LAND_PRICES[displayTown.value] ?? 0);
 
-// 施設は全街ぶんをまとめて取得し、現在いる街(current_town)のものだけを描画する。
+// 施設は全街ぶんをまとめて取得し、表示中の街のものだけを描画する。
 // 空き地(akichi)は建設会社で扱う建築マスなのでメイン街には出さない。
 const facilities = ref<TownFacility[]>([]);
 const facilityAt = (col: number, row: number) =>
   facilities.value.find(
-    (f) => f.key !== 'akichi' && f.town === props.player.current_town && f.col === col && f.row === row,
+    (f) => f.key !== 'akichi' && f.town === displayTown.value && f.col === col && f.row === row,
   );
 
-// 背景アセット(装飾レイヤー)。施設の下にセル単位で敷く。現在いる街のものを描画する。
+// 背景アセット(装飾レイヤー)。施設の下にセル単位で敷く。表示中の街のものを描画する。
 const assets = ref<TownAsset[]>([]);
 const assetAt = (col: number, row: number) =>
-  assets.value.find((a) => a.town === props.player.current_town && a.col === col && a.row === row);
+  assets.value.find((a) => a.town === displayTown.value && a.col === col && a.row === row);
 
 const cols = Array.from({ length: 16 }, (_, i) => i + 1);
 const rows = 'ABCDEFGHIJKL'.split('');
@@ -130,9 +141,6 @@ const tickerItems = computed(() =>
 );
 const dirMark = (d: PriceDir) => (d === 'up' ? '▲' : d === 'down' ? '▼' : '');
 
-// 街移動中の状態(移動時間ぶん「移動中」を表示し、完了後に画面を切り替える)。
-type Moving = { destName: string; remain: number; icon: string };
-const moving = ref<Moving | null>(null);
 let movingTimer: number | undefined;
 
 // 移動施設(徒歩/バス)クリックで街移動する。サーバーは即時に移動を確定し移動時間を
@@ -142,6 +150,7 @@ async function doMoveTown(f: TownFacility) {
   if (moving.value) return; // 移動中は多重移動不可
   const means = f.key === 'bus' ? 'bus' : 'walk';
   const destName = TOWN_NAMES[f.dest] ?? '';
+  departTown.value = props.player.current_town; // 出発の街を固定
   let res;
   try {
     res = await api.moveTown(props.player.id, f.dest, means);
@@ -192,6 +201,7 @@ function arriveMove(mr: MoveResult, arrivedName: string, icon: string) {
     lines,
     icon,
   });
+  departTown.value = null; // 固定解除。以後はcurrent_town(到着先)を表示
   emit('reload');
 }
 
