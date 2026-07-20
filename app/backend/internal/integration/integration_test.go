@@ -2838,6 +2838,56 @@ func TestTownMapHouseGuard(t *testing.T) {
 	}
 }
 
+// TestUploadAsset covers the background-asset image upload: admin-only, stored,
+// served, listed, and validated.
+func TestUploadAsset(t *testing.T) {
+	srv, _ := setup(t)
+	admin := register(t, srv.URL, "misskey.example", "root")
+	user := register(t, srv.URL, "misskey.example", "alice")
+	// 1x1 red PNG。
+	png := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+	good := map[string]any{"name": "tile1", "mime": "image/png", "data": png}
+
+	// 認可: 非adminは403。
+	if code, _ := adminPost(t, srv.URL, "/api/v1/admin/assets", user.ID, good); code != http.StatusForbidden {
+		t.Errorf("non-admin upload: status=%d, want 403", code)
+	}
+	// adminはアップロード成功。
+	if code, body := adminPost(t, srv.URL, "/api/v1/admin/assets", admin.ID, good); code != http.StatusOK {
+		t.Fatalf("upload: status=%d, body=%s", code, body)
+	}
+	// 公開配信で取得でき、Content-Typeが画像。
+	resp, err := http.Get(srv.URL + "/api/v1/assets/tile1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "image/png" {
+		t.Errorf("serve: status=%d, content-type=%q", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	resp.Body.Close()
+	// 一覧に含まれる。
+	lreq, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/admin/assets", nil)
+	lreq.Header.Set("X-Acting-Player-Id", strconv.FormatInt(admin.ID, 10))
+	lresp, err := http.DefaultClient.Do(lreq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lbody, _ := io.ReadAll(lresp.Body)
+	lresp.Body.Close()
+	if lresp.StatusCode != http.StatusOK || !bytes.Contains(lbody, []byte("tile1")) {
+		t.Errorf("list: status=%d, body=%s", lresp.StatusCode, lbody)
+	}
+	// 不正な名前・形式は400。
+	if code, _ := adminPost(t, srv.URL, "/api/v1/admin/assets", admin.ID,
+		map[string]any{"name": "bad name!", "mime": "image/png", "data": png}); code != http.StatusBadRequest {
+		t.Errorf("bad name: status=%d, want 400", code)
+	}
+	if code, _ := adminPost(t, srv.URL, "/api/v1/admin/assets", admin.ID,
+		map[string]any{"name": "tile2", "mime": "application/pdf", "data": png}); code != http.StatusBadRequest {
+		t.Errorf("bad mime: status=%d, want 400", code)
+	}
+}
+
 func TestBuildHouse(t *testing.T) {
 	srv, pool := setup(t)
 	ctx := context.Background()

@@ -403,6 +403,12 @@ export type MoveResp = Player & { move_result: MoveResult };
 // ワープ料金(円)。バックエンド action.WarpFee と一致させること。
 export const WARP_FEE = 100000;
 
+// 背景アセット画像のURLを解決する。'u:'接頭辞はアップロード画像(DB配信)、
+// それ以外は組み込みのpublic/img/*.gif。
+export function assetUrl(img: string): string {
+  return img.startsWith('u:') ? `/api/v1/assets/${encodeURIComponent(img.slice(2))}` : `/img/${img}.gif`;
+}
+
 export interface StockPrice {
   symbol: string;
   price: number;
@@ -1085,4 +1091,10 @@ export const api = {
   // 家が建っているマス(施設エディタでロックするため)。
   adminHouseCells: (actingId: number) =>
     request<PlotCell[]>('GET', '/admin/townmap/houses', undefined, adminHeaders(actingId)),
+  // アップロード済み画像名の一覧(背景アセットのパレット用)。
+  adminListAssets: (actingId: number) =>
+    request<string[]>('GET', '/admin/assets', undefined, adminHeaders(actingId)),
+  // 背景アセット画像をアップロード(base64)。nameはURLスラッグ。
+  adminUploadAsset: (actingId: number, name: string, mime: string, data: string) =>
+    request<{ name: string }>('POST', '/admin/assets', { name, mime, data }, adminHeaders(actingId)),
 };

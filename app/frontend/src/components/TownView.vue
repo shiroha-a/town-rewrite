@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue';
-import { api, WARP_FEE, type Player, type Params, type TownFacility, type TownAsset, type WorkResponse } from '../api';
+import { api, WARP_FEE, assetUrl, type Player, type Params, type TownFacility, type TownAsset, type WorkResponse } from '../api';
 import { satietyLabel } from '../params';
 import CommandIcon from './CommandIcon.vue';
 import PowerBar from './PowerBar.vue';
@@ -463,7 +463,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
               <img
                 v-if="assetAt(c, ri)"
                 class="cell-bg"
-                :src="`/img/${assetAt(c, ri)!.img}.gif`"
+                :src="assetUrl(assetAt(c, ri)!.img)"
                 alt=""
               />
               <button

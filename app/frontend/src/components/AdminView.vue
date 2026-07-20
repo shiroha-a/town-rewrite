@@ -2,6 +2,7 @@
 import { ref, reactive, computed, onMounted } from 'vue';
 import {
   api,
+  assetUrl,
   type Player,
   type EffectOp,
   type Condition,
@@ -109,6 +110,7 @@ async function refresh() {
     townmap.value = await api.townMap();
     assets.value = await api.townAssets();
     houseCells.value = await api.adminHouseCells(props.player.id);
+    uploadedAssets.value = await api.adminListAssets(props.player.id);
     selectedIdx.value = null;
   } catch (e) {
     fail(e);
@@ -265,8 +267,12 @@ async function saveTownMap() {
 const assets = ref<TownAsset[]>([]);
 // 編集中のレイヤー('facility'=施設(空き地含む) / 'asset'=背景)。
 const mapLayer = ref<'facility' | 'asset'>('facility');
-// 背景アセットのパレット(public/imgにコピー済みのlegacy地形素材)。
+// 背景アセットのパレット(組み込みのlegacy地形素材)。
 const BG_PRESETS = ['kusa', 'sima', 'umi', 'tree1', 'tree2', 'tree3', 'tree4'];
+// アップロードされた画像名(背景に追加できる)。'u:'接頭辞でimg値に使う。
+const uploadedAssets = ref<string[]>([]);
+// パレット = 組み込み + アップロード('u:'接頭辞)。
+const bgPalette = computed(() => [...BG_PRESETS, ...uploadedAssets.value.map((n) => `u:${n}`)]);
 // 選択中の「筆」(パレットで選んだ背景アセット)。
 const assetBrush = ref<string>(BG_PRESETS[0]);
 // 背景レイヤーで編集中の街(0..4)。背景も街ごとに配置できる。
@@ -304,6 +310,41 @@ async function saveTownAssets() {
     fail(e);
   } finally {
     busy.value = false;
+  }
+}
+
+// 背景アセットの画像アップロード。ファイル名からスラッグを作り、base64で送る。
+function slugFromFilename(fn: string): string {
+  const base = fn.replace(/\.[^.]+$/, '');
+  const slug = base.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  return slug.slice(0, 40) || 'asset';
+}
+async function onUploadAsset(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  busy.value = true;
+  message.value = '';
+  try {
+    // ファイルをbase64(本体のみ)に変換する。
+    const dataUrl: string = await new Promise((resolve, reject) => {
+      const rd = new FileReader();
+      rd.onload = () => resolve(String(rd.result));
+      rd.onerror = () => reject(rd.error);
+      rd.readAsDataURL(file);
+    });
+    const b64 = dataUrl.split(',')[1] ?? '';
+    const name = slugFromFilename(file.name);
+    const res = await api.adminUploadAsset(props.player.id, name, file.type, b64);
+    uploadedAssets.value = await api.adminListAssets(props.player.id);
+    assetBrush.value = `u:${res.name}`; // アップロードした素材を筆に選択
+    message.value = `背景アセット「${res.name}」を追加しました。`;
+    kind.value = 'ok';
+  } catch (err) {
+    fail(err);
+  } finally {
+    busy.value = false;
+    input.value = ''; // 同じファイルを再選択できるようにクリア
   }
 }
 
@@ -906,7 +947,7 @@ async function deleteEdit() {
                         <img
                           v-if="assetImgForTown(c, ri, facilityTown)"
                           class="bg-ref"
-                          :src="`/img/${assetImgForTown(c, ri, facilityTown)}.gif`"
+                          :src="assetUrl(assetImgForTown(c, ri, facilityTown))"
                           alt=""
                           draggable="false"
                         />
@@ -986,7 +1027,7 @@ async function deleteEdit() {
               </div>
               <div class="bg-palette">
                 <button
-                  v-for="a in BG_PRESETS"
+                  v-for="a in bgPalette"
                   :key="a"
                   :class="['bg-swatch', { active: assetBrush === a }]"
                   :title="a"
@@ -995,8 +1036,12 @@ async function deleteEdit() {
                   @dragstart="onBgPaletteDragStart(a)"
                   @dragend="onBgDragEnd"
                 >
-                  <img :src="`/img/${a}.gif`" width="24" height="24" :alt="a" draggable="false" />
+                  <img :src="assetUrl(a)" width="24" height="24" :alt="a" draggable="false" />
                 </button>
+                <label class="bg-upload" title="背景アセットを画像から追加">
+                  ＋画像を追加
+                  <input type="file" accept="image/png,image/gif,image/jpeg,image/webp" :disabled="busy" @change="onUploadAsset" />
+                </label>
               </div>
               <div class="map-scroll">
                 <div class="map-grid">
@@ -1020,7 +1065,7 @@ async function deleteEdit() {
                       <img
                         v-if="assetImgAt(c, ri)"
                         class="bg-tile"
-                        :src="`/img/${assetImgAt(c, ri)}.gif`"
+                        :src="assetUrl(assetImgAt(c, ri))"
                         :alt="assetImgAt(c, ri)"
                         draggable="true"
                         @dragstart="onBgTileDragStart(c, ri)"
@@ -1486,6 +1531,21 @@ async function deleteEdit() {
   display: block;
   width: 24px;
   height: 24px;
+  object-fit: cover;
+}
+/* 背景アセットのアップロードボタン(パレット末尾)。 */
+.bg-upload {
+  display: inline-flex;
+  align-items: center;
+  border: 1px dashed #99a;
+  background: #eef2f7;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: #445;
+  cursor: pointer;
+}
+.bg-upload input {
+  display: none;
 }
 /* 背景エディタのセル: タイルを全面に敷き、施設は右下に薄く参照表示する。 */
 .map-grid .cell.bgcell {
