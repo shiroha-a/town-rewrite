@@ -3,15 +3,74 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
+	"github.com/shiroha-a/town/internal/building"
 	"github.com/shiroha-a/town/internal/content"
 	"github.com/shiroha-a/town/internal/effects"
 	"github.com/shiroha-a/town/internal/player"
 	"github.com/shiroha-a/town/internal/settings"
 	"github.com/shiroha-a/town/internal/townmap"
 )
+
+// towns returns the configured town list (public: needed to render names/prices).
+func (s *Server) towns(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, building.Towns())
+}
+
+type townReq struct {
+	Name      string `json:"name"`
+	LandPrice int    `json:"land_price"`
+	Hidden    bool   `json:"hidden"`
+}
+
+// syncBuildingTowns pushes the town config into the building runtime cache.
+func syncBuildingTowns(tcs []settings.TownConfig) {
+	ts := make([]building.Town, len(tcs))
+	for i, tc := range tcs {
+		ts[i] = building.Town{No: i, Name: tc.Name, LandPrice: tc.LandPrice, Hidden: tc.Hidden}
+	}
+	building.SetTowns(ts)
+}
+
+// adminUpdateTowns replaces the town list (name + land price). 街番号は並び順。
+func (s *Server) adminUpdateTowns(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	var reqs []townReq
+	if err := json.NewDecoder(r.Body).Decode(&reqs); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if len(reqs) < 1 || len(reqs) > townmap.MaxTowns {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("街は1〜%d個にしてください。", townmap.MaxTowns))
+		return
+	}
+	tcs := make([]settings.TownConfig, len(reqs))
+	for i, tr := range reqs {
+		if strings.TrimSpace(tr.Name) == "" {
+			writeError(w, http.StatusBadRequest, "街の名前を入力してください。")
+			return
+		}
+		if tr.LandPrice < 0 {
+			writeError(w, http.StatusBadRequest, "地価は0以上にしてください。")
+			return
+		}
+		tcs[i] = settings.TownConfig{Name: tr.Name, LandPrice: tr.LandPrice, Hidden: tr.Hidden}
+	}
+	g := s.settings.Get()
+	g.Towns = tcs
+	if err := s.settings.Set(r.Context(), g); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	syncBuildingTowns(tcs)
+	writeJSON(w, http.StatusOK, building.Towns())
+}
 
 // townMap returns the current town map. Public: every player needs it to render
 // the main screen.
@@ -28,11 +87,65 @@ func (s *Server) adminUpdateTownMap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	// 家が建っているマスから空き地(akichi)を外すと家が孤立する。家のあるマスに
+	// akichi施設が残っていることを検証する(UI迂回対策)。
+	houseCells, err := s.content.ListHouseCells(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	akichi := make(map[[3]int]bool)
+	for _, f := range fs {
+		if f.Key == "akichi" {
+			akichi[[3]int{f.Town, f.Row, f.Col}] = true
+		}
+	}
+	for _, h := range houseCells {
+		if !akichi[[3]int{h.Town, h.Row, h.Col}] {
+			writeError(w, http.StatusUnprocessableEntity, "家が建っているマスの空き地は変更できません。")
+			return
+		}
+	}
 	if err := s.townmap.Set(r.Context(), fs); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, s.townmap.Get())
+}
+
+// adminHouseCells returns cells with houses (for the facility editor to lock).
+func (s *Server) adminHouseCells(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	cells, err := s.content.ListHouseCells(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, cells)
+}
+
+// townAssets returns the background layer. Public: every player needs it to
+// render the main screen beneath the facility layer.
+func (s *Server) townAssets(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.townmap.GetAssets())
+}
+
+func (s *Server) adminUpdateTownAssets(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	var as []townmap.Asset
+	if err := json.NewDecoder(r.Body).Decode(&as); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := s.townmap.SetAssets(r.Context(), as); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.townmap.GetAssets())
 }
 
 func (s *Server) adminGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -54,6 +167,10 @@ func (s *Server) adminUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if err := s.settings.Set(r.Context(), g); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// 街の一覧が含まれていればbuildingキャッシュへ同期する。
+	if len(g.Towns) > 0 {
+		syncBuildingTowns(g.Towns)
 	}
 	writeJSON(w, http.StatusOK, s.settings.Get())
 }

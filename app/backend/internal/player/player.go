@@ -30,6 +30,7 @@ type Player struct {
 	SuperSavings int64
 	LoanDaily    int64 // 住宅ローンの日額返済(なければ0)
 	LoanCount    int   // 住宅ローンの残り返済回数(なければ0)
+	CurrentTown   int   // 現在いる街(0=公園..4=謎の街)。街移動で変化
 	Status        Status
 	Params        Params
 	Items         []ItemStack
@@ -399,9 +400,9 @@ func (s *Service) HasRole(ctx context.Context, id int64, role string) (bool, err
 func (s *Service) Get(ctx context.Context, id int64) (*Player, error) {
 	p := &Player{ID: id}
 	err := s.pool.QueryRow(ctx,
-		`SELECT instance_host, remote_user_id, display_name
+		`SELECT instance_host, remote_user_id, display_name, current_town
 		 FROM players WHERE id = $1 AND deleted_at IS NULL`, id).
-		Scan(&p.InstanceHost, &p.RemoteUserID, &p.DisplayName)
+		Scan(&p.InstanceHost, &p.RemoteUserID, &p.DisplayName, &p.CurrentTown)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

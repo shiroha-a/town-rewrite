@@ -2,6 +2,7 @@
 import { ref, reactive, computed, onMounted } from 'vue';
 import {
   api,
+  assetUrl,
   type Player,
   type EffectOp,
   type Condition,
@@ -13,7 +14,9 @@ import {
   type AdminPlayerPayload,
   type GameSettings,
   type TownFacility,
+  type TownAsset,
   type PlotCell,
+  type Town,
 } from '../api';
 
 const props = defineProps<{ player: Player }>();
@@ -22,7 +25,7 @@ const emit = defineEmits<{ back: [] }>();
 const isAdmin = computed(() => props.player.roles.includes('admin'));
 
 // 各セクションの開閉。既定は折りたたみ(false)。
-const open = reactive({ item: false, job: false, user: false, settings: false, map: false, plots: false });
+const open = reactive({ item: false, job: false, user: false, settings: false, towns: false, map: false });
 
 // 効果/条件で対象にできるパラメータ。
 const PARAM_OPTIONS = [
@@ -106,7 +109,11 @@ async function refresh() {
     players.value = await api.adminListPlayers(props.player.id);
     settings.value = await api.adminGetSettings(props.player.id);
     townmap.value = await api.townMap();
-    plots.value = await api.adminGetPlots(props.player.id);
+    assets.value = await api.townAssets();
+    houseCells.value = await api.adminHouseCells(props.player.id);
+    uploadedAssets.value = await api.adminListAssets(props.player.id);
+    townList.value = await api.towns();
+    syncTownDraft();
     selectedIdx.value = null;
   } catch (e) {
     fail(e);
@@ -140,20 +147,36 @@ const KEY_PRESETS: { key: string; label: string }[] = [
   { key: 'mail', label: 'メール(準備中)' },
   { key: 'doukyo', label: 'キャラ作成(準備中)' },
   { key: 'aisatu', label: 'あいさつ(準備中)' },
+  { key: 'walk', label: '街移動(徒歩)' },
+  { key: 'bus', label: '街移動(バス・500円)' },
+  { key: 'akichi', label: '空き地(建築可能マス)' },
 ];
+// 移動施設の遷移先key(選択時に行き先セレクタを出す)。
+const MOVE_KEYS = ['walk', 'bus'];
 // 施設用に用意されているgif(public/img)。
 const IMG_PRESETS = [
-  'depart', 'bank', 'syokudou', 'gym', 'onsen', 'hospital', 'work', 'yakuba', 'kabu', 'keiba', 'kentiku', 'prof', 'mail',
+  'depart', 'bank', 'syokudou', 'gym', 'onsen', 'hospital', 'work', 'yakuba', 'kabu', 'keiba', 'kentiku', 'prof', 'mail', 'mati_link', 'bus', 'akiti',
 ];
 
-const mapFacilityAt = (col: number, rowIdx: number) =>
-  townmap.value.findIndex((f) => f.col === col && f.row === rowIdx);
+// 施設レイヤーで編集中の街(0..4)。施設はマルチ街化済み。
+const facilityTown = ref(0);
+const mapFacilityAt = (col: number, rowIdx: number, town = 0) =>
+  townmap.value.findIndex((f) => f.town === town && f.col === col && f.row === rowIdx);
+// 家が建っているマス。ここは編集不可(空き地を外すと家が孤立し不整合になる)。
+const houseCells = ref<PlotCell[]>([]);
+function houseCellAt(col: number, rowIdx: number): boolean {
+  return houseCells.value.some(
+    (h) => h.town === facilityTown.value && h.col === col && h.row === rowIdx,
+  );
+}
 const selectedFacility = computed(() =>
   selectedIdx.value === null ? null : (townmap.value[selectedIdx.value] ?? null),
 );
 
 function clickCell(col: number, rowIdx: number) {
-  const idx = mapFacilityAt(col, rowIdx);
+  // 家が建っているマスは編集不可(選択も移動先にもできない)。
+  if (houseCellAt(col, rowIdx)) return;
+  const idx = mapFacilityAt(col, rowIdx, facilityTown.value);
   if (idx >= 0) {
     // 施設セル: 選択(同じものを再クリックで選択解除)。
     selectedIdx.value = selectedIdx.value === idx ? null : idx;
@@ -178,8 +201,13 @@ function onDragEnd() {
 }
 function onDrop(col: number, rowIdx: number) {
   if (dragging.value === null) return;
+  // 家が建っているマスへは移動できない(空き地を外すと不整合)。
+  if (houseCellAt(col, rowIdx)) {
+    dragging.value = null;
+    return;
+  }
   const src = townmap.value[dragging.value];
-  const targetIdx = mapFacilityAt(col, rowIdx);
+  const targetIdx = mapFacilityAt(col, rowIdx, facilityTown.value);
   if (targetIdx >= 0 && targetIdx !== dragging.value) {
     // 移動先に別の施設があれば位置を入れ替える。
     const tgt = townmap.value[targetIdx];
@@ -194,7 +222,7 @@ function onDrop(col: number, rowIdx: number) {
 function firstFreeCell(): { col: number; row: number } | null {
   for (let r = 0; r < MAP_ROWS; r++) {
     for (let c = 1; c <= MAP_COLS; c++) {
-      if (mapFacilityAt(c, r) < 0) return { col: c, row: r };
+      if (mapFacilityAt(c, r, facilityTown.value) < 0) return { col: c, row: r };
     }
   }
   return null;
@@ -206,7 +234,16 @@ function addFacility() {
     kind.value = 'error';
     return;
   }
-  townmap.value.push({ key: 'depart', img: 'depart', alt: '新規施設', col: cell.col, row: cell.row, ready: true });
+  townmap.value.push({
+    key: 'depart',
+    img: 'depart',
+    alt: '新規施設',
+    town: facilityTown.value,
+    col: cell.col,
+    row: cell.row,
+    dest: 0,
+    ready: true,
+  });
   selectedIdx.value = townmap.value.length - 1;
 }
 function deleteFacility() {
@@ -229,41 +266,174 @@ async function saveTownMap() {
   }
 }
 
-// 空き地(建設会社): 街ごとに家を建てられるマスを指定する。
-const plots = ref<PlotCell[]>([]);
-const plotTown = ref(0);
-const plotTowns = [
-  { no: 0, name: '公園' },
-  { no: 1, name: 'シー・リゾート' },
-  { no: 2, name: 'カントリータウン' },
-  { no: 3, name: 'ダウンタウン' },
-  { no: 4, name: '謎の街' },
-];
-// 街0(メイン街)のみ、施設セルは空地にできない。
-function plotFacilityAt(col: number, rowIdx: number): boolean {
-  return plotTown.value === 0 && mapFacilityAt(col, rowIdx) >= 0;
+// 背景アセット配置レイヤー。施設とは別に、装飾用の背景画像をセル単位で置く。
+const assets = ref<TownAsset[]>([]);
+// 編集中のレイヤー('facility'=施設(空き地含む) / 'asset'=背景)。
+const mapLayer = ref<'facility' | 'asset'>('facility');
+// 背景アセットのパレット(組み込みのlegacy地形素材)。
+const BG_PRESETS = ['kusa', 'sima', 'umi', 'tree1', 'tree2', 'tree3', 'tree4'];
+// アップロードされた画像名(背景に追加できる)。'u:'接頭辞でimg値に使う。
+const uploadedAssets = ref<string[]>([]);
+// パレット = 組み込み + アップロード('u:'接頭辞)。
+const bgPalette = computed(() => [...BG_PRESETS, ...uploadedAssets.value.map((n) => `u:${n}`)]);
+// 選択中の「筆」(パレットで選んだ背景アセット)。
+const assetBrush = ref<string>(BG_PRESETS[0]);
+// 背景レイヤーで編集中の街(0..4)。背景も街ごとに配置できる。
+const assetTown = ref(0);
+
+const assetIdxAt = (col: number, rowIdx: number) =>
+  assets.value.findIndex((a) => a.town === assetTown.value && a.col === col && a.row === rowIdx);
+function assetImgAt(col: number, rowIdx: number): string {
+  const i = assetIdxAt(col, rowIdx);
+  return i >= 0 ? assets.value[i].img : '';
 }
-function plotFacilityImg(col: number, rowIdx: number): string {
-  const i = mapFacilityAt(col, rowIdx);
-  return i >= 0 ? townmap.value[i].img : '';
+// 指定した街の背景アセット画像(施設レイヤーで背景を薄く参照表示するのに使う)。
+function assetImgForTown(col: number, rowIdx: number, town: number): string {
+  const a = assets.value.find((x) => x.town === town && x.col === col && x.row === rowIdx);
+  return a ? a.img : '';
 }
-function isPlot(col: number, rowIdx: number): boolean {
-  return plots.value.some((p) => p.town === plotTown.value && p.col === col && p.row === rowIdx);
+// マスをクリックで背景を配置。選択中の筆と同じなら除去(トグル)、違えば差し替え。
+function paintAsset(col: number, rowIdx: number) {
+  const i = assetIdxAt(col, rowIdx);
+  if (i >= 0) {
+    if (assets.value[i].img === assetBrush.value) assets.value.splice(i, 1);
+    else assets.value[i].img = assetBrush.value;
+    return;
+  }
+  assets.value.push({ img: assetBrush.value, town: assetTown.value, col, row: rowIdx });
 }
-function togglePlot(col: number, rowIdx: number) {
-  if (plotFacilityAt(col, rowIdx)) return;
-  const i = plots.value.findIndex(
-    (p) => p.town === plotTown.value && p.col === col && p.row === rowIdx,
-  );
-  if (i >= 0) plots.value.splice(i, 1);
-  else plots.value.push({ town: plotTown.value, row: rowIdx, col });
-}
-async function savePlots() {
+async function saveTownAssets() {
   busy.value = true;
   message.value = '';
   try {
-    plots.value = await api.adminSetPlots(props.player.id, plots.value);
-    message.value = '空き地を更新しました。';
+    assets.value = await api.adminUpdateTownAssets(props.player.id, assets.value);
+    message.value = '背景レイヤーを更新しました。';
+    kind.value = 'ok';
+  } catch (e) {
+    fail(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
+// 背景アセットの画像アップロード。ファイル名からスラッグを作り、base64で送る。
+function slugFromFilename(fn: string): string {
+  const base = fn.replace(/\.[^.]+$/, '');
+  const slug = base.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  return slug.slice(0, 40) || 'asset';
+}
+async function onUploadAsset(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  busy.value = true;
+  message.value = '';
+  try {
+    // ファイルをbase64(本体のみ)に変換する。
+    const dataUrl: string = await new Promise((resolve, reject) => {
+      const rd = new FileReader();
+      rd.onload = () => resolve(String(rd.result));
+      rd.onerror = () => reject(rd.error);
+      rd.readAsDataURL(file);
+    });
+    const b64 = dataUrl.split(',')[1] ?? '';
+    const name = slugFromFilename(file.name);
+    const res = await api.adminUploadAsset(props.player.id, name, file.type, b64);
+    uploadedAssets.value = await api.adminListAssets(props.player.id);
+    assetBrush.value = `u:${res.name}`; // アップロードした素材を筆に選択
+    message.value = `背景アセット「${res.name}」を追加しました。`;
+    kind.value = 'ok';
+  } catch (err) {
+    fail(err);
+  } finally {
+    busy.value = false;
+    input.value = ''; // 同じファイルを再選択できるようにクリア
+  }
+}
+// アップロード画像を削除する('u:name'形式のパレット項目のみ)。
+async function deleteUploadedAsset(img: string) {
+  if (!img.startsWith('u:')) return;
+  const name = img.slice(2);
+  if (!confirm(`背景アセット「${name}」を削除しますか?`)) return;
+  busy.value = true;
+  message.value = '';
+  try {
+    await api.adminDeleteAsset(props.player.id, name);
+    uploadedAssets.value = await api.adminListAssets(props.player.id);
+    if (assetBrush.value === img) assetBrush.value = BG_PRESETS[0]; // 筆が消えたら組み込みに戻す
+    message.value = `背景アセット「${name}」を削除しました。`;
+    kind.value = 'ok';
+  } catch (e) {
+    fail(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
+// 背景レイヤーのドラッグ&ドロップ。パレットからの新規配置と、置いたタイルの移動に対応。
+type BgDrag = { kind: 'palette'; img: string } | { kind: 'tile'; col: number; row: number };
+const bgDrag = ref<BgDrag | null>(null);
+function onBgPaletteDragStart(img: string) {
+  assetBrush.value = img; // ドラッグ元の素材を筆にも反映
+  bgDrag.value = { kind: 'palette', img };
+}
+function onBgTileDragStart(col: number, rowIdx: number) {
+  bgDrag.value = { kind: 'tile', col, row: rowIdx };
+}
+function onBgDragEnd() {
+  bgDrag.value = null;
+}
+function onBgDrop(col: number, rowIdx: number) {
+  const d = bgDrag.value;
+  bgDrag.value = null;
+  if (!d) return;
+  if (d.kind === 'palette') {
+    // パレットからドロップ: そのマスに配置(既存があれば差し替え)。
+    const i = assetIdxAt(col, rowIdx);
+    if (i >= 0) assets.value[i].img = d.img;
+    else assets.value.push({ img: d.img, town: assetTown.value, col, row: rowIdx });
+    return;
+  }
+  // 置いたタイルの移動。移動先に別タイルがあれば位置を入れ替える(施設レイヤーと同じ)。
+  const srcIdx = assetIdxAt(d.col, d.row);
+  if (srcIdx < 0) return;
+  const tgtIdx = assetIdxAt(col, rowIdx);
+  if (tgtIdx >= 0 && tgtIdx !== srcIdx) {
+    assets.value[tgtIdx].col = d.col;
+    assets.value[tgtIdx].row = d.row;
+  }
+  assets.value[srcIdx].col = col;
+  assets.value[srcIdx].row = rowIdx;
+}
+
+// 街の一覧(管理画面で設定可能。名前・地価)。マップ編集の街セレクタや街エディタで使う。
+const townList = ref<Town[]>([]);
+// マップ編集の街セレクタ用(no+name)。街は設定で可変。
+const plotTowns = computed(() => townList.value.map((t) => ({ no: t.no, name: t.name })));
+
+// 街エディタの編集用ドラフト(名前・地価・隠し町)。保存で adminUpdateTowns。
+const townDraft = ref<{ name: string; land_price: number; hidden: boolean }[]>([]);
+function syncTownDraft() {
+  townDraft.value = townList.value.map((t) => ({
+    name: t.name,
+    land_price: t.land_price,
+    hidden: t.hidden,
+  }));
+}
+function addTown() {
+  townDraft.value.push({ name: '新しい街', land_price: 250, hidden: false });
+}
+function removeTown(i: number) {
+  townDraft.value.splice(i, 1);
+}
+async function saveTowns() {
+  busy.value = true;
+  message.value = '';
+  try {
+    await api.adminUpdateTowns(props.player.id, townDraft.value);
+    townList.value = await api.towns();
+    syncTownDraft();
+    message.value = '街の設定を更新しました。';
     kind.value = 'ok';
   } catch (e) {
     fail(e);
@@ -285,6 +455,8 @@ const SETTINGS_FIELDS: { key: keyof GameSettings; label: string; hint?: string }
   { key: 'syokudou_daily_count', label: '食堂日次件数', hint: '0で全件(日次ローテ無効)' },
   { key: 'item_kind_limit', label: '所持アイテム種類上限', hint: '0で無制限(旧TOWN 25品目)' },
   { key: 'stock_adjust', label: '店頭在庫倍率', hint: '実在庫=ceil(標準在庫÷倍率)。大きいほど品薄' },
+  { key: 'move_walk_secs', label: '徒歩の移動時間', hint: '街移動(徒歩)にかかる秒数。0以下で既定10秒' },
+  { key: 'move_bus_secs', label: 'バスの移動時間', hint: '街移動(バス)にかかる秒数。0以下で既定5秒' },
 ];
 async function saveSettings() {
   if (!settings.value) return;
@@ -736,9 +908,48 @@ async function deleteEdit() {
                   <span class="setting-label">デバッグ: 間隔ゼロ</span>
                   <span class="chk-line"><input type="checkbox" v-model="settings.debug_no_cooldown" /> 仕事/使用/食事などの間隔制限を無視</span>
                 </label>
+                <label class="setting chk-setting">
+                  <span class="setting-label">街移動: 迷子</span>
+                  <span class="chk-line"><input type="checkbox" v-model="settings.move_maigo_enabled" /> 徒歩移動で迷子(ダウンタウンへ)を有効化</span>
+                </label>
               </div>
               <div class="actions">
                 <button class="btn primary" :disabled="busy || !settings" @click="saveSettings">保存</button>
+                <button class="btn" :disabled="busy" @click="refresh">再読込</button>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <!-- 街(名前・地価) -->
+        <section class="fold">
+          <button class="fold-head" @click="open.towns = !open.towns">
+            <span class="caret">{{ open.towns ? '▼' : '▶' }}</span> 街（{{ townDraft.length }}）
+          </button>
+          <div v-if="open.towns" class="fold-body">
+            <section class="panel">
+              <h3>
+                街の設定<span class="hint">
+                  ※上から順に街番号0,1,2…。名前と地価(万円)を編集。地価は建築費に使われる。「隠し」はワープで行けない隠し町。最大{{ 12 }}街。</span
+                >
+              </h3>
+              <table class="town-edit">
+                <thead>
+                  <tr><th>#</th><th>名前</th><th>地価(万)</th><th>隠し</th><th></th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(t, i) in townDraft" :key="i">
+                    <td>{{ i }}</td>
+                    <td><input v-model="t.name" /></td>
+                    <td><input type="number" v-model.number="t.land_price" min="0" /></td>
+                    <td class="chk-cell"><input type="checkbox" v-model="t.hidden" title="ワープで行けない隠し町" /></td>
+                    <td><button class="btn danger mini" :disabled="townDraft.length <= 1" @click="removeTown(i)">削除</button></td>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="actions">
+                <button class="btn" :disabled="townDraft.length >= 12" @click="addTown">＋街を追加</button>
+                <button class="btn primary" :disabled="busy" @click="saveTowns">保存</button>
                 <button class="btn" :disabled="busy" @click="refresh">再読込</button>
               </div>
             </section>
@@ -751,12 +962,36 @@ async function deleteEdit() {
             <span class="caret">{{ open.map ? '▼' : '▶' }}</span> タウンマップ（{{ townmap.length }}）
           </button>
           <div v-if="open.map" class="fold-body">
-            <section class="panel">
+            <!-- レイヤー切替: 機能付き施設層 / 背景アセット層 / 空き地(建設会社)層 -->
+            <div class="layer-tabs">
+              <button :class="{ active: mapLayer === 'facility' }" @click="mapLayer = 'facility'">
+                施設レイヤー（{{ townmap.length }}）
+              </button>
+              <button :class="{ active: mapLayer === 'asset' }" @click="mapLayer = 'asset'">
+                背景レイヤー（{{ assets.length }}）
+              </button>
+            </div>
+
+            <section v-if="mapLayer === 'facility'" class="panel">
               <h3>
                 マップ編集<span class="hint">
-                  ※施設をドラッグ&ドロップで移動(占有セルへは入れ替え)。クリックで選択→空きセルクリックでも移動可</span
+                  ※街を選び、施設をドラッグ&ドロップで移動(占有セルへは入れ替え)。クリックで選択→空きセルクリックでも移動可</span
                 >
               </h3>
+              <div class="plot-towns">
+                <button
+                  v-for="t in plotTowns"
+                  :key="t.no"
+                  class="ptab"
+                  :class="{ active: facilityTown === t.no }"
+                  @click="
+                    facilityTown = t.no;
+                    selectedIdx = null;
+                  "
+                >
+                  {{ t.name }}
+                </button>
+              </div>
               <div class="map-editor">
                 <div class="map-scroll">
                   <div class="map-grid">
@@ -769,26 +1004,50 @@ async function deleteEdit() {
                         :key="r + '-' + c"
                         class="cell"
                         :class="{
-                          occ: mapFacilityAt(c, ri) >= 0,
-                          sel: mapFacilityAt(c, ri) >= 0 && mapFacilityAt(c, ri) === selectedIdx,
-                          movable: mapFacilityAt(c, ri) < 0 && (selectedIdx !== null || dragging !== null),
-                          dragsrc: mapFacilityAt(c, ri) >= 0 && mapFacilityAt(c, ri) === dragging,
+                          occ: mapFacilityAt(c, ri, facilityTown) >= 0,
+                          locked: houseCellAt(c, ri),
+                          sel:
+                            !houseCellAt(c, ri) &&
+                            mapFacilityAt(c, ri, facilityTown) >= 0 &&
+                            mapFacilityAt(c, ri, facilityTown) === selectedIdx,
+                          movable:
+                            !houseCellAt(c, ri) &&
+                            mapFacilityAt(c, ri, facilityTown) < 0 &&
+                            (selectedIdx !== null || dragging !== null),
+                          dragsrc:
+                            mapFacilityAt(c, ri, facilityTown) >= 0 &&
+                            mapFacilityAt(c, ri, facilityTown) === dragging,
                         }"
-                        :title="mapFacilityAt(c, ri) >= 0 ? townmap[mapFacilityAt(c, ri)].alt : ''"
+                        :title="
+                          houseCellAt(c, ri)
+                            ? '家が建っているため編集できません'
+                            : mapFacilityAt(c, ri, facilityTown) >= 0
+                              ? townmap[mapFacilityAt(c, ri, facilityTown)].alt
+                              : ''
+                        "
                         @click="clickCell(c, ri)"
                         @dragover.prevent
                         @drop="onDrop(c, ri)"
                       >
                         <img
-                          v-if="mapFacilityAt(c, ri) >= 0"
-                          :src="`/img/${townmap[mapFacilityAt(c, ri)].img}.gif`"
+                          v-if="assetImgForTown(c, ri, facilityTown)"
+                          class="bg-ref"
+                          :src="assetUrl(assetImgForTown(c, ri, facilityTown))"
+                          alt=""
+                          draggable="false"
+                        />
+                        <img
+                          v-if="mapFacilityAt(c, ri, facilityTown) >= 0"
+                          class="fac-icon"
+                          :src="`/img/${townmap[mapFacilityAt(c, ri, facilityTown)].img}.gif`"
                           width="24"
                           height="24"
-                          :alt="townmap[mapFacilityAt(c, ri)].alt"
-                          draggable="true"
-                          @dragstart="onDragStart(mapFacilityAt(c, ri))"
+                          :alt="townmap[mapFacilityAt(c, ri, facilityTown)].alt"
+                          :draggable="!houseCellAt(c, ri)"
+                          @dragstart="onDragStart(mapFacilityAt(c, ri, facilityTown))"
                           @dragend="onDragEnd"
                         />
+                        <span v-if="houseCellAt(c, ri)" class="lock-badge" title="家が建っているため編集できません">🔒</span>
                       </div>
                     </template>
                   </div>
@@ -801,6 +1060,11 @@ async function deleteEdit() {
                     <label>遷移先
                       <select v-model="selectedFacility.key">
                         <option v-for="k in KEY_PRESETS" :key="k.key" :value="k.key">{{ k.label }}</option>
+                      </select>
+                    </label>
+                    <label v-if="MOVE_KEYS.includes(selectedFacility.key)">行き先の街
+                      <select v-model.number="selectedFacility.dest">
+                        <option v-for="t in plotTowns" :key="t.no" :value="t.no">{{ t.name }}</option>
                       </select>
                     </label>
                     <label>画像
@@ -827,19 +1091,12 @@ async function deleteEdit() {
                 <button class="btn" :disabled="busy" @click="refresh">再読込</button>
               </div>
             </section>
-          </div>
-        </section>
 
-        <!-- 空き地(建設会社) -->
-        <section class="fold">
-          <button class="fold-head" @click="open.plots = !open.plots">
-            <span class="caret">{{ open.plots ? '▼' : '▶' }}</span> 空き地（建設会社）（{{ plots.length }}）
-          </button>
-          <div v-if="open.plots" class="fold-body">
-            <section class="panel">
+            <!-- 背景アセット配置レイヤー -->
+            <section v-else-if="mapLayer === 'asset'" class="panel">
               <h3>
-                空き地の設定<span class="hint">
-                  ※街を選び、家を建てられるマスをクリックで指定/解除。緑=空地。街0(公園)は施設セルを除く。</span
+                背景アセット配置<span class="hint">
+                  ※街を選び、パレットで素材を選んでマスをクリックで配置。同じ素材を再クリックで除去。施設は右下に薄く参照表示（編集不可）</span
                 >
               </h3>
               <div class="plot-towns">
@@ -847,42 +1104,84 @@ async function deleteEdit() {
                   v-for="t in plotTowns"
                   :key="t.no"
                   class="ptab"
-                  :class="{ active: plotTown === t.no }"
-                  @click="plotTown = t.no"
+                  :class="{ active: assetTown === t.no }"
+                  @click="assetTown = t.no"
                 >
                   {{ t.name }}
                 </button>
               </div>
+              <div class="bg-palette">
+                <div v-for="a in bgPalette" :key="a" class="bg-swatch-wrap">
+                  <button
+                    :class="['bg-swatch', { active: assetBrush === a }]"
+                    :title="a"
+                    draggable="true"
+                    @click="assetBrush = a"
+                    @dragstart="onBgPaletteDragStart(a)"
+                    @dragend="onBgDragEnd"
+                  >
+                    <img :src="assetUrl(a)" width="24" height="24" :alt="a" draggable="false" />
+                  </button>
+                  <button
+                    v-if="a.startsWith('u:')"
+                    class="bg-del"
+                    title="このアップロード画像を削除"
+                    :disabled="busy"
+                    @click="deleteUploadedAsset(a)"
+                  >
+                    ×
+                  </button>
+                </div>
+                <label class="bg-upload" title="背景アセットを画像から追加">
+                  ＋画像を追加
+                  <input type="file" accept="image/png,image/gif,image/jpeg,image/webp" :disabled="busy" @change="onUploadAsset" />
+                </label>
+              </div>
               <div class="map-scroll">
                 <div class="map-grid">
                   <div class="corner"></div>
-                  <div v-for="c in mapCols" :key="'ph' + c" class="colhead">{{ c }}</div>
-                  <template v-for="(r, ri) in mapRows" :key="'pr' + r">
+                  <div v-for="c in mapCols" :key="'ah' + c" class="colhead">{{ c }}</div>
+                  <template v-for="(r, ri) in mapRows" :key="'ar' + r">
                     <div class="rowhead">{{ r }}</div>
                     <div
                       v-for="c in mapCols"
-                      :key="'p' + r + '-' + c"
-                      class="cell"
-                      :class="{ occ: plotFacilityAt(c, ri), plot: isPlot(c, ri) }"
-                      :title="plotFacilityAt(c, ri) ? '施設' : isPlot(c, ri) ? '空地' : ''"
-                      @click="togglePlot(c, ri)"
+                      :key="'a' + r + '-' + c"
+                      class="cell bgcell"
+                      :class="{
+                        occ: assetIdxAt(c, ri) >= 0,
+                        dragsrc: bgDrag?.kind === 'tile' && bgDrag.col === c && bgDrag.row === ri,
+                      }"
+                      :title="`${r}${c}${assetImgAt(c, ri) ? ' : ' + assetImgAt(c, ri) : ''}`"
+                      @click="paintAsset(c, ri)"
+                      @dragover.prevent
+                      @drop="onBgDrop(c, ri)"
                     >
                       <img
-                        v-if="plotFacilityAt(c, ri)"
-                        :src="`/img/${plotFacilityImg(c, ri)}.gif`"
-                        width="24"
-                        height="24"
+                        v-if="assetImgAt(c, ri)"
+                        class="bg-tile"
+                        :src="assetUrl(assetImgAt(c, ri))"
+                        :alt="assetImgAt(c, ri)"
+                        draggable="true"
+                        @dragstart="onBgTileDragStart(c, ri)"
+                        @dragend="onBgDragEnd"
+                      />
+                      <img
+                        v-if="mapFacilityAt(c, ri, assetTown) >= 0"
+                        class="fac-ref"
+                        :src="`/img/${townmap[mapFacilityAt(c, ri, assetTown)].img}.gif`"
                         alt=""
+                        draggable="false"
                       />
                     </div>
                   </template>
                 </div>
               </div>
               <div class="actions">
-                <button class="btn primary" :disabled="busy" @click="savePlots">保存</button>
+                <button class="btn primary" :disabled="busy" @click="saveTownAssets">保存</button>
                 <button class="btn" :disabled="busy" @click="refresh">再読込</button>
               </div>
             </section>
+
           </div>
         </section>
       </div>
@@ -1210,6 +1509,34 @@ async function deleteEdit() {
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  position: relative;
+}
+/* 施設レイヤーで背景アセットを薄く参照表示(施設アイコンは前面)。 */
+.map-grid .cell .bg-ref {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.4;
+  pointer-events: none;
+}
+.map-grid .cell .fac-icon {
+  position: relative;
+  z-index: 1;
+}
+/* 家が建っているマスは編集不可(赤系背景+錠前)。 */
+.map-grid .cell.locked {
+  background: #f2dede;
+  cursor: not-allowed;
+}
+.map-grid .cell .lock-badge {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  font-size: 9px;
+  line-height: 1;
+  z-index: 2;
+  pointer-events: none;
 }
 .map-grid .cell.occ {
   background: #fff;
@@ -1256,6 +1583,123 @@ async function deleteEdit() {
   display: block;
   width: 20px;
   height: 20px;
+}
+/* レイヤー切替タブ */
+.layer-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+  /* fold-body(flex-wrap)の中で全幅を占め、マップ編集パネルを下段(タブの下)に送る。 */
+  flex-basis: 100%;
+}
+.town-edit {
+  border-collapse: collapse;
+  margin-bottom: 8px;
+}
+.town-edit th,
+.town-edit td {
+  border: 1px solid #dfe3ea;
+  padding: 3px 6px;
+  font-size: 13px;
+}
+.town-edit input {
+  font-size: 13px;
+  padding: 2px 4px;
+}
+.town-edit input[type='number'] {
+  width: 80px;
+}
+.layer-tabs button {
+  background: #e2e8f0;
+  border: 1px solid #99a;
+  padding: 5px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.layer-tabs button.active {
+  background: #336699;
+  color: #fff;
+  font-weight: bold;
+}
+/* 背景アセットのパレット */
+.bg-palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.bg-swatch {
+  border: 2px solid #ccc;
+  background: #fff;
+  padding: 2px;
+  line-height: 0;
+  cursor: pointer;
+}
+.bg-swatch.active {
+  border-color: #ff6600;
+}
+.bg-swatch img {
+  display: block;
+  width: 24px;
+  height: 24px;
+  object-fit: cover;
+}
+/* アップロード画像のスウォッチ + 削除ボタン。 */
+.bg-swatch-wrap {
+  position: relative;
+  line-height: 0;
+}
+.bg-del {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid #b33;
+  background: #cc3333;
+  color: #fff;
+  font-size: 11px;
+  line-height: 13px;
+  cursor: pointer;
+}
+.bg-del:disabled {
+  opacity: 0.5;
+}
+/* 背景アセットのアップロードボタン(パレット末尾)。 */
+.bg-upload {
+  display: inline-flex;
+  align-items: center;
+  border: 1px dashed #99a;
+  background: #eef2f7;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: #445;
+  cursor: pointer;
+}
+.bg-upload input {
+  display: none;
+}
+/* 背景エディタのセル: タイルを全面に敷き、施設は右下に薄く参照表示する。 */
+.map-grid .cell.bgcell {
+  position: relative;
+}
+.map-grid .cell.bgcell .bg-tile {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+}
+.map-grid .cell.bgcell .fac-ref {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 12px;
+  height: 12px;
+  opacity: 0.55;
+  cursor: pointer;
 }
 .map-side {
   width: 100%;

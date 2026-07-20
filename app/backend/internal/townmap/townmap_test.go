@@ -56,12 +56,100 @@ func TestValidate(t *testing.T) {
 			},
 			false,
 		},
+		{
+			"same cell different town ok",
+			[]Facility{
+				{Key: "bank", Img: "bank", Town: 0, Col: 3, Row: 2},
+				{Key: "gym", Img: "gym", Town: 1, Col: 3, Row: 2},
+			},
+			false,
+		},
+		{
+			"same cell same town duplicate",
+			[]Facility{
+				{Key: "bank", Img: "bank", Town: 2, Col: 3, Row: 2},
+				{Key: "gym", Img: "gym", Town: 2, Col: 3, Row: 2},
+			},
+			true,
+		},
+		{
+			"town above range",
+			[]Facility{{Key: "bank", Img: "bank", Town: MaxTowns, Col: 1, Row: 0}},
+			true,
+		},
+		{
+			"town below range",
+			[]Facility{{Key: "bank", Img: "bank", Town: -1, Col: 1, Row: 0}},
+			true,
+		},
+		{
+			"dest above range",
+			[]Facility{{Key: "walk", Img: "mati_link", Col: 1, Row: 0, Dest: MaxTowns}},
+			true,
+		},
+		{
+			"move facility with valid dest ok",
+			[]Facility{{Key: "walk", Img: "mati_link", Town: 0, Col: 1, Row: 0, Dest: 2}},
+			false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := Validate(tt.fs)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateAssets(t *testing.T) {
+	tests := []struct {
+		name    string
+		as      []Asset
+		wantErr bool
+	}{
+		{"empty is valid", []Asset{}, false},
+		{"missing img", []Asset{{Col: 1, Row: 0}}, true},
+		{"col below range", []Asset{{Img: "kusa", Col: 0, Row: 0}}, true},
+		{"col above range", []Asset{{Img: "kusa", Col: Cols + 1, Row: 0}}, true},
+		{"row below range", []Asset{{Img: "kusa", Col: 1, Row: -1}}, true},
+		{"row above range", []Asset{{Img: "kusa", Col: 1, Row: Rows}}, true},
+		{
+			"duplicate cell",
+			[]Asset{
+				{Img: "kusa", Col: 3, Row: 2},
+				{Img: "umi", Col: 3, Row: 2},
+			},
+			true,
+		},
+		{
+			"distinct cells ok",
+			[]Asset{
+				{Img: "kusa", Col: 3, Row: 2},
+				{Img: "umi", Col: 4, Row: 2},
+			},
+			false,
+		},
+		{
+			"same cell different town ok",
+			[]Asset{
+				{Img: "kusa", Town: 0, Col: 3, Row: 2},
+				{Img: "umi", Town: 1, Col: 3, Row: 2},
+			},
+			false,
+		},
+		{
+			"town out of range",
+			[]Asset{{Img: "kusa", Town: MaxTowns, Col: 1, Row: 0}},
+			true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateAssets(tt.as)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateAssets() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}

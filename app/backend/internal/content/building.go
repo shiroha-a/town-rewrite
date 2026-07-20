@@ -85,28 +85,11 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 	}
 	st.Plots = plots
 
-	rows, err := s.pool.Query(ctx,
-		`SELECT h.id, h.town, h.grid_row, h.grid_col, h.exterior, h.setumei, h.owner_id, COALESCE(p.display_name, '')
-		 FROM player_houses h LEFT JOIN players p ON p.id = h.owner_id
-		 ORDER BY h.town, h.grid_row, h.grid_col`)
+	houses, err := s.ListHouses(ctx, playerID)
 	if err != nil {
-		return nil, fmt.Errorf("list houses: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			c       HouseCell
-			ownerID int64
-		)
-		if err := rows.Scan(&c.ID, &c.Town, &c.Row, &c.Col, &c.Exterior, &c.Setumei, &ownerID, &c.OwnerName); err != nil {
-			return nil, fmt.Errorf("scan house: %w", err)
-		}
-		c.Own = ownerID == playerID
-		st.Houses = append(st.Houses, c)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate houses: %w", err)
-	}
+	st.Houses = houses
 
 	mrows, err := s.pool.Query(ctx,
 		`SELECT h.id, h.town, h.grid_row, h.grid_col, h.exterior, h.setumei, h.interior_rank, h.built_at,
@@ -136,10 +119,60 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 	return st, nil
 }
 
-// ListPlots returns every admin-designated empty plot across all towns.
+// ListHouses returns every house across all towns (for map rendering). Own is
+// set relative to playerID (pass 0 for none).
+func (s *Service) ListHouses(ctx context.Context, playerID int64) ([]HouseCell, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT h.id, h.town, h.grid_row, h.grid_col, h.exterior, h.setumei, h.owner_id, COALESCE(p.display_name, '')
+		 FROM player_houses h LEFT JOIN players p ON p.id = h.owner_id
+		 ORDER BY h.town, h.grid_row, h.grid_col`)
+	if err != nil {
+		return nil, fmt.Errorf("list houses: %w", err)
+	}
+	defer rows.Close()
+	out := []HouseCell{}
+	for rows.Next() {
+		var (
+			c       HouseCell
+			ownerID int64
+		)
+		if err := rows.Scan(&c.ID, &c.Town, &c.Row, &c.Col, &c.Exterior, &c.Setumei, &ownerID, &c.OwnerName); err != nil {
+			return nil, fmt.Errorf("scan house: %w", err)
+		}
+		c.Own = ownerID == playerID
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ListHouseCells returns every cell that currently has a house (any owner),
+// across all towns. 施設編集で家のあるマスをロックするために使う。
+func (s *Service) ListHouseCells(ctx context.Context) ([]PlotCell, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT town, grid_row, grid_col FROM player_houses ORDER BY town, grid_row, grid_col`)
+	if err != nil {
+		return nil, fmt.Errorf("list house cells: %w", err)
+	}
+	defer rows.Close()
+	out := []PlotCell{}
+	for rows.Next() {
+		var c PlotCell
+		if err := rows.Scan(&c.Town, &c.Row, &c.Col); err != nil {
+			return nil, fmt.Errorf("scan house cell: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ListPlots returns every buildable empty plot across all towns. 空き地は施設に
+// 統合済みなので、key='akichi' の施設マスを空地として返す。
 func (s *Service) ListPlots(ctx context.Context) ([]PlotCell, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT town, grid_row, grid_col FROM town_plots ORDER BY town, grid_row, grid_col`)
+		`SELECT COALESCE((f->>'town')::int, 0), (f->>'row')::int, (f->>'col')::int
+		 FROM town_map, jsonb_array_elements(facilities) f
+		 WHERE id = 1 AND f->>'key' = 'akichi'
+		 ORDER BY 1, 2, 3`)
 	if err != nil {
 		return nil, fmt.Errorf("list plots: %w", err)
 	}
@@ -153,30 +186,6 @@ func (s *Service) ListPlots(ctx context.Context) ([]PlotCell, error) {
 		out = append(out, c)
 	}
 	return out, rows.Err()
-}
-
-// SetPlots replaces the full set of empty plots (admin editor save). Coordinates
-// are validated against the grid bounds; duplicates are ignored.
-func (s *Service) SetPlots(ctx context.Context, plots []PlotCell) error {
-	for _, p := range plots {
-		if p.Col < 1 || p.Col > townmap.Cols || p.Row < 0 || p.Row >= townmap.Rows {
-			return &ValidationError{Message: fmt.Sprintf("空地の座標が範囲外です(row=%d, col=%d)", p.Row, p.Col)}
-		}
-	}
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `DELETE FROM town_plots`); err != nil {
-			return fmt.Errorf("clear plots: %w", err)
-		}
-		for _, p := range plots {
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO town_plots (town, grid_row, grid_col) VALUES ($1, $2, $3)
-				 ON CONFLICT DO NOTHING`,
-				p.Town, p.Row, p.Col); err != nil {
-				return fmt.Errorf("insert plot: %w", err)
-			}
-		}
-		return nil
-	})
 }
 
 // OrosiItem is one item available at the wholesaler for the shop's category.

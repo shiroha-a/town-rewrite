@@ -45,6 +45,7 @@ export interface Player {
   super_savings: number;
   loan_daily: number;
   loan_count: number;
+  current_town: number;
   status: {
     energy: number;
     energy_max: number;
@@ -364,15 +365,67 @@ export interface GameSettings {
   syokudou_daily_count: number;
   item_kind_limit: number;
   stock_adjust: number;
+  move_maigo_enabled: boolean;
+  move_walk_secs: number;
+  move_bus_secs: number;
+  towns: TownConfig[]; // 街の一覧(round-trip用。編集は専用エディタ)
+}
+
+// 街設定(名前・地価・隠し町)。街番号は並び順(0始まり)。
+export interface TownConfig {
+  name: string;
+  land_price: number;
+  hidden: boolean; // ワープ不可の隠し町
+}
+
+// 街(番号付き)。GET /towns の戻り値。
+export interface Town {
+  no: number;
+  name: string;
+  land_price: number;
+  hidden: boolean;
 }
 
 export interface TownFacility {
   key: string;
   img: string;
   alt: string;
+  town: number;
   col: number;
   row: number;
+  dest: number; // 移動施設(key=walk/bus)の行き先の街
   ready: boolean;
+}
+
+// 背景アセット(装飾レイヤー)。機能を持たず、施設レイヤーの下にセル単位で敷く。
+export interface TownAsset {
+  img: string;
+  town: number;
+  col: number;
+  row: number;
+}
+
+// 街移動の結果。徒歩/自転車の能力上昇、乗り物、事故、迷子などを含む。
+export interface MoveResult {
+  arrived_town: number;
+  means: string;
+  vehicle: string; // 使った乗り物名(徒歩なら空)
+  fare: number;
+  travel_secs: number; // 移動時間(秒)。到着までのカウントダウンに使う
+  stat_gains: Record<string, number>;
+  accident: boolean;
+  accident_item: string;
+  lost: boolean;
+}
+export type MoveResp = Player & { move_result: MoveResult };
+
+// ワープ料金(円)。バックエンド action.WarpFee と一致させること。
+export const WARP_FEE = 100000;
+
+// 背景アセット画像のURLを解決する。'u:'接頭辞はアップロード画像(DB配信)、
+// それ以外は組み込みのpublic/img/*.gif。
+export function assetUrl(img: string): string {
+  return img.startsWith('u:') ? `/api/v1/assets/${encodeURIComponent(img.slice(2))}` : `/img/${img}.gif`;
 }
 
 export interface StockPrice {
@@ -691,6 +744,23 @@ export const api = {
   listPlayers: () => request<PublicSummary[]>('GET', '/players'),
   playerProfile: (id: number) => request<PublicProfile>('GET', `/players/${id}/profile`),
   townMap: () => request<TownFacility[]>('GET', '/townmap'),
+  townAssets: () => request<TownAsset[]>('GET', '/townassets'),
+  towns: () => request<Town[]>('GET', '/towns'),
+  // 全街の家(メイン画面のグリッド描画用)。ownは呼び出し元プレイヤー基準。
+  houses: (id: number) => request<HouseCell[]>('GET', `/players/${id}/houses`),
+  // 街移動(徒歩/バス)。行き先の街と手段を送る。移動結果(能力上昇等)を含む。
+  moveTown: (id: number, dest: number, means: 'walk' | 'bus') =>
+    request<MoveResp>('POST', `/players/${id}/move`, {
+      dest,
+      means,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  // ワープ(高額・即時)。行き先の街へ瞬間移動する。
+  warp: (id: number, dest: number) =>
+    request<Player>('POST', `/players/${id}/warp`, {
+      dest,
+      idempotency_key: newIdempotencyKey(),
+    }),
   stocks: () => request<StocksResp>('GET', '/stocks'),
   playerStocks: (id: number) => request<PlayerStocksResp>('GET', `/players/${id}/stocks`),
   stockBuy: (id: number, symbol: string, quantity: number) =>
@@ -1038,8 +1108,21 @@ export const api = {
     request<GameSettings>('PUT', '/admin/settings', settings, adminHeaders(actingId)),
   adminUpdateTownMap: (actingId: number, facilities: TownFacility[]) =>
     request<TownFacility[]>('PUT', '/admin/townmap', facilities, adminHeaders(actingId)),
-  adminGetPlots: (actingId: number) =>
-    request<PlotCell[]>('GET', '/admin/building/plots', undefined, adminHeaders(actingId)),
-  adminSetPlots: (actingId: number, plots: PlotCell[]) =>
-    request<PlotCell[]>('PUT', '/admin/building/plots', plots, adminHeaders(actingId)),
+  adminUpdateTownAssets: (actingId: number, assets: TownAsset[]) =>
+    request<TownAsset[]>('PUT', '/admin/townassets', assets, adminHeaders(actingId)),
+  // 家が建っているマス(施設エディタでロックするため)。
+  adminHouseCells: (actingId: number) =>
+    request<PlotCell[]>('GET', '/admin/townmap/houses', undefined, adminHeaders(actingId)),
+  // アップロード済み画像名の一覧(背景アセットのパレット用)。
+  adminListAssets: (actingId: number) =>
+    request<string[]>('GET', '/admin/assets', undefined, adminHeaders(actingId)),
+  // 背景アセット画像をアップロード(base64)。nameはURLスラッグ。
+  adminUploadAsset: (actingId: number, name: string, mime: string, data: string) =>
+    request<{ name: string }>('POST', '/admin/assets', { name, mime, data }, adminHeaders(actingId)),
+  // アップロード画像を削除(配置中は422)。
+  adminDeleteAsset: (actingId: number, name: string) =>
+    request<{ ok: boolean }>('DELETE', `/admin/assets/${encodeURIComponent(name)}`, undefined, adminHeaders(actingId)),
+  // 街の一覧(名前・地価)を更新。街番号は並び順で決まる。
+  adminUpdateTowns: (actingId: number, towns: TownConfig[]) =>
+    request<Town[]>('PUT', '/admin/towns', towns, adminHeaders(actingId)),
 };

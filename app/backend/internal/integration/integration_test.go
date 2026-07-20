@@ -20,6 +20,7 @@ import (
 	"github.com/shiroha-a/town/internal/action"
 	"github.com/shiroha-a/town/internal/attendance"
 	"github.com/shiroha-a/town/internal/bank"
+	"github.com/shiroha-a/town/internal/building"
 	"github.com/shiroha-a/town/internal/cleague"
 	"github.com/shiroha-a/town/internal/content"
 	"github.com/shiroha-a/town/internal/db"
@@ -42,11 +43,12 @@ import (
 )
 
 type playerResp struct {
-	ID      int64    `json:"id"`
-	Roles   []string `json:"roles"`
-	Money   int64    `json:"money"`
-	Savings int64    `json:"savings"`
-	Status  struct {
+	ID          int64    `json:"id"`
+	Roles       []string `json:"roles"`
+	Money       int64    `json:"money"`
+	Savings     int64    `json:"savings"`
+	CurrentTown int      `json:"current_town"`
+	Status      struct {
 		Job          string   `json:"job"`
 		JobLevel     int      `json:"job_level"`
 		JobExp       int      `json:"job_exp"`
@@ -99,6 +101,9 @@ func setup(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 		t.Skip("TOWN_TEST_DATABASE_URL not set; skipping integration test")
 	}
 	ctx := context.Background()
+	// building は街リストをプロセス共有のグローバルに持つため、テスト間の汚染を
+	// 避けて既定の5街にリセットする(TestTownsが変更するため)。
+	building.SetTowns(building.DefaultTowns())
 	if err := db.Migrate(url); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -2574,16 +2579,406 @@ func creditSavings(t *testing.T, pool *pgxpool.Pool, playerID, amount int64) {
 	}
 }
 
-// seedPlots designates buildable empty plots directly in the DB for tests.
+// seedPlots designates buildable empty plots for tests by adding akichi
+// facilities to the town map (空き地は施設に統合済み)。各要素は{town, row, col}。
 func seedPlots(t *testing.T, pool *pgxpool.Pool, plots [][3]int) {
 	t.Helper()
 	ctx := context.Background()
 	for _, p := range plots {
 		if _, err := pool.Exec(ctx,
-			`INSERT INTO town_plots (town, grid_row, grid_col) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+			`UPDATE town_map SET facilities = facilities || jsonb_build_object(
+				'key', 'akichi', 'img', 'akiti', 'alt', '空き地',
+				'town', $1::int, 'row', $2::int, 'col', $3::int, 'dest', 0, 'ready', false)
+			 WHERE id = 1`,
 			p[0], p[1], p[2]); err != nil {
 			t.Fatalf("seed plot: %v", err)
 		}
+	}
+}
+
+func moveTown(t *testing.T, base string, playerID int64, dest int, means, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"dest": dest, "means": means, "idempotency_key": idemKey})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/move",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("move post: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+func TestMoveTown(t *testing.T) {
+	srv, pool := setup(t)
+	p := register(t, srv.URL, "misskey.example", "traveler")
+
+	// 徒歩で街2へ移動(無料)。current_townが変わる。
+	got, code := moveTown(t, srv.URL, p.ID, 2, "walk", "mv1")
+	if code != http.StatusOK {
+		t.Fatalf("walk move: status=%d", code)
+	}
+	if got.CurrentTown != 2 {
+		t.Errorf("current_town after walk = %d, want 2", got.CurrentTown)
+	}
+	if got.Money != 500_000 {
+		t.Errorf("money after walk = %d, want 500000 (無料)", got.Money)
+	}
+
+	// 移動直後は移動時間(クールタイム)中で再移動不可。
+	if _, c := moveTown(t, srv.URL, p.ID, 3, "walk", "mv2"); c != http.StatusUnprocessableEntity {
+		t.Errorf("move during cooldown: status=%d, want 422", c)
+	}
+
+	// クールタイムを解除し、バスで街0へ移動(500円課金)。
+	if _, err := pool.Exec(context.Background(),
+		`DELETE FROM player_facility_cooldowns WHERE player_id=$1 AND facility='move'`, p.ID); err != nil {
+		t.Fatalf("clear cooldown: %v", err)
+	}
+	got, code = moveTown(t, srv.URL, p.ID, 0, "bus", "mv3")
+	if code != http.StatusOK {
+		t.Fatalf("bus move: status=%d", code)
+	}
+	if got.CurrentTown != 0 {
+		t.Errorf("current_town after bus = %d, want 0", got.CurrentTown)
+	}
+	if got.Money != 499_500 {
+		t.Errorf("money after bus = %d, want 499500 (500円課金)", got.Money)
+	}
+
+	// 同じ街への移動は拒否。
+	if _, err := pool.Exec(context.Background(),
+		`DELETE FROM player_facility_cooldowns WHERE player_id=$1 AND facility='move'`, p.ID); err != nil {
+		t.Fatalf("clear cooldown: %v", err)
+	}
+	if _, c := moveTown(t, srv.URL, p.ID, 0, "walk", "mv4"); c != http.StatusUnprocessableEntity {
+		t.Errorf("move to same town: status=%d, want 422", c)
+	}
+
+	// 不正な手段は拒否。
+	if _, c := moveTown(t, srv.URL, p.ID, 1, "teleport", "mv5"); c != http.StatusUnprocessableEntity {
+		t.Errorf("invalid means: status=%d, want 422", c)
+	}
+
+	// 徒歩の能力上昇: 何度か徒歩移動すると身体5能力の合計が増える(各50%, +1〜5)。
+	sumStats := func() int {
+		var tairyoku, kenkou, speed, wanryoku, kyakuryoku int
+		if err := pool.QueryRow(context.Background(),
+			`SELECT tairyoku, kenkou, speed, wanryoku, kyakuryoku FROM player_status WHERE player_id=$1`,
+			p.ID).Scan(&tairyoku, &kenkou, &speed, &wanryoku, &kyakuryoku); err != nil {
+			t.Fatalf("read stats: %v", err)
+		}
+		return tairyoku + kenkou + speed + wanryoku + kyakuryoku
+	}
+	before := sumStats()
+	for i := 0; i < 15; i++ {
+		if _, err := pool.Exec(context.Background(),
+			`DELETE FROM player_facility_cooldowns WHERE player_id=$1 AND facility='move'`, p.ID); err != nil {
+			t.Fatalf("clear cooldown: %v", err)
+		}
+		dest := 1 + i%2 // 街1と街2を交互に(同一街回避)
+		if _, c := moveTown(t, srv.URL, p.ID, dest, "walk", fmt.Sprintf("wgain-%d", i)); c != http.StatusOK {
+			t.Fatalf("walk gain move %d: status=%d", i, c)
+		}
+	}
+	if after := sumStats(); after <= before {
+		t.Errorf("walk stat gains: sum before=%d after=%d, want after>before", before, after)
+	}
+}
+
+// giveItem inserts a catalog item into a player's inventory for tests.
+func giveItem(t *testing.T, pool *pgxpool.Pool, playerID int64, name string, qty int) {
+	t.Helper()
+	ctx := context.Background()
+	var id int64
+	var durability int
+	if err := pool.QueryRow(ctx,
+		`SELECT id, GREATEST(durability, 1) FROM content_items WHERE name = $1`, name).Scan(&id, &durability); err != nil {
+		t.Fatalf("find item %s: %v", name, err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO player_items (player_id, item_id, quantity, remaining_uses) VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (player_id, item_id) DO UPDATE SET
+		   quantity = player_items.quantity + $3, remaining_uses = player_items.remaining_uses + $4`,
+		playerID, id, qty, durability*qty); err != nil {
+		t.Fatalf("give item %s: %v", name, err)
+	}
+}
+
+type moveResultT struct {
+	ArrivedTown int            `json:"arrived_town"`
+	Vehicle     string         `json:"vehicle"`
+	StatGains   map[string]int `json:"stat_gains"`
+	Accident    bool           `json:"accident"`
+	Lost        bool           `json:"lost"`
+}
+
+func moveTownR(t *testing.T, base string, playerID int64, dest int, means, idemKey string) (moveResultT, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"dest": dest, "means": means, "idempotency_key": idemKey})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/move",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("move post: %v", err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		MoveResult moveResultT `json:"move_result"`
+	}
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return out.MoveResult, resp.StatusCode
+}
+
+func TestMoveVehicle(t *testing.T) {
+	srv, pool := setup(t)
+	p := register(t, srv.URL, "misskey.example", "driver")
+
+	// ベンツ(乗り物, 移動5秒)を持って徒歩移動 → ベンツを使い、車なので能力は上がらない。
+	giveItem(t, pool, p.ID, "ベンツ", 1)
+	mr, code := moveTownR(t, srv.URL, p.ID, 1, "walk", "veh1")
+	if code != http.StatusOK {
+		t.Fatalf("move with benz: status=%d", code)
+	}
+	if mr.Vehicle != "ベンツ" {
+		t.Errorf("vehicle = %q, want ベンツ", mr.Vehicle)
+	}
+	if len(mr.StatGains) != 0 {
+		t.Errorf("car should not raise stats, got %v", mr.StatGains)
+	}
+	if mr.ArrivedTown != 1 {
+		t.Errorf("arrived = %d, want 1", mr.ArrivedTown)
+	}
+
+	// 自転車(移動20秒)も持つと、最速の乗り物(ベンツ5秒)が選ばれる。
+	if _, err := pool.Exec(context.Background(),
+		`DELETE FROM player_facility_cooldowns WHERE player_id=$1 AND facility='move'`, p.ID); err != nil {
+		t.Fatalf("clear cooldown: %v", err)
+	}
+	giveItem(t, pool, p.ID, "自転車", 1)
+	mr, code = moveTownR(t, srv.URL, p.ID, 2, "walk", "veh2")
+	if code != http.StatusOK {
+		t.Fatalf("move with benz+bike: status=%d", code)
+	}
+	if mr.Vehicle != "ベンツ" {
+		t.Errorf("fastest vehicle = %q, want ベンツ(5秒 < 自転車20秒)", mr.Vehicle)
+	}
+}
+
+func warp(t *testing.T, base string, playerID int64, dest int, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"dest": dest, "idempotency_key": idemKey})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/warp",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("warp post: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+func TestWarp(t *testing.T) {
+	srv, pool := setup(t)
+	p := register(t, srv.URL, "misskey.example", "warper") // 現金500000
+
+	// 街3へワープ → 100000円課金、即時到着(クールタイム無し)。
+	got, code := warp(t, srv.URL, p.ID, 3, "w1")
+	if code != http.StatusOK {
+		t.Fatalf("warp: status=%d", code)
+	}
+	if got.CurrentTown != 3 {
+		t.Errorf("current_town after warp = %d, want 3", got.CurrentTown)
+	}
+	if got.Money != 400_000 {
+		t.Errorf("money after warp = %d, want 400000 (100000課金)", got.Money)
+	}
+
+	// 同じ街へのワープは拒否。
+	if _, c := warp(t, srv.URL, p.ID, 3, "w2"); c != http.StatusUnprocessableEntity {
+		t.Errorf("warp to same town: status=%d, want 422", c)
+	}
+
+	// 現金が料金未満だと拒否。
+	creditCash(t, pool, p.ID, -350_000) // 400000-350000=50000 < 100000
+	if _, c := warp(t, srv.URL, p.ID, 0, "w3"); c != http.StatusUnprocessableEntity {
+		t.Errorf("warp with insufficient cash: status=%d, want 422", c)
+	}
+}
+
+// TestTownMapHouseGuard verifies that saving the town map cannot remove the
+// akichi under a built house (家が孤立する不整合を防ぐガード)。
+func TestTownMapHouseGuard(t *testing.T) {
+	srv, pool := setup(t)
+	admin := register(t, srv.URL, "misskey.example", "root") // 最初=admin
+	creditSavings(t, pool, admin.ID, 30_000_000)
+	seedPlots(t, pool, [][3]int{{4, 0, 1}}) // 街4 A1 を空き地(akichi)に
+	if _, c := buildHouse(t, srv.URL, admin.ID, 4, 0, 1, "house1", 3, "hg1"); c != http.StatusOK {
+		t.Fatalf("build: status=%d", c)
+	}
+	akichi := townmap.Facility{Key: "akichi", Img: "akiti", Alt: "空き地", Town: 4, Row: 0, Col: 1}
+
+	// 家のあるマスの akichi を外して保存 → 拒否(422)。
+	if code, _ := adminPut(t, srv.URL, "/api/v1/admin/townmap", admin.ID, townmap.Default()); code != http.StatusUnprocessableEntity {
+		t.Errorf("remove akichi under house: status=%d, want 422", code)
+	}
+	// akichi を含めて保存 → 成功(200)。
+	withAkichi := append(townmap.Default(), akichi)
+	if code, body := adminPut(t, srv.URL, "/api/v1/admin/townmap", admin.ID, withAkichi); code != http.StatusOK {
+		t.Errorf("keep akichi: status=%d, body=%s", code, body)
+	}
+}
+
+// TestUploadAsset covers the background-asset image upload: admin-only, stored,
+// served, listed, and validated.
+func TestUploadAsset(t *testing.T) {
+	srv, _ := setup(t)
+	admin := register(t, srv.URL, "misskey.example", "root")
+	user := register(t, srv.URL, "misskey.example", "alice")
+	// 1x1 red PNG。
+	png := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+	good := map[string]any{"name": "tile1", "mime": "image/png", "data": png}
+
+	// 認可: 非adminは403。
+	if code, _ := adminPost(t, srv.URL, "/api/v1/admin/assets", user.ID, good); code != http.StatusForbidden {
+		t.Errorf("non-admin upload: status=%d, want 403", code)
+	}
+	// adminはアップロード成功。
+	if code, body := adminPost(t, srv.URL, "/api/v1/admin/assets", admin.ID, good); code != http.StatusOK {
+		t.Fatalf("upload: status=%d, body=%s", code, body)
+	}
+	// 公開配信で取得でき、Content-Typeが画像。
+	resp, err := http.Get(srv.URL + "/api/v1/assets/tile1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "image/png" {
+		t.Errorf("serve: status=%d, content-type=%q", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	resp.Body.Close()
+	// 一覧に含まれる。
+	lreq, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/admin/assets", nil)
+	lreq.Header.Set("X-Acting-Player-Id", strconv.FormatInt(admin.ID, 10))
+	lresp, err := http.DefaultClient.Do(lreq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lbody, _ := io.ReadAll(lresp.Body)
+	lresp.Body.Close()
+	if lresp.StatusCode != http.StatusOK || !bytes.Contains(lbody, []byte("tile1")) {
+		t.Errorf("list: status=%d, body=%s", lresp.StatusCode, lbody)
+	}
+	// 不正な名前・形式は400。
+	if code, _ := adminPost(t, srv.URL, "/api/v1/admin/assets", admin.ID,
+		map[string]any{"name": "bad name!", "mime": "image/png", "data": png}); code != http.StatusBadRequest {
+		t.Errorf("bad name: status=%d, want 400", code)
+	}
+	if code, _ := adminPost(t, srv.URL, "/api/v1/admin/assets", admin.ID,
+		map[string]any{"name": "tile2", "mime": "application/pdf", "data": png}); code != http.StatusBadRequest {
+		t.Errorf("bad mime: status=%d, want 400", code)
+	}
+
+	// 配置中の画像は削除できない(422)。配置を外せば削除できる(200)。
+	delTile1 := func() int {
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/v1/admin/assets/tile1", nil)
+		req.Header.Set("X-Acting-Player-Id", strconv.FormatInt(admin.ID, 10))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	place := []map[string]any{{"img": "u:tile1", "town": 0, "col": 1, "row": 0}}
+	if code, _ := adminPut(t, srv.URL, "/api/v1/admin/townassets", admin.ID, place); code != http.StatusOK {
+		t.Fatalf("place asset: status=%d", code)
+	}
+	if c := delTile1(); c != http.StatusUnprocessableEntity {
+		t.Errorf("delete in-use asset: status=%d, want 422", c)
+	}
+	if code, _ := adminPut(t, srv.URL, "/api/v1/admin/townassets", admin.ID, []map[string]any{}); code != http.StatusOK {
+		t.Fatalf("clear townassets: status=%d", code)
+	}
+	if c := delTile1(); c != http.StatusOK {
+		t.Errorf("delete unused asset: status=%d, want 200", c)
+	}
+}
+
+// TestTowns covers the town config API: GET is public, PUT is admin-only,
+// updates the count/names/land price and reflects in move bounds.
+func TestTowns(t *testing.T) {
+	srv, _ := setup(t)
+	admin := register(t, srv.URL, "misskey.example", "root")
+	user := register(t, srv.URL, "misskey.example", "alice")
+
+	// GETは公開。既定の5街。
+	resp, err := http.Get(srv.URL + "/api/v1/towns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []struct {
+		No        int    `json:"no"`
+		Name      string `json:"name"`
+		LandPrice int    `json:"land_price"`
+	}
+	json.NewDecoder(resp.Body).Decode(&got)
+	resp.Body.Close()
+	if len(got) != 5 || got[0].Name != "公園" {
+		t.Fatalf("default towns = %v", got)
+	}
+
+	// 非adminのPUTは403。
+	if code, _ := adminPut(t, srv.URL, "/api/v1/admin/towns", user.ID,
+		[]map[string]any{{"name": "x", "land_price": 1}}); code != http.StatusForbidden {
+		t.Errorf("non-admin update towns: status=%d, want 403", code)
+	}
+	// 空名は400。
+	if code, _ := adminPut(t, srv.URL, "/api/v1/admin/towns", admin.ID,
+		[]map[string]any{{"name": "", "land_price": 1}}); code != http.StatusBadRequest {
+		t.Errorf("empty name: status=%d, want 400", code)
+	}
+
+	// adminが6街に更新(6番目を追加)。
+	six := []map[string]any{
+		{"name": "A", "land_price": 100}, {"name": "B", "land_price": 100},
+		{"name": "C", "land_price": 100}, {"name": "D", "land_price": 100},
+		{"name": "E", "land_price": 100}, {"name": "F", "land_price": 100},
+	}
+	if code, body := adminPut(t, srv.URL, "/api/v1/admin/towns", admin.ID, six); code != http.StatusOK {
+		t.Fatalf("update towns: status=%d, body=%s", code, body)
+	}
+	// 移動先の上限が6街に広がる: dest=5 が通る(以前は422)。
+	if _, c := moveTown(t, srv.URL, admin.ID, 5, "walk", "tw6"); c != http.StatusOK {
+		t.Errorf("move to town 5 (6 towns): status=%d, want 200", c)
+	}
+
+	// 隠し町(hidden)にはワープできない。街2を隠し町にする。
+	hidden := []map[string]any{
+		{"name": "A", "land_price": 100}, {"name": "B", "land_price": 100},
+		{"name": "C", "land_price": 100, "hidden": true}, {"name": "D", "land_price": 100},
+		{"name": "E", "land_price": 100}, {"name": "F", "land_price": 100},
+	}
+	if code, _ := adminPut(t, srv.URL, "/api/v1/admin/towns", admin.ID, hidden); code != http.StatusOK {
+		t.Fatalf("set hidden town: status=%d", code)
+	}
+	if _, c := warp(t, srv.URL, admin.ID, 2, "wh1"); c != http.StatusUnprocessableEntity {
+		t.Errorf("warp to hidden town: status=%d, want 422", c)
+	}
+	if _, c := warp(t, srv.URL, admin.ID, 1, "wh2"); c != http.StatusOK {
+		t.Errorf("warp to normal town: status=%d, want 200", c)
 	}
 }
 
@@ -2592,8 +2987,9 @@ func TestBuildHouse(t *testing.T) {
 	ctx := context.Background()
 	p := register(t, srv.URL, "misskey.example", "builder")
 	creditSavings(t, pool, p.ID, 30_000_000) // 3000万円を普通口座へ
-	// 謎の街(4)のA1-A5と、街0の施設セル(建設会社: row4,col13)を空地に指定する。
-	seedPlots(t, pool, [][3]int{{4, 0, 1}, {4, 0, 2}, {4, 0, 3}, {4, 0, 4}, {4, 0, 5}, {0, 4, 13}})
+	// 謎の街(4)のA1-A5を空地(akichi施設)に指定する。街0の施設セル(建設会社: row4,col13)は
+	// 施設が既にあるため akichi を置けず、そこには建てられない(下でテスト)。
+	seedPlots(t, pool, [][3]int{{4, 0, 1}, {4, 0, 2}, {4, 0, 3}, {4, 0, 4}, {4, 0, 5}})
 
 	// 空地に指定されていないマスには建てられない。
 	if _, c := buildHouse(t, srv.URL, p.ID, 4, 5, 5, "house1", 0, "bn"); c != http.StatusUnprocessableEntity {

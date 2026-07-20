@@ -34,10 +34,15 @@ func (s *Service) DoBuildHouse(ctx context.Context, playerID int64, town, row, c
 		if count >= building.MochiieMax {
 			return &ConditionError{Message: fmt.Sprintf("家は%d軒までしか持てません。", building.MochiieMax)}
 		}
-		// 管理者が空地(town_plots)に指定したマスにのみ建てられる。
+		// 建築可能マス = key='akichi' の空き地施設があるマスのみ(空き地は施設に統合済み)。
+		// 通常施設のあるマスには akichi が無い(1セル1施設)ので、自動的に建築不可になる。
 		var isPlot bool
 		if err := tx.QueryRow(ctx,
-			`SELECT EXISTS(SELECT 1 FROM town_plots WHERE town = $1 AND grid_row = $2 AND grid_col = $3)`,
+			`SELECT EXISTS(
+			   SELECT 1 FROM town_map, jsonb_array_elements(facilities) f
+			   WHERE id = 1 AND f->>'key' = 'akichi'
+			     AND COALESCE((f->>'town')::int, 0) = $1
+			     AND (f->>'row')::int = $2 AND (f->>'col')::int = $3)`,
 			town, row, col).Scan(&isPlot); err != nil {
 			return fmt.Errorf("check plot: %w", err)
 		}
@@ -47,20 +52,6 @@ func (s *Service) DoBuildHouse(ctx context.Context, playerID int64, town, row, c
 		cost, err := building.BuildCost(town, exterior, interiorRank, count)
 		if err != nil {
 			return &ConditionError{Message: "外装または内装の指定が正しくありません。"}
-		}
-		// 街0(メイン街)は既存施設のセルに建てられない。町マップのfacilities JSONBを直接引く。
-		if town == 0 {
-			var onFacility bool
-			if err := tx.QueryRow(ctx,
-				`SELECT EXISTS(
-				   SELECT 1 FROM town_map, jsonb_array_elements(facilities) f
-				   WHERE id = 1 AND (f->>'col')::int = $1 AND (f->>'row')::int = $2)`,
-				col, row).Scan(&onFacility); err != nil {
-				return fmt.Errorf("check facility cell: %w", err)
-			}
-			if onFacility {
-				return &ConditionError{Message: "その場所には施設があるため建てられません。"}
-			}
 		}
 		// 空地判定(同一マスに既存の家が無いこと)。UNIQUE制約も二重の保険になる。
 		var occupied bool

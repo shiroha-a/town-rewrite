@@ -6,7 +6,10 @@
 // is shared. All prices here are in 万円 (×10000 円) unless noted.
 package building
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 // MochiieMax is the legacy per-player house limit (mochiie_max).
 const MochiieMax = 4
@@ -14,15 +17,19 @@ const MochiieMax = 4
 // yenPerMan converts a 万円 price to 円.
 const yenPerMan = 10000
 
-// Town is one of the five buildable towns (town_ini.cgi). LandPrice is in 万円.
+// Town is one of the buildable towns (town_ini.cgi). LandPrice is in 万円.
+// Hidden towns (隠し町/kakushimachi) are excluded from the warp destination list
+// and cannot be warped to.
 type Town struct {
 	No        int    `json:"no"`
 	Name      string `json:"name"`
 	LandPrice int    `json:"land_price"`
+	Hidden    bool   `json:"hidden"`
 }
 
-// towns lists the five towns in legacy order (0=公園 .. 4=謎の街).
-var towns = []Town{
+// defaultTowns lists the five legacy towns (0=公園 .. 4=謎の街). Used to seed the
+// editable town list when settings has none.
+var defaultTowns = []Town{
 	{No: 0, Name: "公園", LandPrice: 2000},
 	{No: 1, Name: "シー・リゾート", LandPrice: 1000},
 	{No: 2, Name: "カントリータウン", LandPrice: 500},
@@ -30,15 +37,64 @@ var towns = []Town{
 	{No: 4, Name: "謎の街", LandPrice: 250},
 }
 
-// Towns returns a copy of the town table.
+// towns is the current (admin-editable) town table. Persisted in settings and
+// synced here via SetTowns at startup and on admin update. Guarded by townsMu.
+var (
+	townsMu sync.RWMutex
+	towns   = append([]Town(nil), defaultTowns...)
+)
+
+// DefaultTowns returns a copy of the legacy default town table (for seeding).
+func DefaultTowns() []Town {
+	out := make([]Town, len(defaultTowns))
+	copy(out, defaultTowns)
+	return out
+}
+
+// SetTowns replaces the runtime town table (No is reassigned by index).
+func SetTowns(ts []Town) {
+	next := make([]Town, len(ts))
+	for i, t := range ts {
+		t.No = i
+		next[i] = t
+	}
+	townsMu.Lock()
+	towns = next
+	townsMu.Unlock()
+}
+
+// Towns returns a copy of the current town table.
 func Towns() []Town {
+	townsMu.RLock()
+	defer townsMu.RUnlock()
 	out := make([]Town, len(towns))
 	copy(out, towns)
 	return out
 }
 
+// TownCount returns the number of towns currently configured.
+func TownCount() int {
+	townsMu.RLock()
+	defer townsMu.RUnlock()
+	return len(towns)
+}
+
+// IsHidden reports whether the town at no is a hidden town (warp-excluded).
+func IsHidden(no int) bool {
+	townsMu.RLock()
+	defer townsMu.RUnlock()
+	for _, t := range towns {
+		if t.No == no {
+			return t.Hidden
+		}
+	}
+	return false
+}
+
 // townByNo finds a town by its number.
 func townByNo(no int) (Town, bool) {
+	townsMu.RLock()
+	defer townsMu.RUnlock()
 	for _, t := range towns {
 		if t.No == no {
 			return t, true
