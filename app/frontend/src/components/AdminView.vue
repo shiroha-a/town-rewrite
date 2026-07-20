@@ -14,7 +14,6 @@ import {
   type GameSettings,
   type TownFacility,
   type TownAsset,
-  type PlotCell,
 } from '../api';
 
 const props = defineProps<{ player: Player }>();
@@ -108,7 +107,6 @@ async function refresh() {
     settings.value = await api.adminGetSettings(props.player.id);
     townmap.value = await api.townMap();
     assets.value = await api.townAssets();
-    plots.value = await api.adminGetPlots(props.player.id);
     selectedIdx.value = null;
   } catch (e) {
     fail(e);
@@ -144,12 +142,13 @@ const KEY_PRESETS: { key: string; label: string }[] = [
   { key: 'aisatu', label: 'あいさつ(準備中)' },
   { key: 'walk', label: '街移動(徒歩)' },
   { key: 'bus', label: '街移動(バス・500円)' },
+  { key: 'akichi', label: '空き地(建築可能マス)' },
 ];
 // 移動施設の遷移先key(選択時に行き先セレクタを出す)。
 const MOVE_KEYS = ['walk', 'bus'];
 // 施設用に用意されているgif(public/img)。
 const IMG_PRESETS = [
-  'depart', 'bank', 'syokudou', 'gym', 'onsen', 'hospital', 'work', 'yakuba', 'kabu', 'keiba', 'kentiku', 'prof', 'mail', 'mati_link', 'bus',
+  'depart', 'bank', 'syokudou', 'gym', 'onsen', 'hospital', 'work', 'yakuba', 'kabu', 'keiba', 'kentiku', 'prof', 'mail', 'mati_link', 'bus', 'akiti',
 ];
 
 // 施設レイヤーで編集中の街(0..4)。施設はマルチ街化済み。
@@ -248,8 +247,8 @@ async function saveTownMap() {
 
 // 背景アセット配置レイヤー。施設とは別に、装飾用の背景画像をセル単位で置く。
 const assets = ref<TownAsset[]>([]);
-// 編集中のレイヤー('facility'=施設 / 'asset'=背景 / 'plot'=空き地)。
-const mapLayer = ref<'facility' | 'asset' | 'plot'>('facility');
+// 編集中のレイヤー('facility'=施設(空き地含む) / 'asset'=背景)。
+const mapLayer = ref<'facility' | 'asset'>('facility');
 // 背景アセットのパレット(public/imgにコピー済みのlegacy地形素材)。
 const BG_PRESETS = ['kusa', 'sima', 'umi', 'tree1', 'tree2', 'tree3', 'tree4'];
 // 選択中の「筆」(パレットで選んだ背景アセット)。
@@ -321,9 +320,8 @@ function onBgDrop(col: number, rowIdx: number) {
   assets.value[srcIdx].row = rowIdx;
 }
 
-// 空き地(建設会社): 街ごとに家を建てられるマスを指定する。
-const plots = ref<PlotCell[]>([]);
-const plotTown = ref(0);
+// マップ編集で使う5つの街(施設レイヤーの街セレクタ用)。空き地は施設(key='akichi')に
+// 統合したため、専用の空き地レイヤーは廃止し、施設レイヤーで空き地施設を配置する。
 const plotTowns = [
   { no: 0, name: '公園' },
   { no: 1, name: 'シー・リゾート' },
@@ -331,38 +329,6 @@ const plotTowns = [
   { no: 3, name: 'ダウンタウン' },
   { no: 4, name: '謎の街' },
 ];
-// 施設セルは空地にできない(施設はマルチ街化済みなので選択中の街で判定)。
-function plotFacilityAt(col: number, rowIdx: number): boolean {
-  return mapFacilityAt(col, rowIdx, plotTown.value) >= 0;
-}
-function plotFacilityImg(col: number, rowIdx: number): string {
-  const i = mapFacilityAt(col, rowIdx, plotTown.value);
-  return i >= 0 ? townmap.value[i].img : '';
-}
-function isPlot(col: number, rowIdx: number): boolean {
-  return plots.value.some((p) => p.town === plotTown.value && p.col === col && p.row === rowIdx);
-}
-function togglePlot(col: number, rowIdx: number) {
-  if (plotFacilityAt(col, rowIdx)) return;
-  const i = plots.value.findIndex(
-    (p) => p.town === plotTown.value && p.col === col && p.row === rowIdx,
-  );
-  if (i >= 0) plots.value.splice(i, 1);
-  else plots.value.push({ town: plotTown.value, row: rowIdx, col });
-}
-async function savePlots() {
-  busy.value = true;
-  message.value = '';
-  try {
-    plots.value = await api.adminSetPlots(props.player.id, plots.value);
-    message.value = '空き地を更新しました。';
-    kind.value = 'ok';
-  } catch (e) {
-    fail(e);
-  } finally {
-    busy.value = false;
-  }
-}
 
 // サーバー設定(数値項目)の入力欄メタデータ。ラベルと簡単な補足を持つ。
 const SETTINGS_FIELDS: { key: keyof GameSettings; label: string; hint?: string }[] = [
@@ -855,9 +821,6 @@ async function deleteEdit() {
               <button :class="{ active: mapLayer === 'asset' }" @click="mapLayer = 'asset'">
                 背景レイヤー（{{ assets.length }}）
               </button>
-              <button :class="{ active: mapLayer === 'plot' }" @click="mapLayer = 'plot'">
-                空き地レイヤー（{{ plots.length }}）
-              </button>
             </div>
 
             <section v-if="mapLayer === 'facility'" class="panel">
@@ -1032,54 +995,6 @@ async function deleteEdit() {
               </div>
             </section>
 
-            <!-- 空き地(建設会社)配置レイヤー -->
-            <section v-else class="panel">
-              <h3>
-                空き地の設定<span class="hint">
-                  ※街を選び、家を建てられるマスをクリックで指定/解除。緑=空地。各街の施設セルは除く。</span
-                >
-              </h3>
-              <div class="plot-towns">
-                <button
-                  v-for="t in plotTowns"
-                  :key="t.no"
-                  class="ptab"
-                  :class="{ active: plotTown === t.no }"
-                  @click="plotTown = t.no"
-                >
-                  {{ t.name }}
-                </button>
-              </div>
-              <div class="map-scroll">
-                <div class="map-grid">
-                  <div class="corner"></div>
-                  <div v-for="c in mapCols" :key="'ph' + c" class="colhead">{{ c }}</div>
-                  <template v-for="(r, ri) in mapRows" :key="'pr' + r">
-                    <div class="rowhead">{{ r }}</div>
-                    <div
-                      v-for="c in mapCols"
-                      :key="'p' + r + '-' + c"
-                      class="cell"
-                      :class="{ occ: plotFacilityAt(c, ri), plot: isPlot(c, ri) }"
-                      :title="plotFacilityAt(c, ri) ? '施設' : isPlot(c, ri) ? '空地' : ''"
-                      @click="togglePlot(c, ri)"
-                    >
-                      <img
-                        v-if="plotFacilityAt(c, ri)"
-                        :src="`/img/${plotFacilityImg(c, ri)}.gif`"
-                        width="24"
-                        height="24"
-                        alt=""
-                      />
-                    </div>
-                  </template>
-                </div>
-              </div>
-              <div class="actions">
-                <button class="btn primary" :disabled="busy" @click="savePlots">保存</button>
-                <button class="btn" :disabled="busy" @click="refresh">再読込</button>
-              </div>
-            </section>
           </div>
         </section>
       </div>

@@ -2575,13 +2575,17 @@ func creditSavings(t *testing.T, pool *pgxpool.Pool, playerID, amount int64) {
 	}
 }
 
-// seedPlots designates buildable empty plots directly in the DB for tests.
+// seedPlots designates buildable empty plots for tests by adding akichi
+// facilities to the town map (空き地は施設に統合済み)。各要素は{town, row, col}。
 func seedPlots(t *testing.T, pool *pgxpool.Pool, plots [][3]int) {
 	t.Helper()
 	ctx := context.Background()
 	for _, p := range plots {
 		if _, err := pool.Exec(ctx,
-			`INSERT INTO town_plots (town, grid_row, grid_col) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+			`UPDATE town_map SET facilities = facilities || jsonb_build_object(
+				'key', 'akichi', 'img', 'akiti', 'alt', '空き地',
+				'town', $1::int, 'row', $2::int, 'col', $3::int, 'dest', 0, 'ready', false)
+			 WHERE id = 1`,
 			p[0], p[1], p[2]); err != nil {
 			t.Fatalf("seed plot: %v", err)
 		}
@@ -2816,8 +2820,9 @@ func TestBuildHouse(t *testing.T) {
 	ctx := context.Background()
 	p := register(t, srv.URL, "misskey.example", "builder")
 	creditSavings(t, pool, p.ID, 30_000_000) // 3000万円を普通口座へ
-	// 謎の街(4)のA1-A5と、街0の施設セル(建設会社: row4,col13)を空地に指定する。
-	seedPlots(t, pool, [][3]int{{4, 0, 1}, {4, 0, 2}, {4, 0, 3}, {4, 0, 4}, {4, 0, 5}, {0, 4, 13}})
+	// 謎の街(4)のA1-A5を空地(akichi施設)に指定する。街0の施設セル(建設会社: row4,col13)は
+	// 施設が既にあるため akichi を置けず、そこには建てられない(下でテスト)。
+	seedPlots(t, pool, [][3]int{{4, 0, 1}, {4, 0, 2}, {4, 0, 3}, {4, 0, 4}, {4, 0, 5}})
 
 	// 空地に指定されていないマスには建てられない。
 	if _, c := buildHouse(t, srv.URL, p.ID, 4, 5, 5, "house1", 0, "bn"); c != http.StatusUnprocessableEntity {

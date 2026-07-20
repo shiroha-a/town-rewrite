@@ -25,9 +25,12 @@ const currentTownName = computed(() => TOWN_NAMES[props.player.current_town] ?? 
 const currentTownLandPrice = computed(() => TOWN_LAND_PRICES[props.player.current_town] ?? 0);
 
 // 施設は全街ぶんをまとめて取得し、現在いる街(current_town)のものだけを描画する。
+// 空き地(akichi)は建設会社で扱う建築マスなのでメイン街には出さない。
 const facilities = ref<TownFacility[]>([]);
 const facilityAt = (col: number, row: number) =>
-  facilities.value.find((f) => f.town === props.player.current_town && f.col === col && f.row === row);
+  facilities.value.find(
+    (f) => f.key !== 'akichi' && f.town === props.player.current_town && f.col === col && f.row === row,
+  );
 
 // 背景アセット(装飾レイヤー)。施設の下にセル単位で敷く。現状は街0のみ対応。
 const assets = ref<TownAsset[]>([]);

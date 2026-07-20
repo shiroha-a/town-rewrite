@@ -6,8 +6,6 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-
-	"github.com/shiroha-a/town/internal/content"
 )
 
 // building returns the construction-company screen state: the five towns and
@@ -396,37 +394,5 @@ func (s *Server) setShopPrice(w http.ResponseWriter, r *http.Request) {
 	writeFacilityResult(w, p, err)
 }
 
-// adminGetPlots returns every admin-designated empty plot (管理者専用).
-func (s *Server) adminGetPlots(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w, r) {
-		return
-	}
-	plots, err := s.content.ListPlots(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, plots)
-}
-
-// adminUpdatePlots replaces the full set of empty plots (管理者専用).
-func (s *Server) adminUpdatePlots(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w, r) {
-		return
-	}
-	var plots []content.PlotCell
-	if err := json.NewDecoder(r.Body).Decode(&plots); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
-		return
-	}
-	if err := s.content.SetPlots(r.Context(), plots); err != nil {
-		writeContentErr(w, err)
-		return
-	}
-	updated, err := s.content.ListPlots(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, updated)
-}
+// 空き地は施設(key='akichi')に統合された。空地の設定は施設編集(adminUpdateTownMap)で
+// 行うため、専用の plots エンドポイントは廃止した。

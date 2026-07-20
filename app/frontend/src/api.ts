@@ -1081,8 +1081,4 @@ export const api = {
     request<TownFacility[]>('PUT', '/admin/townmap', facilities, adminHeaders(actingId)),
   adminUpdateTownAssets: (actingId: number, assets: TownAsset[]) =>
     request<TownAsset[]>('PUT', '/admin/townassets', assets, adminHeaders(actingId)),
-  adminGetPlots: (actingId: number) =>
-    request<PlotCell[]>('GET', '/admin/building/plots', undefined, adminHeaders(actingId)),
-  adminSetPlots: (actingId: number, plots: PlotCell[]) =>
-    request<PlotCell[]>('PUT', '/admin/building/plots', plots, adminHeaders(actingId)),
 };

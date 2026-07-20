@@ -136,10 +136,14 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 	return st, nil
 }
 
-// ListPlots returns every admin-designated empty plot across all towns.
+// ListPlots returns every buildable empty plot across all towns. 空き地は施設に
+// 統合済みなので、key='akichi' の施設マスを空地として返す。
 func (s *Service) ListPlots(ctx context.Context) ([]PlotCell, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT town, grid_row, grid_col FROM town_plots ORDER BY town, grid_row, grid_col`)
+		`SELECT COALESCE((f->>'town')::int, 0), (f->>'row')::int, (f->>'col')::int
+		 FROM town_map, jsonb_array_elements(facilities) f
+		 WHERE id = 1 AND f->>'key' = 'akichi'
+		 ORDER BY 1, 2, 3`)
 	if err != nil {
 		return nil, fmt.Errorf("list plots: %w", err)
 	}
@@ -153,30 +157,6 @@ func (s *Service) ListPlots(ctx context.Context) ([]PlotCell, error) {
 		out = append(out, c)
 	}
 	return out, rows.Err()
-}
-
-// SetPlots replaces the full set of empty plots (admin editor save). Coordinates
-// are validated against the grid bounds; duplicates are ignored.
-func (s *Service) SetPlots(ctx context.Context, plots []PlotCell) error {
-	for _, p := range plots {
-		if p.Col < 1 || p.Col > townmap.Cols || p.Row < 0 || p.Row >= townmap.Rows {
-			return &ValidationError{Message: fmt.Sprintf("空地の座標が範囲外です(row=%d, col=%d)", p.Row, p.Col)}
-		}
-	}
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `DELETE FROM town_plots`); err != nil {
-			return fmt.Errorf("clear plots: %w", err)
-		}
-		for _, p := range plots {
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO town_plots (town, grid_row, grid_col) VALUES ($1, $2, $3)
-				 ON CONFLICT DO NOTHING`,
-				p.Town, p.Row, p.Col); err != nil {
-				return fmt.Errorf("insert plot: %w", err)
-			}
-		}
-		return nil
-	})
 }
 
 // OrosiItem is one item available at the wholesaler for the shop's category.

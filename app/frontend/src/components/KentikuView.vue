@@ -66,10 +66,11 @@ const townPlotCount = computed(
   () => state.value?.plots.filter((p) => p.town === selectedTown.value).length ?? 0,
 );
 
-// 選択中の街の施設セル(施設はマルチ街化済み)。
+// 選択中の街の施設セル(施設はマルチ街化済み)。空き地(akichi)は建築マスとして
+// plotAtで別扱いするので、施設アイコンからは除外する。
 function facilityAt(row: number, col: number): TownFacility | undefined {
   return facilities.value.find(
-    (f) => f.town === selectedTown.value && f.row === row && f.col === col,
+    (f) => f.key !== 'akichi' && f.town === selectedTown.value && f.row === row && f.col === col,
   );
 }
 function houseAt(row: number, col: number) {
