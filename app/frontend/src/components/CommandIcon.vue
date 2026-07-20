@@ -62,5 +62,11 @@ defineProps<{ name: string }>();
       <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
       <path d="M13.73 21a2 2 0 0 1-3.46 0" />
     </g>
+    <!-- 家の設定(家) -->
+    <g v-else-if="name === 'myhome'">
+      <path d="M3 10.5 12 3l9 7.5" />
+      <path d="M5 9.5V21h14V9.5" />
+      <path d="M9.5 21v-6h5v6" />
+    </g>
   </svg>
 </template>

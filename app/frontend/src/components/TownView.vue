@@ -288,6 +288,9 @@ async function doWarp() {
 const isAdmin = computed(() => props.player.roles.includes('admin'));
 
 // コマンドアイコン列。仕事(go_work.gif)は学生以外(=転職済み)のときだけ出現する。
+// 自分の家を1軒以上持っているか(家の設定ボタンの表示判定)。
+const hasOwnHouse = computed(() => houses.value.some((h) => h.own));
+
 const commands = computed(() => {
   const list = [{ key: 'reload', img: 'reload', alt: '更新' }];
   if (props.player.status.job !== '学生') {
@@ -298,8 +301,12 @@ const commands = computed(() => {
     { key: 'mail', img: 'mail', alt: 'メール' },
     { key: 'doukyo', img: 'doukyo', alt: 'キャラ作成' },
     { key: 'aisatu', img: 'aisatu', alt: 'あいさつ' },
-    { key: 'off', img: 'off', alt: 'ログアウト' },
   );
+  // 家を持っていれば「家の設定」(建設会社の自分の家一覧へ)を出す。
+  if (hasOwnHouse.value) {
+    list.push({ key: 'kentiku', img: 'myhome', alt: '家の設定' });
+  }
+  list.push({ key: 'off', img: 'off', alt: 'ログアウト' });
   return list;
 });
 // 画面上部のトースト(iOS通知バナー風。上からスライドインし数秒で自動的に消える)。
