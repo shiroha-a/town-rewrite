@@ -2815,6 +2815,29 @@ func TestWarp(t *testing.T) {
 	}
 }
 
+// TestTownMapHouseGuard verifies that saving the town map cannot remove the
+// akichi under a built house (家が孤立する不整合を防ぐガード)。
+func TestTownMapHouseGuard(t *testing.T) {
+	srv, pool := setup(t)
+	admin := register(t, srv.URL, "misskey.example", "root") // 最初=admin
+	creditSavings(t, pool, admin.ID, 30_000_000)
+	seedPlots(t, pool, [][3]int{{4, 0, 1}}) // 街4 A1 を空き地(akichi)に
+	if _, c := buildHouse(t, srv.URL, admin.ID, 4, 0, 1, "house1", 3, "hg1"); c != http.StatusOK {
+		t.Fatalf("build: status=%d", c)
+	}
+	akichi := townmap.Facility{Key: "akichi", Img: "akiti", Alt: "空き地", Town: 4, Row: 0, Col: 1}
+
+	// 家のあるマスの akichi を外して保存 → 拒否(422)。
+	if code, _ := adminPut(t, srv.URL, "/api/v1/admin/townmap", admin.ID, townmap.Default()); code != http.StatusUnprocessableEntity {
+		t.Errorf("remove akichi under house: status=%d, want 422", code)
+	}
+	// akichi を含めて保存 → 成功(200)。
+	withAkichi := append(townmap.Default(), akichi)
+	if code, body := adminPut(t, srv.URL, "/api/v1/admin/townmap", admin.ID, withAkichi); code != http.StatusOK {
+		t.Errorf("keep akichi: status=%d, body=%s", code, body)
+	}
+}
+
 func TestBuildHouse(t *testing.T) {
 	srv, pool := setup(t)
 	ctx := context.Background()

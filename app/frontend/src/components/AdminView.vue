@@ -14,6 +14,7 @@ import {
   type GameSettings,
   type TownFacility,
   type TownAsset,
+  type PlotCell,
 } from '../api';
 
 const props = defineProps<{ player: Player }>();
@@ -107,6 +108,7 @@ async function refresh() {
     settings.value = await api.adminGetSettings(props.player.id);
     townmap.value = await api.townMap();
     assets.value = await api.townAssets();
+    houseCells.value = await api.adminHouseCells(props.player.id);
     selectedIdx.value = null;
   } catch (e) {
     fail(e);
@@ -155,11 +157,20 @@ const IMG_PRESETS = [
 const facilityTown = ref(0);
 const mapFacilityAt = (col: number, rowIdx: number, town = 0) =>
   townmap.value.findIndex((f) => f.town === town && f.col === col && f.row === rowIdx);
+// 家が建っているマス。ここは編集不可(空き地を外すと家が孤立し不整合になる)。
+const houseCells = ref<PlotCell[]>([]);
+function houseCellAt(col: number, rowIdx: number): boolean {
+  return houseCells.value.some(
+    (h) => h.town === facilityTown.value && h.col === col && h.row === rowIdx,
+  );
+}
 const selectedFacility = computed(() =>
   selectedIdx.value === null ? null : (townmap.value[selectedIdx.value] ?? null),
 );
 
 function clickCell(col: number, rowIdx: number) {
+  // 家が建っているマスは編集不可(選択も移動先にもできない)。
+  if (houseCellAt(col, rowIdx)) return;
   const idx = mapFacilityAt(col, rowIdx, facilityTown.value);
   if (idx >= 0) {
     // 施設セル: 選択(同じものを再クリックで選択解除)。
@@ -185,6 +196,11 @@ function onDragEnd() {
 }
 function onDrop(col: number, rowIdx: number) {
   if (dragging.value === null) return;
+  // 家が建っているマスへは移動できない(空き地を外すと不整合)。
+  if (houseCellAt(col, rowIdx)) {
+    dragging.value = null;
+    return;
+  }
   const src = townmap.value[dragging.value];
   const targetIdx = mapFacilityAt(col, rowIdx, facilityTown.value);
   if (targetIdx >= 0 && targetIdx !== dragging.value) {
@@ -863,10 +879,13 @@ async function deleteEdit() {
                         class="cell"
                         :class="{
                           occ: mapFacilityAt(c, ri, facilityTown) >= 0,
+                          locked: houseCellAt(c, ri),
                           sel:
+                            !houseCellAt(c, ri) &&
                             mapFacilityAt(c, ri, facilityTown) >= 0 &&
                             mapFacilityAt(c, ri, facilityTown) === selectedIdx,
                           movable:
+                            !houseCellAt(c, ri) &&
                             mapFacilityAt(c, ri, facilityTown) < 0 &&
                             (selectedIdx !== null || dragging !== null),
                           dragsrc:
@@ -874,9 +893,11 @@ async function deleteEdit() {
                             mapFacilityAt(c, ri, facilityTown) === dragging,
                         }"
                         :title="
-                          mapFacilityAt(c, ri, facilityTown) >= 0
-                            ? townmap[mapFacilityAt(c, ri, facilityTown)].alt
-                            : ''
+                          houseCellAt(c, ri)
+                            ? '家が建っているため編集できません'
+                            : mapFacilityAt(c, ri, facilityTown) >= 0
+                              ? townmap[mapFacilityAt(c, ri, facilityTown)].alt
+                              : ''
                         "
                         @click="clickCell(c, ri)"
                         @dragover.prevent
@@ -896,10 +917,11 @@ async function deleteEdit() {
                           width="24"
                           height="24"
                           :alt="townmap[mapFacilityAt(c, ri, facilityTown)].alt"
-                          draggable="true"
+                          :draggable="!houseCellAt(c, ri)"
                           @dragstart="onDragStart(mapFacilityAt(c, ri, facilityTown))"
                           @dragend="onDragEnd"
                         />
+                        <span v-if="houseCellAt(c, ri)" class="lock-badge" title="家が建っているため編集できません">🔒</span>
                       </div>
                     </template>
                   </div>
@@ -1362,6 +1384,20 @@ async function deleteEdit() {
 .map-grid .cell .fac-icon {
   position: relative;
   z-index: 1;
+}
+/* 家が建っているマスは編集不可(赤系背景+錠前)。 */
+.map-grid .cell.locked {
+  background: #f2dede;
+  cursor: not-allowed;
+}
+.map-grid .cell .lock-badge {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  font-size: 9px;
+  line-height: 1;
+  z-index: 2;
+  pointer-events: none;
 }
 .map-grid .cell.occ {
   background: #fff;

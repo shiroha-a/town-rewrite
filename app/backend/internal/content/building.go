@@ -136,6 +136,26 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 	return st, nil
 }
 
+// ListHouseCells returns every cell that currently has a house (any owner),
+// across all towns. 施設編集で家のあるマスをロックするために使う。
+func (s *Service) ListHouseCells(ctx context.Context) ([]PlotCell, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT town, grid_row, grid_col FROM player_houses ORDER BY town, grid_row, grid_col`)
+	if err != nil {
+		return nil, fmt.Errorf("list house cells: %w", err)
+	}
+	defer rows.Close()
+	out := []PlotCell{}
+	for rows.Next() {
+		var c PlotCell
+		if err := rows.Scan(&c.Town, &c.Row, &c.Col); err != nil {
+			return nil, fmt.Errorf("scan house cell: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // ListPlots returns every buildable empty plot across all towns. 空き地は施設に
 // 統合済みなので、key='akichi' の施設マスを空地として返す。
 func (s *Service) ListPlots(ctx context.Context) ([]PlotCell, error) {

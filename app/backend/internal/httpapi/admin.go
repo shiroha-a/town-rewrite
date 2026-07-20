@@ -28,11 +28,43 @@ func (s *Server) adminUpdateTownMap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	// 家が建っているマスから空き地(akichi)を外すと家が孤立する。家のあるマスに
+	// akichi施設が残っていることを検証する(UI迂回対策)。
+	houseCells, err := s.content.ListHouseCells(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	akichi := make(map[[3]int]bool)
+	for _, f := range fs {
+		if f.Key == "akichi" {
+			akichi[[3]int{f.Town, f.Row, f.Col}] = true
+		}
+	}
+	for _, h := range houseCells {
+		if !akichi[[3]int{h.Town, h.Row, h.Col}] {
+			writeError(w, http.StatusUnprocessableEntity, "家が建っているマスの空き地は変更できません。")
+			return
+		}
+	}
 	if err := s.townmap.Set(r.Context(), fs); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, s.townmap.Get())
+}
+
+// adminHouseCells returns cells with houses (for the facility editor to lock).
+func (s *Server) adminHouseCells(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	cells, err := s.content.ListHouseCells(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, cells)
 }
 
 // townAssets returns the background layer. Public: every player needs it to

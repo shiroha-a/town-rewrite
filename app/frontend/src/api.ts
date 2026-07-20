@@ -1082,4 +1082,7 @@ export const api = {
     request<TownFacility[]>('PUT', '/admin/townmap', facilities, adminHeaders(actingId)),
   adminUpdateTownAssets: (actingId: number, assets: TownAsset[]) =>
     request<TownAsset[]>('PUT', '/admin/townassets', assets, adminHeaders(actingId)),
+  // 家が建っているマス(施設エディタでロックするため)。
+  adminHouseCells: (actingId: number) =>
+    request<PlotCell[]>('GET', '/admin/townmap/houses', undefined, adminHeaders(actingId)),
 };
