@@ -349,6 +349,53 @@ func (s *Server) deleteBbs(w http.ResponseWriter, r *http.Request) {
 	writeFacilityResult(w, p, err)
 }
 
+// houseShopStock returns the owner's shop stock for price setting (my_syouhin).
+func (s *Server) houseShopStock(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	houseID, err := strconv.ParseInt(r.URL.Query().Get("house_id"), 10, 64)
+	if err != nil || houseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
+		return
+	}
+	view, err := s.content.ShopStock(r.Context(), id, houseID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+type setPriceReq struct {
+	HouseID        int64  `json:"house_id"`
+	ItemID         int64  `json:"item_id"`
+	SellPrice      int64  `json:"sell_price"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// setShopPrice sets a per-item shelf price (個別価格設定).
+func (s *Server) setShopPrice(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req setPriceReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 || req.ItemID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id and item_id are required")
+		return
+	}
+	p, err := s.actions.DoSetShopPrice(r.Context(), id, req.HouseID, req.ItemID, req.SellPrice, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
 // adminGetPlots returns every admin-designated empty plot (管理者専用).
 func (s *Server) adminGetPlots(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {

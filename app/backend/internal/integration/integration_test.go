@@ -3235,3 +3235,89 @@ func TestHouseBbs(t *testing.T) {
 		t.Errorf("normal after delete = %d, want 0", normalCnt)
 	}
 }
+
+func setPrice(t *testing.T, base string, playerID, houseID, itemID, sellPrice int64, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"house_id": houseID, "item_id": itemID, "sell_price": sellPrice, "idempotency_key": idemKey,
+	})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/shop/price",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("set price: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+func TestSetShopPrice(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	register(t, srv.URL, "misskey.example", "admin0")
+	owner := register(t, srv.URL, "misskey.example", "priceowner")
+	creditSavings(t, pool, owner.ID, 10_000_000)
+	seedPlots(t, pool, [][3]int{{4, 0, 1}})
+	if _, c := buildHouse(t, srv.URL, owner.ID, 4, 0, 1, "house1", 3, "b1"); c != http.StatusOK {
+		t.Fatalf("build: %d", c)
+	}
+	var houseID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM player_houses WHERE owner_id=$1`, owner.ID).Scan(&houseID); err != nil {
+		t.Fatalf("house id: %v", err)
+	}
+	if _, c := openShop(t, srv.URL, owner.ID, houseID, "本屋", "書籍", 2.0, "o1"); c != http.StatusOK {
+		t.Fatalf("open shop: %d", c)
+	}
+	var (
+		itemID int64
+		price  int64
+	)
+	if err := pool.QueryRow(ctx,
+		`SELECT id, price FROM content_items WHERE category='書籍' AND facility='' AND enabled ORDER BY price LIMIT 1`).
+		Scan(&itemID, &price); err != nil {
+		t.Fatalf("pick book: %v", err)
+	}
+	if _, c := shiire(t, srv.URL, owner.ID, houseID, itemID, 3, "s1"); c != http.StatusOK {
+		t.Fatalf("shiire: %d", c)
+	}
+
+	// 個別価格を仕入れ値×2.5に設定(×3以内)。
+	newPrice := price * 5 / 2
+	if _, c := setPrice(t, srv.URL, owner.ID, houseID, itemID, newPrice, "sp1"); c != http.StatusOK {
+		t.Fatalf("set price: %d", c)
+	}
+	var sellPrice *int64
+	if err := pool.QueryRow(ctx, `SELECT sell_price FROM house_shop_stock WHERE house_id=$1 AND item_id=$2`, houseID, itemID).Scan(&sellPrice); err != nil {
+		t.Fatalf("read sell_price: %v", err)
+	}
+	if sellPrice == nil || *sellPrice != newPrice {
+		t.Errorf("sell_price = %v, want %d", sellPrice, newPrice)
+	}
+
+	// 仕入れ値×3超過は拒否。
+	if _, c := setPrice(t, srv.URL, owner.ID, houseID, itemID, price*4, "sp2"); c != http.StatusUnprocessableEntity {
+		t.Errorf("over max: %d, want 422", c)
+	}
+
+	// 0で掛け率に戻す(sell_price=NULL)。
+	if _, c := setPrice(t, srv.URL, owner.ID, houseID, itemID, 0, "sp3"); c != http.StatusOK {
+		t.Fatalf("clear price: %d", c)
+	}
+	if err := pool.QueryRow(ctx, `SELECT sell_price FROM house_shop_stock WHERE house_id=$1 AND item_id=$2`, houseID, itemID).Scan(&sellPrice); err != nil {
+		t.Fatalf("read sell_price: %v", err)
+	}
+	if sellPrice != nil {
+		t.Errorf("sell_price after clear = %d, want nil", *sellPrice)
+	}
+
+	// 他人は設定できない。
+	other := register(t, srv.URL, "misskey.example", "priceother")
+	if _, c := setPrice(t, srv.URL, other.ID, houseID, itemID, 100, "sp4"); c != http.StatusUnprocessableEntity {
+		t.Errorf("other set: %d, want 422", c)
+	}
+}

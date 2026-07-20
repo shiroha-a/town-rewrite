@@ -660,6 +660,21 @@ export interface BbsPost {
   body: string;
   created_at: string;
 }
+export interface ShopStockItem {
+  item_id: number;
+  name: string;
+  category: string;
+  buy_price: number;
+  sell_price: number | null;
+  shelf: number;
+  stock: number;
+  max_price: number;
+}
+export interface ShopStockView {
+  has_shop: boolean;
+  markup: number;
+  items: ShopStockItem[];
+}
 
 function adminHeaders(actingId: number): Record<string, string> {
   return { 'X-Acting-Player-Id': String(actingId) };
@@ -963,6 +978,15 @@ export const api = {
   deleteBbs: (id: number, postId: number) =>
     request<Player>('POST', `/players/${id}/building/bbs/delete`, {
       post_id: postId,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  houseShopStock: (id: number, houseId: number) =>
+    request<ShopStockView>('GET', `/players/${id}/building/shop/stock?house_id=${houseId}`),
+  setHouseShopPrice: (id: number, houseId: number, itemId: number, sellPrice: number) =>
+    request<Player>('POST', `/players/${id}/building/shop/price`, {
+      house_id: houseId,
+      item_id: itemId,
+      sell_price: sellPrice,
       idempotency_key: newIdempotencyKey(),
     }),
 

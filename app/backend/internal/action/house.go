@@ -580,3 +580,44 @@ func (s *Service) DoDeleteBbs(ctx context.Context, playerID, postID int64, idemp
 		return nil
 	})
 }
+
+// DoSetShopPrice sets the per-item shelf price of a house shop item (my_syouhin,
+// 個別価格設定). The price must be at most 仕入れ値×3. A price of 0 clears the
+// override so the price falls back to 仕入れ値×掛け率.
+func (s *Service) DoSetShopPrice(ctx context.Context, playerID, houseID, itemID, sellPrice int64, idempotencyKey string) (*player.Player, error) {
+	if sellPrice < 0 {
+		return nil, &ConditionError{Message: "販売価格が正しくありません。"}
+	}
+	return s.runAction(ctx, playerID, "shop_price", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		var buyPrice int64
+		err := tx.QueryRow(ctx,
+			`SELECT ss.buy_price FROM house_shop_stock ss
+			 JOIN player_houses h ON h.id = ss.house_id
+			 WHERE ss.house_id = $1 AND ss.item_id = $2 AND h.owner_id = $3`,
+			houseID, itemID, playerID).Scan(&buyPrice)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &ConditionError{Message: "その商品は店にありません。"}
+		}
+		if err != nil {
+			return fmt.Errorf("load stock: %w", err)
+		}
+		if sellPrice == 0 {
+			// 0は個別価格の解除(掛け率に戻す)。
+			if _, err := tx.Exec(ctx,
+				`UPDATE house_shop_stock SET sell_price = NULL WHERE house_id = $1 AND item_id = $2`,
+				houseID, itemID); err != nil {
+				return fmt.Errorf("clear price: %w", err)
+			}
+			return nil
+		}
+		if sellPrice > buyPrice*3 {
+			return &ConditionError{Message: "販売価格は仕入れ値の3倍以内にしてください。"}
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE house_shop_stock SET sell_price = $1 WHERE house_id = $2 AND item_id = $3`,
+			sellPrice, houseID, itemID); err != nil {
+			return fmt.Errorf("update price: %w", err)
+		}
+		return nil
+	})
+}

@@ -12,6 +12,8 @@ import {
   type HouseShopView,
   type HouseShopItem,
   type BbsPost,
+  type ShopStockView,
+  type ShopStockItem,
 } from '../api';
 import Toast from './Toast.vue';
 import { useToast } from '../toast';
@@ -518,6 +520,57 @@ async function doDeleteBbs(post: BbsPost) {
     busy.value = false;
   }
 }
+
+// 個別価格設定(フェーズ4c仕上げ)
+const priceStock = ref<ShopStockView | null>(null);
+const priceHouseId = ref<number | null>(null);
+const priceDraft = ref<Record<number, number>>({});
+
+async function startPrice(h: MyHouse) {
+  try {
+    priceStock.value = await api.houseShopStock(props.player.id, h.id);
+    priceHouseId.value = h.id;
+    const d: Record<number, number> = {};
+    for (const it of priceStock.value.items) d[it.item_id] = it.shelf;
+    priceDraft.value = d;
+  } catch (e) {
+    showToast({
+      variant: 'error',
+      title: '価格設定を開けませんでした',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'item',
+    });
+  }
+}
+function closePrice() {
+  priceStock.value = null;
+  priceHouseId.value = null;
+}
+async function savePrice(it: ShopStockItem) {
+  if (!priceHouseId.value) return;
+  const price = priceDraft.value[it.item_id] ?? it.shelf;
+  busy.value = true;
+  try {
+    const after = await api.setHouseShopPrice(props.player.id, priceHouseId.value, it.item_id, price);
+    emit('update', after);
+    priceStock.value = await api.houseShopStock(props.player.id, priceHouseId.value);
+    showToast({
+      variant: 'item',
+      title: '価格を設定しました',
+      lines: [`${it.name} を${yen(price)}円に設定しました`],
+      icon: 'item',
+    });
+  } catch (e) {
+    showToast({
+      variant: 'error',
+      title: '設定できませんでした',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'item',
+    });
+  } finally {
+    busy.value = false;
+  }
+}
 </script>
 
 <template>
@@ -753,6 +806,9 @@ async function doDeleteBbs(post: BbsPost) {
               <button v-if="h.has_shop" class="btn mini" :disabled="busy" @click="startOrosi(h)">
                 仕入れる
               </button>
+              <button v-if="h.has_shop" class="btn mini" :disabled="busy" @click="startPrice(h)">
+                価格設定
+              </button>
             </div>
             <div v-if="shopEditId === h.id" class="shop-form">
               <label class="mh-field">店名
@@ -827,6 +883,52 @@ async function doDeleteBbs(post: BbsPost) {
                   >
                     仕入れる
                   </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 個別価格設定 -->
+      <div v-if="priceStock && priceStock.has_shop" class="orosi-panel panel-white">
+        <div class="orosi-head">
+          <span class="orosi-title">価格設定</span>
+          <span class="orosi-info">掛け率{{ priceStock.markup }}倍／0円で掛け率に戻す</span>
+          <button class="btn mini" @click="closePrice">閉じる</button>
+        </div>
+        <div v-if="priceStock.items.length === 0" class="orosi-empty">
+          在庫がありません。まず仕入れてください。
+        </div>
+        <div v-else class="orosi-scroll">
+          <table class="orosi-table">
+            <thead>
+              <tr>
+                <th class="l">品名</th>
+                <th>仕入れ値</th>
+                <th>上限(×3)</th>
+                <th>店頭価格</th>
+                <th>新価格</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="it in priceStock.items" :key="it.item_id">
+                <td class="l">{{ it.name }}</td>
+                <td class="price">{{ yen(it.buy_price) }}円</td>
+                <td>{{ yen(it.max_price) }}円</td>
+                <td class="price">{{ yen(it.shelf) }}円{{ it.sell_price === null ? '(掛率)' : '' }}</td>
+                <td>
+                  <input
+                    v-model.number="priceDraft[it.item_id]"
+                    type="number"
+                    min="0"
+                    :max="it.max_price"
+                    class="qty-input"
+                  />
+                </td>
+                <td>
+                  <button class="btn mini" :disabled="busy" @click="savePrice(it)">設定</button>
                 </td>
               </tr>
             </tbody>

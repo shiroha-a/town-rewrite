@@ -407,3 +407,63 @@ func (s *Service) HouseBbs(ctx context.Context, houseID int64) ([]BbsPost, error
 	}
 	return out, rows.Err()
 }
+
+// ShopStockItem is one item in the owner's shop stock, for price setting.
+type ShopStockItem struct {
+	ItemID    int64  `json:"item_id"`
+	Name      string `json:"name"`
+	Category  string `json:"category"`
+	BuyPrice  int64  `json:"buy_price"`
+	SellPrice *int64 `json:"sell_price"` // NULL=掛け率で自動計算
+	Shelf     int64  `json:"shelf"`      // 現在の店頭価格
+	Stock     int    `json:"stock"`
+	MaxPrice  int64  `json:"max_price"` // 仕入れ値×3(上限)
+}
+
+// ShopStockView is the owner's shop stock for the price-setting screen (my_syouhin).
+type ShopStockView struct {
+	HasShop bool            `json:"has_shop"`
+	Markup  float64         `json:"markup"`
+	Items   []ShopStockItem `json:"items"`
+}
+
+// ShopStock returns the player's own shop stock with buy price, current shelf
+// price, and the max allowed price (仕入れ値×3), for per-item price setting.
+func (s *Service) ShopStock(ctx context.Context, playerID, houseID int64) (*ShopStockView, error) {
+	var markup float64
+	err := s.pool.QueryRow(ctx,
+		`SELECT hs.markup FROM house_shops hs JOIN player_houses h ON h.id = hs.house_id
+		 WHERE hs.house_id = $1 AND h.owner_id = $2`, houseID, playerID).Scan(&markup)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &ShopStockView{HasShop: false, Items: []ShopStockItem{}}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load shop: %w", err)
+	}
+	view := &ShopStockView{HasShop: true, Markup: markup, Items: []ShopStockItem{}}
+	rows, err := s.pool.Query(ctx,
+		`SELECT ss.item_id, ci.name, ci.category, ss.buy_price, ss.sell_price, ss.stock
+		 FROM house_shop_stock ss JOIN content_items ci ON ci.id = ss.item_id
+		 WHERE ss.house_id = $1 ORDER BY ci.category, ci.name`, houseID)
+	if err != nil {
+		return nil, fmt.Errorf("list stock: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var it ShopStockItem
+		if err := rows.Scan(&it.ItemID, &it.Name, &it.Category, &it.BuyPrice, &it.SellPrice, &it.Stock); err != nil {
+			return nil, fmt.Errorf("scan stock: %w", err)
+		}
+		if it.SellPrice != nil {
+			it.Shelf = *it.SellPrice
+		} else {
+			it.Shelf = int64(float64(it.BuyPrice) * markup)
+		}
+		it.MaxPrice = it.BuyPrice * 3
+		view.Items = append(view.Items, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate stock: %w", err)
+	}
+	return view, nil
+}
