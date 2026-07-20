@@ -132,11 +132,17 @@ async function doMoveTown(f: TownFacility) {
   const means = f.key === 'bus' ? 'bus' : 'walk';
   const destName = TOWN_NAMES[f.dest] ?? '';
   try {
-    await api.moveTown(props.player.id, f.dest, means);
+    const res = await api.moveTown(props.player.id, f.dest, means);
+    const lines = [means === 'bus' ? 'バスで移動（500円）' : '徒歩で移動'];
+    // 徒歩で能力が上がったらトーストに列挙する。
+    const gains = Object.entries(res.move_result.stat_gains);
+    if (gains.length > 0) {
+      lines.push(gains.map(([name, up]) => `${name}+${up}`).join(' '));
+    }
     showToast({
       variant: 'work',
       title: `${destName}へ移動しました`,
-      lines: [means === 'bus' ? 'バスで移動（500円）' : '徒歩で移動'],
+      lines,
       icon: f.img,
     });
     emit('reload');

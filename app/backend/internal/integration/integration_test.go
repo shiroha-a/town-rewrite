@@ -2656,6 +2656,31 @@ func TestMoveTown(t *testing.T) {
 	if _, c := moveTown(t, srv.URL, p.ID, 1, "teleport", "mv5"); c != http.StatusUnprocessableEntity {
 		t.Errorf("invalid means: status=%d, want 422", c)
 	}
+
+	// 徒歩の能力上昇: 何度か徒歩移動すると身体5能力の合計が増える(各50%, +1〜5)。
+	sumStats := func() int {
+		var tairyoku, kenkou, speed, wanryoku, kyakuryoku int
+		if err := pool.QueryRow(context.Background(),
+			`SELECT tairyoku, kenkou, speed, wanryoku, kyakuryoku FROM player_status WHERE player_id=$1`,
+			p.ID).Scan(&tairyoku, &kenkou, &speed, &wanryoku, &kyakuryoku); err != nil {
+			t.Fatalf("read stats: %v", err)
+		}
+		return tairyoku + kenkou + speed + wanryoku + kyakuryoku
+	}
+	before := sumStats()
+	for i := 0; i < 15; i++ {
+		if _, err := pool.Exec(context.Background(),
+			`DELETE FROM player_facility_cooldowns WHERE player_id=$1 AND facility='move'`, p.ID); err != nil {
+			t.Fatalf("clear cooldown: %v", err)
+		}
+		dest := 1 + i%2 // 街1と街2を交互に(同一街回避)
+		if _, c := moveTown(t, srv.URL, p.ID, dest, "walk", fmt.Sprintf("wgain-%d", i)); c != http.StatusOK {
+			t.Fatalf("walk gain move %d: status=%d", i, c)
+		}
+	}
+	if after := sumStats(); after <= before {
+		t.Errorf("walk stat gains: sum before=%d after=%d, want after>before", before, after)
+	}
 }
 
 func TestBuildHouse(t *testing.T) {

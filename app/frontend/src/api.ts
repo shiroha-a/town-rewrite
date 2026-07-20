@@ -385,6 +385,15 @@ export interface TownAsset {
   row: number;
 }
 
+// 街移動の結果。徒歩の能力上昇(表示名→上昇量)などを含む。
+export interface MoveResult {
+  arrived_town: number;
+  means: string;
+  fare: number;
+  stat_gains: Record<string, number>;
+}
+export type MoveResp = Player & { move_result: MoveResult };
+
 export interface StockPrice {
   symbol: string;
   price: number;
@@ -702,9 +711,9 @@ export const api = {
   playerProfile: (id: number) => request<PublicProfile>('GET', `/players/${id}/profile`),
   townMap: () => request<TownFacility[]>('GET', '/townmap'),
   townAssets: () => request<TownAsset[]>('GET', '/townassets'),
-  // 街移動(徒歩/バス)。行き先の街と手段を送る。
+  // 街移動(徒歩/バス)。行き先の街と手段を送る。移動結果(能力上昇等)を含む。
   moveTown: (id: number, dest: number, means: 'walk' | 'bus') =>
-    request<Player>('POST', `/players/${id}/move`, {
+    request<MoveResp>('POST', `/players/${id}/move`, {
       dest,
       means,
       idempotency_key: newIdempotencyKey(),

@@ -17,8 +17,21 @@ type moveTownReq struct {
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
-// moveTown moves the player to another town (walk/bus). Charges fare and sets a
-// travel cooldown.
+type moveResultResp struct {
+	ArrivedTown int            `json:"arrived_town"`
+	Means       string         `json:"means"`
+	Fare        int64          `json:"fare"`
+	StatGains   map[string]int `json:"stat_gains"`
+}
+
+// moveResp is the player state plus the just-completed move's summary.
+type moveResp struct {
+	playerResp
+	MoveResult moveResultResp `json:"move_result"`
+}
+
+// moveTown moves the player to another town (walk/bus). Charges fare, may raise
+// stats (walk), and sets a travel cooldown.
 func (s *Server) moveTown(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -30,8 +43,32 @@ func (s *Server) moveTown(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	p, err := s.actions.DoMoveTown(r.Context(), id, req.Dest, req.Means, req.IdempotencyKey)
-	writeFacilityResult(w, p, err)
+	p, result, err := s.actions.DoMoveTown(r.Context(), id, req.Dest, req.Means, req.IdempotencyKey)
+	if err != nil {
+		var condErr *action.ConditionError
+		switch {
+		case errors.Is(err, player.ErrNotFound):
+			writeError(w, http.StatusNotFound, "player not found")
+		case errors.As(err, &condErr):
+			writeError(w, http.StatusUnprocessableEntity, condErr.Message)
+		default:
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	gains := result.StatGains
+	if gains == nil {
+		gains = map[string]int{}
+	}
+	writeJSON(w, http.StatusOK, moveResp{
+		playerResp: toResp(p),
+		MoveResult: moveResultResp{
+			ArrivedTown: result.ArrivedTown,
+			Means:       result.Means,
+			Fare:        result.Fare,
+			StatGains:   gains,
+		},
+	})
 }
 
 // facilityMenu lists a facility's menu (e.g. 食堂 = syokudou). Public.
