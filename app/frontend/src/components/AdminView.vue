@@ -253,9 +253,11 @@ const mapLayer = ref<'facility' | 'asset'>('facility');
 const BG_PRESETS = ['kusa', 'sima', 'umi', 'tree1', 'tree2', 'tree3', 'tree4'];
 // 選択中の「筆」(パレットで選んだ背景アセット)。
 const assetBrush = ref<string>(BG_PRESETS[0]);
+// 背景レイヤーで編集中の街(0..4)。背景も街ごとに配置できる。
+const assetTown = ref(0);
 
 const assetIdxAt = (col: number, rowIdx: number) =>
-  assets.value.findIndex((a) => a.col === col && a.row === rowIdx);
+  assets.value.findIndex((a) => a.town === assetTown.value && a.col === col && a.row === rowIdx);
 function assetImgAt(col: number, rowIdx: number): string {
   const i = assetIdxAt(col, rowIdx);
   return i >= 0 ? assets.value[i].img : '';
@@ -268,7 +270,7 @@ function paintAsset(col: number, rowIdx: number) {
     else assets.value[i].img = assetBrush.value;
     return;
   }
-  assets.value.push({ img: assetBrush.value, col, row: rowIdx });
+  assets.value.push({ img: assetBrush.value, town: assetTown.value, col, row: rowIdx });
 }
 async function saveTownAssets() {
   busy.value = true;
@@ -305,7 +307,7 @@ function onBgDrop(col: number, rowIdx: number) {
     // パレットからドロップ: そのマスに配置(既存があれば差し替え)。
     const i = assetIdxAt(col, rowIdx);
     if (i >= 0) assets.value[i].img = d.img;
-    else assets.value.push({ img: d.img, col, row: rowIdx });
+    else assets.value.push({ img: d.img, town: assetTown.value, col, row: rowIdx });
     return;
   }
   // 置いたタイルの移動。移動先に別タイルがあれば位置を入れ替える(施設レイヤーと同じ)。
@@ -933,9 +935,20 @@ async function deleteEdit() {
             <section v-else-if="mapLayer === 'asset'" class="panel">
               <h3>
                 背景アセット配置<span class="hint">
-                  ※パレットで素材を選び、マスをクリックで配置。同じ素材を再クリックで除去。施設は右下に薄く参照表示（編集不可）</span
+                  ※街を選び、パレットで素材を選んでマスをクリックで配置。同じ素材を再クリックで除去。施設は右下に薄く参照表示（編集不可）</span
                 >
               </h3>
+              <div class="plot-towns">
+                <button
+                  v-for="t in plotTowns"
+                  :key="t.no"
+                  class="ptab"
+                  :class="{ active: assetTown === t.no }"
+                  @click="assetTown = t.no"
+                >
+                  {{ t.name }}
+                </button>
+              </div>
               <div class="bg-palette">
                 <button
                   v-for="a in BG_PRESETS"
@@ -979,9 +992,9 @@ async function deleteEdit() {
                         @dragend="onBgDragEnd"
                       />
                       <img
-                        v-if="mapFacilityAt(c, ri) >= 0"
+                        v-if="mapFacilityAt(c, ri, assetTown) >= 0"
                         class="fac-ref"
-                        :src="`/img/${townmap[mapFacilityAt(c, ri)].img}.gif`"
+                        :src="`/img/${townmap[mapFacilityAt(c, ri, assetTown)].img}.gif`"
                         alt=""
                         draggable="false"
                       />

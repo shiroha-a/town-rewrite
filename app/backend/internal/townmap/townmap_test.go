@@ -131,6 +131,19 @@ func TestValidateAssets(t *testing.T) {
 			},
 			false,
 		},
+		{
+			"same cell different town ok",
+			[]Asset{
+				{Img: "kusa", Town: 0, Col: 3, Row: 2},
+				{Img: "umi", Town: 1, Col: 3, Row: 2},
+			},
+			false,
+		},
+		{
+			"town out of range",
+			[]Asset{{Img: "kusa", Town: Towns, Col: 1, Row: 0}},
+			true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

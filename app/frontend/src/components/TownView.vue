@@ -32,10 +32,10 @@ const facilityAt = (col: number, row: number) =>
     (f) => f.key !== 'akichi' && f.town === props.player.current_town && f.col === col && f.row === row,
   );
 
-// 背景アセット(装飾レイヤー)。施設の下にセル単位で敷く。現状は街0のみ対応。
+// 背景アセット(装飾レイヤー)。施設の下にセル単位で敷く。現在いる街のものを描画する。
 const assets = ref<TownAsset[]>([]);
 const assetAt = (col: number, row: number) =>
-  props.player.current_town === 0 ? assets.value.find((a) => a.col === col && a.row === row) : undefined;
+  assets.value.find((a) => a.town === props.player.current_town && a.col === col && a.row === row);
 
 const cols = Array.from({ length: 16 }, (_, i) => i + 1);
 const rows = 'ABCDEFGHIJKL'.split('');

@@ -39,9 +39,10 @@ type Facility struct {
 // Asset is a single placed background asset (decorative layer). It has no
 // function; it just renders beneath the facility layer, one tile per cell.
 type Asset struct {
-	Img string `json:"img"` // gif名(拡張子なし)。空不可
-	Col int    `json:"col"` // 1..Cols
-	Row int    `json:"row"` // 0..Rows-1
+	Img  string `json:"img"`  // gif名(拡張子なし)。空不可
+	Town int    `json:"town"` // 街番号(0..Towns-1)。既定0=メイン街
+	Col  int    `json:"col"`  // 1..Cols
+	Row  int    `json:"row"`  // 0..Rows-1
 }
 
 // Default is the legacy-faithful initial layout, mirroring the placement that
@@ -175,12 +176,16 @@ func (s *Store) Set(ctx context.Context, fs []Facility) error {
 	return nil
 }
 
-// ValidateAssets checks grid bounds, required img, and one-asset-per-cell.
+// ValidateAssets checks grid bounds, required img, and one-asset-per-cell
+// within each town.
 func ValidateAssets(as []Asset) error {
-	seen := make(map[[2]int]bool, len(as))
+	seen := make(map[[3]int]bool, len(as))
 	for i, a := range as {
 		if a.Img == "" {
 			return fmt.Errorf("asset %d: img is required", i)
+		}
+		if a.Town < 0 || a.Town >= Towns {
+			return fmt.Errorf("asset %d: town %d out of range 0..%d", i, a.Town, Towns-1)
 		}
 		if a.Col < 1 || a.Col > Cols {
 			return fmt.Errorf("asset %d: col %d out of range 1..%d", i, a.Col, Cols)
@@ -188,9 +193,9 @@ func ValidateAssets(as []Asset) error {
 		if a.Row < 0 || a.Row >= Rows {
 			return fmt.Errorf("asset %d: row %d out of range 0..%d", i, a.Row, Rows-1)
 		}
-		cell := [2]int{a.Col, a.Row}
+		cell := [3]int{a.Town, a.Col, a.Row}
 		if seen[cell] {
-			return fmt.Errorf("asset %d: cell (%d,%d) already occupied", i, a.Col, a.Row)
+			return fmt.Errorf("asset %d: town %d cell (%d,%d) already occupied", i, a.Town, a.Col, a.Row)
 		}
 		seen[cell] = true
 	}

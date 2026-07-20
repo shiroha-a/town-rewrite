@@ -382,6 +382,7 @@ export interface TownFacility {
 // 背景アセット(装飾レイヤー)。機能を持たず、施設レイヤーの下にセル単位で敷く。
 export interface TownAsset {
   img: string;
+  town: number;
   col: number;
   row: number;
 }
