@@ -13,6 +13,7 @@ import {
   type AdminPlayerPayload,
   type GameSettings,
   type TownFacility,
+  type TownAsset,
   type PlotCell,
 } from '../api';
 
@@ -22,7 +23,7 @@ const emit = defineEmits<{ back: [] }>();
 const isAdmin = computed(() => props.player.roles.includes('admin'));
 
 // 各セクションの開閉。既定は折りたたみ(false)。
-const open = reactive({ item: false, job: false, user: false, settings: false, map: false, plots: false });
+const open = reactive({ item: false, job: false, user: false, settings: false, map: false });
 
 // 効果/条件で対象にできるパラメータ。
 const PARAM_OPTIONS = [
@@ -106,6 +107,7 @@ async function refresh() {
     players.value = await api.adminListPlayers(props.player.id);
     settings.value = await api.adminGetSettings(props.player.id);
     townmap.value = await api.townMap();
+    assets.value = await api.townAssets();
     plots.value = await api.adminGetPlots(props.player.id);
     selectedIdx.value = null;
   } catch (e) {
@@ -146,14 +148,16 @@ const IMG_PRESETS = [
   'depart', 'bank', 'syokudou', 'gym', 'onsen', 'hospital', 'work', 'yakuba', 'kabu', 'keiba', 'kentiku', 'prof', 'mail',
 ];
 
-const mapFacilityAt = (col: number, rowIdx: number) =>
-  townmap.value.findIndex((f) => f.col === col && f.row === rowIdx);
+// 施設レイヤーで編集中の街(0..4)。施設はマルチ街化済み。
+const facilityTown = ref(0);
+const mapFacilityAt = (col: number, rowIdx: number, town = 0) =>
+  townmap.value.findIndex((f) => f.town === town && f.col === col && f.row === rowIdx);
 const selectedFacility = computed(() =>
   selectedIdx.value === null ? null : (townmap.value[selectedIdx.value] ?? null),
 );
 
 function clickCell(col: number, rowIdx: number) {
-  const idx = mapFacilityAt(col, rowIdx);
+  const idx = mapFacilityAt(col, rowIdx, facilityTown.value);
   if (idx >= 0) {
     // 施設セル: 選択(同じものを再クリックで選択解除)。
     selectedIdx.value = selectedIdx.value === idx ? null : idx;
@@ -179,7 +183,7 @@ function onDragEnd() {
 function onDrop(col: number, rowIdx: number) {
   if (dragging.value === null) return;
   const src = townmap.value[dragging.value];
-  const targetIdx = mapFacilityAt(col, rowIdx);
+  const targetIdx = mapFacilityAt(col, rowIdx, facilityTown.value);
   if (targetIdx >= 0 && targetIdx !== dragging.value) {
     // 移動先に別の施設があれば位置を入れ替える。
     const tgt = townmap.value[targetIdx];
@@ -194,7 +198,7 @@ function onDrop(col: number, rowIdx: number) {
 function firstFreeCell(): { col: number; row: number } | null {
   for (let r = 0; r < MAP_ROWS; r++) {
     for (let c = 1; c <= MAP_COLS; c++) {
-      if (mapFacilityAt(c, r) < 0) return { col: c, row: r };
+      if (mapFacilityAt(c, r, facilityTown.value) < 0) return { col: c, row: r };
     }
   }
   return null;
@@ -206,7 +210,15 @@ function addFacility() {
     kind.value = 'error';
     return;
   }
-  townmap.value.push({ key: 'depart', img: 'depart', alt: '新規施設', col: cell.col, row: cell.row, ready: true });
+  townmap.value.push({
+    key: 'depart',
+    img: 'depart',
+    alt: '新規施設',
+    town: facilityTown.value,
+    col: cell.col,
+    row: cell.row,
+    ready: true,
+  });
   selectedIdx.value = townmap.value.length - 1;
 }
 function deleteFacility() {
@@ -229,6 +241,81 @@ async function saveTownMap() {
   }
 }
 
+// 背景アセット配置レイヤー。施設とは別に、装飾用の背景画像をセル単位で置く。
+const assets = ref<TownAsset[]>([]);
+// 編集中のレイヤー('facility'=施設 / 'asset'=背景 / 'plot'=空き地)。
+const mapLayer = ref<'facility' | 'asset' | 'plot'>('facility');
+// 背景アセットのパレット(public/imgにコピー済みのlegacy地形素材)。
+const BG_PRESETS = ['kusa', 'sima', 'umi', 'tree1', 'tree2', 'tree3', 'tree4'];
+// 選択中の「筆」(パレットで選んだ背景アセット)。
+const assetBrush = ref<string>(BG_PRESETS[0]);
+
+const assetIdxAt = (col: number, rowIdx: number) =>
+  assets.value.findIndex((a) => a.col === col && a.row === rowIdx);
+function assetImgAt(col: number, rowIdx: number): string {
+  const i = assetIdxAt(col, rowIdx);
+  return i >= 0 ? assets.value[i].img : '';
+}
+// マスをクリックで背景を配置。選択中の筆と同じなら除去(トグル)、違えば差し替え。
+function paintAsset(col: number, rowIdx: number) {
+  const i = assetIdxAt(col, rowIdx);
+  if (i >= 0) {
+    if (assets.value[i].img === assetBrush.value) assets.value.splice(i, 1);
+    else assets.value[i].img = assetBrush.value;
+    return;
+  }
+  assets.value.push({ img: assetBrush.value, col, row: rowIdx });
+}
+async function saveTownAssets() {
+  busy.value = true;
+  message.value = '';
+  try {
+    assets.value = await api.adminUpdateTownAssets(props.player.id, assets.value);
+    message.value = '背景レイヤーを更新しました。';
+    kind.value = 'ok';
+  } catch (e) {
+    fail(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
+// 背景レイヤーのドラッグ&ドロップ。パレットからの新規配置と、置いたタイルの移動に対応。
+type BgDrag = { kind: 'palette'; img: string } | { kind: 'tile'; col: number; row: number };
+const bgDrag = ref<BgDrag | null>(null);
+function onBgPaletteDragStart(img: string) {
+  assetBrush.value = img; // ドラッグ元の素材を筆にも反映
+  bgDrag.value = { kind: 'palette', img };
+}
+function onBgTileDragStart(col: number, rowIdx: number) {
+  bgDrag.value = { kind: 'tile', col, row: rowIdx };
+}
+function onBgDragEnd() {
+  bgDrag.value = null;
+}
+function onBgDrop(col: number, rowIdx: number) {
+  const d = bgDrag.value;
+  bgDrag.value = null;
+  if (!d) return;
+  if (d.kind === 'palette') {
+    // パレットからドロップ: そのマスに配置(既存があれば差し替え)。
+    const i = assetIdxAt(col, rowIdx);
+    if (i >= 0) assets.value[i].img = d.img;
+    else assets.value.push({ img: d.img, col, row: rowIdx });
+    return;
+  }
+  // 置いたタイルの移動。移動先に別タイルがあれば位置を入れ替える(施設レイヤーと同じ)。
+  const srcIdx = assetIdxAt(d.col, d.row);
+  if (srcIdx < 0) return;
+  const tgtIdx = assetIdxAt(col, rowIdx);
+  if (tgtIdx >= 0 && tgtIdx !== srcIdx) {
+    assets.value[tgtIdx].col = d.col;
+    assets.value[tgtIdx].row = d.row;
+  }
+  assets.value[srcIdx].col = col;
+  assets.value[srcIdx].row = rowIdx;
+}
+
 // 空き地(建設会社): 街ごとに家を建てられるマスを指定する。
 const plots = ref<PlotCell[]>([]);
 const plotTown = ref(0);
@@ -239,12 +326,12 @@ const plotTowns = [
   { no: 3, name: 'ダウンタウン' },
   { no: 4, name: '謎の街' },
 ];
-// 街0(メイン街)のみ、施設セルは空地にできない。
+// 施設セルは空地にできない(施設はマルチ街化済みなので選択中の街で判定)。
 function plotFacilityAt(col: number, rowIdx: number): boolean {
-  return plotTown.value === 0 && mapFacilityAt(col, rowIdx) >= 0;
+  return mapFacilityAt(col, rowIdx, plotTown.value) >= 0;
 }
 function plotFacilityImg(col: number, rowIdx: number): string {
-  const i = mapFacilityAt(col, rowIdx);
+  const i = mapFacilityAt(col, rowIdx, plotTown.value);
   return i >= 0 ? townmap.value[i].img : '';
 }
 function isPlot(col: number, rowIdx: number): boolean {
@@ -751,12 +838,39 @@ async function deleteEdit() {
             <span class="caret">{{ open.map ? '▼' : '▶' }}</span> タウンマップ（{{ townmap.length }}）
           </button>
           <div v-if="open.map" class="fold-body">
-            <section class="panel">
+            <!-- レイヤー切替: 機能付き施設層 / 背景アセット層 / 空き地(建設会社)層 -->
+            <div class="layer-tabs">
+              <button :class="{ active: mapLayer === 'facility' }" @click="mapLayer = 'facility'">
+                施設レイヤー（{{ townmap.length }}）
+              </button>
+              <button :class="{ active: mapLayer === 'asset' }" @click="mapLayer = 'asset'">
+                背景レイヤー（{{ assets.length }}）
+              </button>
+              <button :class="{ active: mapLayer === 'plot' }" @click="mapLayer = 'plot'">
+                空き地レイヤー（{{ plots.length }}）
+              </button>
+            </div>
+
+            <section v-if="mapLayer === 'facility'" class="panel">
               <h3>
                 マップ編集<span class="hint">
-                  ※施設をドラッグ&ドロップで移動(占有セルへは入れ替え)。クリックで選択→空きセルクリックでも移動可</span
+                  ※街を選び、施設をドラッグ&ドロップで移動(占有セルへは入れ替え)。クリックで選択→空きセルクリックでも移動可</span
                 >
               </h3>
+              <div class="plot-towns">
+                <button
+                  v-for="t in plotTowns"
+                  :key="t.no"
+                  class="ptab"
+                  :class="{ active: facilityTown === t.no }"
+                  @click="
+                    facilityTown = t.no;
+                    selectedIdx = null;
+                  "
+                >
+                  {{ t.name }}
+                </button>
+              </div>
               <div class="map-editor">
                 <div class="map-scroll">
                   <div class="map-grid">
@@ -769,24 +883,34 @@ async function deleteEdit() {
                         :key="r + '-' + c"
                         class="cell"
                         :class="{
-                          occ: mapFacilityAt(c, ri) >= 0,
-                          sel: mapFacilityAt(c, ri) >= 0 && mapFacilityAt(c, ri) === selectedIdx,
-                          movable: mapFacilityAt(c, ri) < 0 && (selectedIdx !== null || dragging !== null),
-                          dragsrc: mapFacilityAt(c, ri) >= 0 && mapFacilityAt(c, ri) === dragging,
+                          occ: mapFacilityAt(c, ri, facilityTown) >= 0,
+                          sel:
+                            mapFacilityAt(c, ri, facilityTown) >= 0 &&
+                            mapFacilityAt(c, ri, facilityTown) === selectedIdx,
+                          movable:
+                            mapFacilityAt(c, ri, facilityTown) < 0 &&
+                            (selectedIdx !== null || dragging !== null),
+                          dragsrc:
+                            mapFacilityAt(c, ri, facilityTown) >= 0 &&
+                            mapFacilityAt(c, ri, facilityTown) === dragging,
                         }"
-                        :title="mapFacilityAt(c, ri) >= 0 ? townmap[mapFacilityAt(c, ri)].alt : ''"
+                        :title="
+                          mapFacilityAt(c, ri, facilityTown) >= 0
+                            ? townmap[mapFacilityAt(c, ri, facilityTown)].alt
+                            : ''
+                        "
                         @click="clickCell(c, ri)"
                         @dragover.prevent
                         @drop="onDrop(c, ri)"
                       >
                         <img
-                          v-if="mapFacilityAt(c, ri) >= 0"
-                          :src="`/img/${townmap[mapFacilityAt(c, ri)].img}.gif`"
+                          v-if="mapFacilityAt(c, ri, facilityTown) >= 0"
+                          :src="`/img/${townmap[mapFacilityAt(c, ri, facilityTown)].img}.gif`"
                           width="24"
                           height="24"
-                          :alt="townmap[mapFacilityAt(c, ri)].alt"
+                          :alt="townmap[mapFacilityAt(c, ri, facilityTown)].alt"
                           draggable="true"
-                          @dragstart="onDragStart(mapFacilityAt(c, ri))"
+                          @dragstart="onDragStart(mapFacilityAt(c, ri, facilityTown))"
                           @dragend="onDragEnd"
                         />
                       </div>
@@ -827,19 +951,78 @@ async function deleteEdit() {
                 <button class="btn" :disabled="busy" @click="refresh">再読込</button>
               </div>
             </section>
-          </div>
-        </section>
 
-        <!-- 空き地(建設会社) -->
-        <section class="fold">
-          <button class="fold-head" @click="open.plots = !open.plots">
-            <span class="caret">{{ open.plots ? '▼' : '▶' }}</span> 空き地（建設会社）（{{ plots.length }}）
-          </button>
-          <div v-if="open.plots" class="fold-body">
-            <section class="panel">
+            <!-- 背景アセット配置レイヤー -->
+            <section v-else-if="mapLayer === 'asset'" class="panel">
+              <h3>
+                背景アセット配置<span class="hint">
+                  ※パレットで素材を選び、マスをクリックで配置。同じ素材を再クリックで除去。施設は右下に薄く参照表示（編集不可）</span
+                >
+              </h3>
+              <div class="bg-palette">
+                <button
+                  v-for="a in BG_PRESETS"
+                  :key="a"
+                  :class="['bg-swatch', { active: assetBrush === a }]"
+                  :title="a"
+                  draggable="true"
+                  @click="assetBrush = a"
+                  @dragstart="onBgPaletteDragStart(a)"
+                  @dragend="onBgDragEnd"
+                >
+                  <img :src="`/img/${a}.gif`" width="24" height="24" :alt="a" draggable="false" />
+                </button>
+              </div>
+              <div class="map-scroll">
+                <div class="map-grid">
+                  <div class="corner"></div>
+                  <div v-for="c in mapCols" :key="'ah' + c" class="colhead">{{ c }}</div>
+                  <template v-for="(r, ri) in mapRows" :key="'ar' + r">
+                    <div class="rowhead">{{ r }}</div>
+                    <div
+                      v-for="c in mapCols"
+                      :key="'a' + r + '-' + c"
+                      class="cell bgcell"
+                      :class="{
+                        occ: assetIdxAt(c, ri) >= 0,
+                        dragsrc: bgDrag?.kind === 'tile' && bgDrag.col === c && bgDrag.row === ri,
+                      }"
+                      :title="`${r}${c}${assetImgAt(c, ri) ? ' : ' + assetImgAt(c, ri) : ''}`"
+                      @click="paintAsset(c, ri)"
+                      @dragover.prevent
+                      @drop="onBgDrop(c, ri)"
+                    >
+                      <img
+                        v-if="assetImgAt(c, ri)"
+                        class="bg-tile"
+                        :src="`/img/${assetImgAt(c, ri)}.gif`"
+                        :alt="assetImgAt(c, ri)"
+                        draggable="true"
+                        @dragstart="onBgTileDragStart(c, ri)"
+                        @dragend="onBgDragEnd"
+                      />
+                      <img
+                        v-if="mapFacilityAt(c, ri) >= 0"
+                        class="fac-ref"
+                        :src="`/img/${townmap[mapFacilityAt(c, ri)].img}.gif`"
+                        alt=""
+                        draggable="false"
+                      />
+                    </div>
+                  </template>
+                </div>
+              </div>
+              <div class="actions">
+                <button class="btn primary" :disabled="busy" @click="saveTownAssets">保存</button>
+                <button class="btn" :disabled="busy" @click="refresh">再読込</button>
+              </div>
+            </section>
+
+            <!-- 空き地(建設会社)配置レイヤー -->
+            <section v-else class="panel">
               <h3>
                 空き地の設定<span class="hint">
-                  ※街を選び、家を建てられるマスをクリックで指定/解除。緑=空地。街0(公園)は施設セルを除く。</span
+                  ※街を選び、家を建てられるマスをクリックで指定/解除。緑=空地。各街の施設セルは除く。</span
                 >
               </h3>
               <div class="plot-towns">
@@ -1256,6 +1439,66 @@ async function deleteEdit() {
   display: block;
   width: 20px;
   height: 20px;
+}
+/* レイヤー切替タブ */
+.layer-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.layer-tabs button {
+  background: #e2e8f0;
+  border: 1px solid #99a;
+  padding: 5px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.layer-tabs button.active {
+  background: #336699;
+  color: #fff;
+  font-weight: bold;
+}
+/* 背景アセットのパレット */
+.bg-palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.bg-swatch {
+  border: 2px solid #ccc;
+  background: #fff;
+  padding: 2px;
+  line-height: 0;
+  cursor: pointer;
+}
+.bg-swatch.active {
+  border-color: #ff6600;
+}
+.bg-swatch img {
+  display: block;
+  width: 24px;
+  height: 24px;
+}
+/* 背景エディタのセル: タイルを全面に敷き、施設は右下に薄く参照表示する。 */
+.map-grid .cell.bgcell {
+  position: relative;
+}
+.map-grid .cell.bgcell .bg-tile {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+}
+.map-grid .cell.bgcell .fac-ref {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 12px;
+  height: 12px;
+  opacity: 0.55;
+  cursor: pointer;
 }
 .map-side {
   width: 100%;

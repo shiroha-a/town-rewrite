@@ -192,6 +192,16 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
+}
+/* 背景アセット(装飾レイヤー): セルいっぱいに敷き、施設ボタンの下に置く。 */
+.townmap-grid .cell-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
 }
 .facility {
   width: 100%;
@@ -203,6 +213,9 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  /* 絶対配置の背景アセット(.cell-bg)より前面に施設を描画する。 */
+  position: relative;
+  z-index: 1;
 }
 .facility img {
   display: block;

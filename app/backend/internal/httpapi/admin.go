@@ -35,6 +35,28 @@ func (s *Server) adminUpdateTownMap(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.townmap.Get())
 }
 
+// townAssets returns the background layer. Public: every player needs it to
+// render the main screen beneath the facility layer.
+func (s *Server) townAssets(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.townmap.GetAssets())
+}
+
+func (s *Server) adminUpdateTownAssets(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	var as []townmap.Asset
+	if err := json.NewDecoder(r.Body).Decode(&as); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := s.townmap.SetAssets(r.Context(), as); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.townmap.GetAssets())
+}
+
 func (s *Server) adminGetSettings(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return

@@ -25,7 +25,7 @@ const emit = defineEmits<{ update: [player: Player]; back: [] }>();
 
 const yen = (n: number) => n.toLocaleString('ja-JP');
 const state = ref<BuildingState | null>(null);
-const facilities = ref<TownFacility[]>([]); // 街0(メイン街)の施設セル
+const facilities = ref<TownFacility[]>([]); // 全街の施設(選択中の街ぶんを描画)
 const message = ref('');
 const busy = ref(false);
 const { toast, showToast, closeToast } = useToast();
@@ -66,10 +66,11 @@ const townPlotCount = computed(
   () => state.value?.plots.filter((p) => p.town === selectedTown.value).length ?? 0,
 );
 
-// 街0の施設セル(メイン街のみ表示)。
+// 選択中の街の施設セル(施設はマルチ街化済み)。
 function facilityAt(row: number, col: number): TownFacility | undefined {
-  if (selectedTown.value !== 0) return undefined;
-  return facilities.value.find((f) => f.row === row && f.col === col);
+  return facilities.value.find(
+    (f) => f.town === selectedTown.value && f.row === row && f.col === col,
+  );
 }
 function houseAt(row: number, col: number) {
   return state.value?.houses.find(

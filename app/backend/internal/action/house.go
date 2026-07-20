@@ -49,12 +49,14 @@ func (s *Service) DoBuildHouse(ctx context.Context, playerID int64, town, row, c
 			return &ConditionError{Message: "外装または内装の指定が正しくありません。"}
 		}
 		// 街0(メイン街)は既存施設のセルに建てられない。町マップのfacilities JSONBを直接引く。
+		// 施設はマルチ街化したため、street 0 の施設のみを対象にする(town未設定の旧データは0扱い)。
 		if town == 0 {
 			var onFacility bool
 			if err := tx.QueryRow(ctx,
 				`SELECT EXISTS(
 				   SELECT 1 FROM town_map, jsonb_array_elements(facilities) f
-				   WHERE id = 1 AND (f->>'col')::int = $1 AND (f->>'row')::int = $2)`,
+				   WHERE id = 1 AND COALESCE((f->>'town')::int, 0) = 0
+				     AND (f->>'col')::int = $1 AND (f->>'row')::int = $2)`,
 				col, row).Scan(&onFacility); err != nil {
 				return fmt.Errorf("check facility cell: %w", err)
 			}

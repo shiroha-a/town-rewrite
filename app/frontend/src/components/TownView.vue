@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue';
-import { api, type Player, type Params, type TownFacility, type WorkResponse } from '../api';
+import { api, type Player, type Params, type TownFacility, type TownAsset, type WorkResponse } from '../api';
 import { satietyLabel } from '../params';
 import CommandIcon from './CommandIcon.vue';
 import PowerBar from './PowerBar.vue';
@@ -18,8 +18,21 @@ const weightKg = computed(() => (props.player.status.weight_g / 1000).toFixed(1)
 
 // 街マップに置く施設。配置は管理者が編集可能で、起動時にAPIから取得する。
 // 職業安定所(work.gif)で転職する。
+// 5つの街の名前と地価(万円)。建設会社/バックエンドと対応。現在いる街の表示に使う。
+const TOWN_NAMES = ['公園', 'シー・リゾート', 'カントリータウン', 'ダウンタウン', '謎の街'];
+const TOWN_LAND_PRICES = [2000, 1000, 500, 250, 250];
+const currentTownName = computed(() => TOWN_NAMES[props.player.current_town] ?? '');
+const currentTownLandPrice = computed(() => TOWN_LAND_PRICES[props.player.current_town] ?? 0);
+
+// 施設は全街ぶんをまとめて取得し、現在いる街(current_town)のものだけを描画する。
 const facilities = ref<TownFacility[]>([]);
-const facilityAt = (col: number, row: number) => facilities.value.find((f) => f.col === col && f.row === row);
+const facilityAt = (col: number, row: number) =>
+  facilities.value.find((f) => f.town === props.player.current_town && f.col === col && f.row === row);
+
+// 背景アセット(装飾レイヤー)。施設の下にセル単位で敷く。現状は街0のみ対応。
+const assets = ref<TownAsset[]>([]);
+const assetAt = (col: number, row: number) =>
+  props.player.current_town === 0 ? assets.value.find((a) => a.col === col && a.row === row) : undefined;
 
 const cols = Array.from({ length: 16 }, (_, i) => i + 1);
 const rows = 'ABCDEFGHIJKL'.split('');
@@ -30,6 +43,12 @@ onMounted(async () => {
   } catch {
     // マップ取得に失敗しても他機能は使えるよう空配置で継続する。
     facilities.value = [];
+  }
+  try {
+    assets.value = await api.townAssets();
+  } catch {
+    // 背景は装飾のため、取得失敗時は空(空の色のみ)で継続する。
+    assets.value = [];
   }
   try {
     const s = await api.stocks();
@@ -329,8 +348,8 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
 
   <!-- 街情報ヘッダ。狭幅(モバイル)でのみ最上部に表示する(town-info-top)。 -->
   <div class="whitebox town-info town-info-top">
-    <div class="midasi">「Ｔｏｗｎ」内<br />公園</div>
-    <div class="num">地　価：2000万<br />経済力：--円<br />繁栄度：--</div>
+    <div class="midasi">「Ｔｏｗｎ」内<br />{{ currentTownName }}</div>
+    <div class="num">地　価：{{ currentTownLandPrice }}万<br />経済力：--円<br />繁栄度：--</div>
   </div>
 
   <div class="participant">
@@ -353,6 +372,12 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
           <template v-for="(r, ri) in rows" :key="r">
             <div class="th">{{ r }}</div>
             <div v-for="c in cols" :key="r + '-' + c" class="tcell">
+              <img
+                v-if="assetAt(c, ri)"
+                class="cell-bg"
+                :src="`/img/${assetAt(c, ri)!.img}.gif`"
+                alt=""
+              />
               <button
                 v-if="facilityAt(c, ri)"
                 class="facility"
@@ -397,8 +422,8 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
         <div style="flex: 1 1 auto; min-width: 0">
           <!-- 街情報ヘッダ。デスクトップでのみ右カラム上部に表示する(town-info-side)。 -->
           <div class="whitebox town-info town-info-side">
-            <div class="midasi">「Ｔｏｗｎ」内<br />公園</div>
-            <div class="num">地　価：2000万<br />経済力：--円<br />繁栄度：--</div>
+            <div class="midasi">「Ｔｏｗｎ」内<br />{{ currentTownName }}</div>
+            <div class="num">地　価：{{ currentTownLandPrice }}万<br />経済力：--円<br />繁栄度：--</div>
           </div>
 
           <div class="command-icons">

@@ -16,19 +16,30 @@ import (
 )
 
 // Grid dimensions of the town map (columns 1..Cols, rows 0..Rows-1 = A..L).
+// Towns is the number of towns (0=公園..4=謎の街); the map is per-town.
 const (
-	Cols = 16
-	Rows = 12
+	Cols  = 16
+	Rows  = 12
+	Towns = 5
 )
 
-// Facility is a single placed facility on the town map.
+// Facility is a single placed facility on the town map (functional layer).
 type Facility struct {
 	Key   string `json:"key"`   // ビュー遷移先(プリセット)。空不可
 	Img   string `json:"img"`   // gif名(拡張子なし)。空不可
 	Alt   string `json:"alt"`   // 表示名(ツールチップ)
+	Town  int    `json:"town"`  // 街番号(0..Towns-1)。既定0=メイン街
 	Col   int    `json:"col"`   // 1..Cols
 	Row   int    `json:"row"`   // 0..Rows-1
 	Ready bool   `json:"ready"` // 有効なら遷移可能
+}
+
+// Asset is a single placed background asset (decorative layer). It has no
+// function; it just renders beneath the facility layer, one tile per cell.
+type Asset struct {
+	Img string `json:"img"` // gif名(拡張子なし)。空不可
+	Col int    `json:"col"` // 1..Cols
+	Row int    `json:"row"` // 0..Rows-1
 }
 
 // Default is the legacy-faithful initial layout, mirroring the placement that
@@ -58,13 +69,14 @@ type Store struct {
 	pool       *pgxpool.Pool
 	mu         sync.RWMutex
 	facilities []Facility
+	assets     []Asset
 }
 
 // NewStore loads the map from the DB, seeding it from defaults if absent.
 func NewStore(ctx context.Context, pool *pgxpool.Pool, defaults []Facility) (*Store, error) {
-	s := &Store{pool: pool, facilities: defaults}
-	var data []byte
-	err := pool.QueryRow(ctx, `SELECT facilities FROM town_map WHERE id = 1`).Scan(&data)
+	s := &Store{pool: pool, facilities: defaults, assets: []Asset{}}
+	var facData, assetData []byte
+	err := pool.QueryRow(ctx, `SELECT facilities, assets FROM town_map WHERE id = 1`).Scan(&facData, &assetData)
 	if errors.Is(err, pgx.ErrNoRows) {
 		b, _ := json.Marshal(defaults)
 		if _, e := pool.Exec(ctx,
@@ -77,10 +89,18 @@ func NewStore(ctx context.Context, pool *pgxpool.Pool, defaults []Facility) (*St
 		return nil, fmt.Errorf("load town map: %w", err)
 	}
 	var fs []Facility
-	if err := json.Unmarshal(data, &fs); err != nil {
+	if err := json.Unmarshal(facData, &fs); err != nil {
 		return nil, fmt.Errorf("parse town map: %w", err)
 	}
 	s.facilities = fs
+	// assets列はマイグレーション後の既存行では '[]' が入る。
+	if len(assetData) > 0 {
+		var as []Asset
+		if err := json.Unmarshal(assetData, &as); err != nil {
+			return nil, fmt.Errorf("parse town assets: %w", err)
+		}
+		s.assets = as
+	}
 	return s, nil
 }
 
@@ -93,9 +113,19 @@ func (s *Store) Get() []Facility {
 	return out
 }
 
-// Validate checks grid bounds, required fields, and one-facility-per-cell.
+// GetAssets returns a copy of the current background assets.
+func (s *Store) GetAssets() []Asset {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Asset, len(s.assets))
+	copy(out, s.assets)
+	return out
+}
+
+// Validate checks grid bounds, required fields, and one-facility-per-cell
+// within each town.
 func Validate(fs []Facility) error {
-	seen := make(map[[2]int]bool, len(fs))
+	seen := make(map[[3]int]bool, len(fs))
 	for i, f := range fs {
 		if f.Key == "" {
 			return fmt.Errorf("facility %d: key is required", i)
@@ -103,15 +133,18 @@ func Validate(fs []Facility) error {
 		if f.Img == "" {
 			return fmt.Errorf("facility %d (%s): img is required", i, f.Key)
 		}
+		if f.Town < 0 || f.Town >= Towns {
+			return fmt.Errorf("facility %d (%s): town %d out of range 0..%d", i, f.Key, f.Town, Towns-1)
+		}
 		if f.Col < 1 || f.Col > Cols {
 			return fmt.Errorf("facility %d (%s): col %d out of range 1..%d", i, f.Key, f.Col, Cols)
 		}
 		if f.Row < 0 || f.Row >= Rows {
 			return fmt.Errorf("facility %d (%s): row %d out of range 0..%d", i, f.Key, f.Row, Rows-1)
 		}
-		cell := [2]int{f.Col, f.Row}
+		cell := [3]int{f.Town, f.Col, f.Row}
 		if seen[cell] {
-			return fmt.Errorf("facility %d (%s): cell (%d,%d) already occupied", i, f.Key, f.Col, f.Row)
+			return fmt.Errorf("facility %d (%s): town %d cell (%d,%d) already occupied", i, f.Key, f.Town, f.Col, f.Row)
 		}
 		seen[cell] = true
 	}
@@ -133,6 +166,47 @@ func (s *Store) Set(ctx context.Context, fs []Facility) error {
 	}
 	s.mu.Lock()
 	s.facilities = fs
+	s.mu.Unlock()
+	return nil
+}
+
+// ValidateAssets checks grid bounds, required img, and one-asset-per-cell.
+func ValidateAssets(as []Asset) error {
+	seen := make(map[[2]int]bool, len(as))
+	for i, a := range as {
+		if a.Img == "" {
+			return fmt.Errorf("asset %d: img is required", i)
+		}
+		if a.Col < 1 || a.Col > Cols {
+			return fmt.Errorf("asset %d: col %d out of range 1..%d", i, a.Col, Cols)
+		}
+		if a.Row < 0 || a.Row >= Rows {
+			return fmt.Errorf("asset %d: row %d out of range 0..%d", i, a.Row, Rows-1)
+		}
+		cell := [2]int{a.Col, a.Row}
+		if seen[cell] {
+			return fmt.Errorf("asset %d: cell (%d,%d) already occupied", i, a.Col, a.Row)
+		}
+		seen[cell] = true
+	}
+	return nil
+}
+
+// SetAssets validates, persists, and applies a new background layer.
+func (s *Store) SetAssets(ctx context.Context, as []Asset) error {
+	if err := ValidateAssets(as); err != nil {
+		return err
+	}
+	b, err := json.Marshal(as)
+	if err != nil {
+		return fmt.Errorf("encode town assets: %w", err)
+	}
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE town_map SET assets = $1, updated_at = now() WHERE id = 1`, b); err != nil {
+		return fmt.Errorf("save town assets: %w", err)
+	}
+	s.mu.Lock()
+	s.assets = as
 	s.mu.Unlock()
 	return nil
 }

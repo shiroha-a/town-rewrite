@@ -45,6 +45,7 @@ export interface Player {
   super_savings: number;
   loan_daily: number;
   loan_count: number;
+  current_town: number;
   status: {
     energy: number;
     energy_max: number;
@@ -370,9 +371,17 @@ export interface TownFacility {
   key: string;
   img: string;
   alt: string;
+  town: number;
   col: number;
   row: number;
   ready: boolean;
+}
+
+// 背景アセット(装飾レイヤー)。機能を持たず、施設レイヤーの下にセル単位で敷く。
+export interface TownAsset {
+  img: string;
+  col: number;
+  row: number;
 }
 
 export interface StockPrice {
@@ -691,6 +700,7 @@ export const api = {
   listPlayers: () => request<PublicSummary[]>('GET', '/players'),
   playerProfile: (id: number) => request<PublicProfile>('GET', `/players/${id}/profile`),
   townMap: () => request<TownFacility[]>('GET', '/townmap'),
+  townAssets: () => request<TownAsset[]>('GET', '/townassets'),
   stocks: () => request<StocksResp>('GET', '/stocks'),
   playerStocks: (id: number) => request<PlayerStocksResp>('GET', `/players/${id}/stocks`),
   stockBuy: (id: number, symbol: string, quantity: number) =>
@@ -1038,6 +1048,8 @@ export const api = {
     request<GameSettings>('PUT', '/admin/settings', settings, adminHeaders(actingId)),
   adminUpdateTownMap: (actingId: number, facilities: TownFacility[]) =>
     request<TownFacility[]>('PUT', '/admin/townmap', facilities, adminHeaders(actingId)),
+  adminUpdateTownAssets: (actingId: number, assets: TownAsset[]) =>
+    request<TownAsset[]>('PUT', '/admin/townassets', assets, adminHeaders(actingId)),
   adminGetPlots: (actingId: number) =>
     request<PlotCell[]>('GET', '/admin/building/plots', undefined, adminHeaders(actingId)),
   adminSetPlots: (actingId: number, plots: PlotCell[]) =>
