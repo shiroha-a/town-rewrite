@@ -540,6 +540,14 @@ body {
 .toast.moving .toast-icon {
   background: linear-gradient(180deg, #9b6cff 0%, #7a3ff2 100%);
 }
+/* 移動中の操作ブロック用オーバーレイ。バナー(z-index:1000)の下・本文の上。 */
+.move-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  background: rgba(20, 20, 40, 0.12);
+  cursor: not-allowed;
+}
 /* iOS風スライド: 上に隠れた状態から中央上部へ降りてくる。translateXは維持する。 */
 .wt-enter-active {
   transition:

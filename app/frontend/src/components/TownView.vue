@@ -205,6 +205,12 @@ function clickFacility(f: TownFacility) {
   emit('navigate', f.key);
 }
 
+// 各種リンクの遷移。移動中は無効化する(あらゆるコマンドを止める)。
+function nav(view: string) {
+  if (moving.value) return;
+  emit('navigate', view);
+}
+
 // ワープ(高額・即時)。トップ画面の持ち物欄の下のプルダウンで行き先を選び移動する。
 const warpFee = WARP_FEE;
 const warpDests = computed(() =>
@@ -222,7 +228,7 @@ watch(
 );
 const warpBusy = ref(false);
 async function doWarp() {
-  if (warpBusy.value) return;
+  if (warpBusy.value || moving.value) return;
   warpBusy.value = true;
   const destName = TOWN_NAMES[warpDest.value] ?? '';
   try {
@@ -323,6 +329,7 @@ function buildWorkLines(before: Player, after: WorkResponse): string[] {
 }
 
 function clickCommand(key: string) {
+  if (moving.value) return; // 移動中は全コマンド無効
   if (key === 'work') {
     if (workCooldown.value) return; // クールタイム中は無効
     doWork();
@@ -472,6 +479,8 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
       </div>
     </div>
   </transition>
+  <!-- 移動中は全コマンドを無効化するオーバーレイ(クリックを吸収する)。 -->
+  <div v-if="moving" class="move-overlay" @click.stop.prevent></div>
 
   <!-- 街情報ヘッダ。狭幅(モバイル)でのみ最上部に表示する(town-info-top)。 -->
   <div class="whitebox town-info town-info-top">
@@ -485,7 +494,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
     <span class="name">{{ player.display_name }}</span>★
   </div>
 
-  <button v-if="unreadMail > 0" class="mail-notice" @click="emit('navigate', 'mail')">
+  <button v-if="unreadMail > 0" class="mail-notice" @click="nav('mail')">
     ★受信箱に{{ unreadMail }}通の新しいメッセージが届いています！
   </button>
 
@@ -529,17 +538,17 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
         </template>
         <template v-else>株価情報を取得中…</template>
       </div>
-      <button class="chat-head" @click="emit('navigate', 'aisatu')">●チャット(あいさつ)</button>
+      <button class="chat-head" @click="nav('aisatu')">●チャット(あいさつ)</button>
       <div v-if="greetings.length" class="chat-feed">
         <div v-for="g in greetings" :key="g.id" class="chat-line">
           <span class="cn">{{ g.user_name }}</span>：<span :style="{ color: g.color }">{{ g.body }}</span>
         </div>
       </div>
       <div class="left-links">
-        <button class="link-btn" @click="emit('navigate', 'shopping')">商店街</button>
-        <button class="link-btn" @click="emit('navigate', 'ashiato')">足あと帳</button>
-        <button class="link-btn" @click="emit('navigate', 'yakuba')">役場(住民名鑑)</button>
-        <button class="link-btn" @click="emit('navigate', 'casino')">カジノ</button>
+        <button class="link-btn" @click="nav('shopping')">商店街</button>
+        <button class="link-btn" @click="nav('ashiato')">足あと帳</button>
+        <button class="link-btn" @click="nav('yakuba')">役場(住民名鑑)</button>
+        <button class="link-btn" @click="nav('casino')">カジノ</button>
       </div>
     </div>
 
@@ -554,7 +563,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
           </div>
 
           <div class="command-icons">
-            <button v-if="isAdmin" class="admin-link" title="管理者画面" @click="emit('navigate', 'admin')">
+            <button v-if="isAdmin" class="admin-link" title="管理者画面" @click="nav('admin')">
               ⚙ 管理者
             </button>
             <button
