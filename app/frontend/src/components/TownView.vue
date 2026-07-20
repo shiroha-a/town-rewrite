@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue';
-import { api, type Player, type Params, type TownFacility, type TownAsset, type WorkResponse } from '../api';
+import { api, WARP_FEE, type Player, type Params, type TownFacility, type TownAsset, type WorkResponse } from '../api';
 import { satietyLabel } from '../params';
 import CommandIcon from './CommandIcon.vue';
 import PowerBar from './PowerBar.vue';
@@ -173,6 +173,47 @@ function clickFacility(f: TownFacility) {
     return;
   }
   emit('navigate', f.key);
+}
+
+// ワープ(高額・即時)。トップ画面の持ち物欄の下のプルダウンで行き先を選び移動する。
+const warpFee = WARP_FEE;
+const warpDests = computed(() =>
+  TOWN_NAMES.map((name, no) => ({ no, name })).filter((t) => t.no !== props.player.current_town),
+);
+const warpDest = ref<number>(warpDests.value[0]?.no ?? 0);
+// 現在の街が変わったら、行き先候補から現在地を除いて既定を選び直す。
+watch(
+  () => props.player.current_town,
+  () => {
+    if (!warpDests.value.some((t) => t.no === warpDest.value)) {
+      warpDest.value = warpDests.value[0]?.no ?? 0;
+    }
+  },
+);
+const warpBusy = ref(false);
+async function doWarp() {
+  if (warpBusy.value) return;
+  warpBusy.value = true;
+  const destName = TOWN_NAMES[warpDest.value] ?? '';
+  try {
+    await api.warp(props.player.id, warpDest.value);
+    showToast({
+      variant: 'work',
+      title: `${destName}へワープしました`,
+      lines: [`ワープ料金 ${yen(warpFee)}円`],
+      icon: 'reload',
+    });
+    emit('reload');
+  } catch (e) {
+    showToast({
+      variant: 'error',
+      title: 'ワープできません',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'reload',
+    });
+  } finally {
+    warpBusy.value = false;
+  }
 }
 
 // 管理者のみ管理者画面への導線を出す。
@@ -529,6 +570,15 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
             <div class="honbun2">
               <span class="honbun2">所有物</span>：購入商品 {{ player.items.length }} / {{ player.item_kind_limit || '∞' }}<br />
               <span class="honbun5" v-for="it in player.items" :key="it.item_id">○{{ it.name }}({{ it.quantity }}個) </span>
+            </div>
+            <div class="honbun2 warp-box">
+              <span class="honbun2">ワープ</span>：
+              <select v-model.number="warpDest" class="warp-select">
+                <option v-for="t in warpDests" :key="t.no" :value="t.no">{{ t.name }}</option>
+              </select>
+              <button class="warp-btn" :disabled="warpBusy || warpDests.length === 0" @click="doWarp">
+                ワープ（{{ yen(warpFee) }}円）
+              </button>
             </div>
           </div>
         </div>

@@ -2765,6 +2765,52 @@ func TestMoveVehicle(t *testing.T) {
 	}
 }
 
+func warp(t *testing.T, base string, playerID int64, dest int, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"dest": dest, "idempotency_key": idemKey})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/warp",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("warp post: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+func TestWarp(t *testing.T) {
+	srv, pool := setup(t)
+	p := register(t, srv.URL, "misskey.example", "warper") // 現金500000
+
+	// 街3へワープ → 100000円課金、即時到着(クールタイム無し)。
+	got, code := warp(t, srv.URL, p.ID, 3, "w1")
+	if code != http.StatusOK {
+		t.Fatalf("warp: status=%d", code)
+	}
+	if got.CurrentTown != 3 {
+		t.Errorf("current_town after warp = %d, want 3", got.CurrentTown)
+	}
+	if got.Money != 400_000 {
+		t.Errorf("money after warp = %d, want 400000 (100000課金)", got.Money)
+	}
+
+	// 同じ街へのワープは拒否。
+	if _, c := warp(t, srv.URL, p.ID, 3, "w2"); c != http.StatusUnprocessableEntity {
+		t.Errorf("warp to same town: status=%d, want 422", c)
+	}
+
+	// 現金が料金未満だと拒否。
+	creditCash(t, pool, p.ID, -350_000) // 400000-350000=50000 < 100000
+	if _, c := warp(t, srv.URL, p.ID, 0, "w3"); c != http.StatusUnprocessableEntity {
+		t.Errorf("warp with insufficient cash: status=%d, want 422", c)
+	}
+}
+
 func TestBuildHouse(t *testing.T) {
 	srv, pool := setup(t)
 	ctx := context.Background()

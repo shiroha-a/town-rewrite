@@ -46,6 +46,31 @@ body {
   line-height: 13px;
   color: #339900;
 }
+/* ワープUI(持ち物欄の下): 行き先プルダウン + ボタン。 */
+.warp-box {
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.warp-select {
+  font-size: 12px;
+  padding: 1px 2px;
+}
+.warp-btn {
+  font-size: 12px;
+  padding: 2px 8px;
+  background: linear-gradient(180deg, #9b6cff 0%, #7a3ff2 100%);
+  color: #fff;
+  border: 1px solid #6a2fe0;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.warp-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .honbun4 {
   font-size: 13px;
   line-height: 22px;

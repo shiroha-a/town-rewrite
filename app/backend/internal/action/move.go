@@ -16,8 +16,10 @@ import (
 )
 
 // 街移動の料金(円)と時間(秒)。レガシー忠実: 徒歩は無料10秒、バスは500円5秒。
+// ワープは高額(WarpFee)で即時・安全。トップ画面のプルダウンから行き先を選ぶ。
 const (
 	busFare      int64 = 500
+	WarpFee      int64 = 100000
 	walkMoveSecs int   = 10
 	busMoveSecs  int   = 5
 	// 迷子で飛ばされる街(レガシー: ダウンタウン=3)。
@@ -211,6 +213,37 @@ func (s *Service) DoMoveTown(ctx context.Context, playerID int64, dest int, mean
 		return nil, nil, err
 	}
 	return p, result, nil
+}
+
+// DoWarp instantly teleports the player to another town for a high cash fee
+// (WarpFee). It is safe (no accident/getting-lost) and has no travel time,
+// mirroring the legacy top-screen warp dropdown.
+func (s *Service) DoWarp(ctx context.Context, playerID int64, dest int, idempotencyKey string) (*player.Player, error) {
+	if dest < 0 || dest >= townmap.Towns {
+		return nil, &ConditionError{Message: "行き先の街の指定が正しくありません。"}
+	}
+	return s.runAction(ctx, playerID, "warp", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+		var current int
+		if err := tx.QueryRow(ctx, `SELECT current_town FROM players WHERE id = $1`, playerID).Scan(&current); err != nil {
+			return fmt.Errorf("read current town: %w", err)
+		}
+		if current == dest {
+			return &ConditionError{Message: "すでにその街にいます。"}
+		}
+		if state.Money < WarpFee {
+			return &ConditionError{Message: fmt.Sprintf("現金が足りません。ワープには%d円必要です。", WarpFee)}
+		}
+		if err := s.ledger.PostTx(ctx, tx, "warp", "", []ledger.Entry{
+			{Account: ledger.PlayerAccount(playerID), Delta: -WarpFee},
+			{Account: ledger.SystemAccount("warp"), Delta: WarpFee},
+		}); err != nil {
+			return fmt.Errorf("charge warp fee: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE players SET current_town = $1 WHERE id = $2`, dest, playerID); err != nil {
+			return fmt.Errorf("update current town: %w", err)
+		}
+		return nil
+	})
 }
 
 // fastestVehicle returns the player's fastest owned movement vehicle (lowest

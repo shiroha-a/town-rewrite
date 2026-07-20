@@ -399,6 +399,9 @@ export interface MoveResult {
 }
 export type MoveResp = Player & { move_result: MoveResult };
 
+// ワープ料金(円)。バックエンド action.WarpFee と一致させること。
+export const WARP_FEE = 100000;
+
 export interface StockPrice {
   symbol: string;
   price: number;
@@ -721,6 +724,12 @@ export const api = {
     request<MoveResp>('POST', `/players/${id}/move`, {
       dest,
       means,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  // ワープ(高額・即時)。行き先の街へ瞬間移動する。
+  warp: (id: number, dest: number) =>
+    request<Player>('POST', `/players/${id}/warp`, {
+      dest,
       idempotency_key: newIdempotencyKey(),
     }),
   stocks: () => request<StocksResp>('GET', '/stocks'),
