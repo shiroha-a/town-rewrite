@@ -411,13 +411,17 @@ const townList = ref<Town[]>([]);
 // マップ編集の街セレクタ用(no+name)。街は設定で可変。
 const plotTowns = computed(() => townList.value.map((t) => ({ no: t.no, name: t.name })));
 
-// 街エディタの編集用ドラフト(名前・地価)。保存で adminUpdateTowns。
-const townDraft = ref<{ name: string; land_price: number }[]>([]);
+// 街エディタの編集用ドラフト(名前・地価・隠し町)。保存で adminUpdateTowns。
+const townDraft = ref<{ name: string; land_price: number; hidden: boolean }[]>([]);
 function syncTownDraft() {
-  townDraft.value = townList.value.map((t) => ({ name: t.name, land_price: t.land_price }));
+  townDraft.value = townList.value.map((t) => ({
+    name: t.name,
+    land_price: t.land_price,
+    hidden: t.hidden,
+  }));
 }
 function addTown() {
-  townDraft.value.push({ name: '新しい街', land_price: 250 });
+  townDraft.value.push({ name: '新しい街', land_price: 250, hidden: false });
 }
 function removeTown(i: number) {
   townDraft.value.splice(i, 1);
@@ -926,18 +930,19 @@ async function deleteEdit() {
             <section class="panel">
               <h3>
                 街の設定<span class="hint">
-                  ※上から順に街番号0,1,2…。名前と地価(万円)を編集。地価は建築費に使われる。最大{{ 12 }}街。</span
+                  ※上から順に街番号0,1,2…。名前と地価(万円)を編集。地価は建築費に使われる。「隠し」はワープで行けない隠し町。最大{{ 12 }}街。</span
                 >
               </h3>
               <table class="town-edit">
                 <thead>
-                  <tr><th>#</th><th>名前</th><th>地価(万)</th><th></th></tr>
+                  <tr><th>#</th><th>名前</th><th>地価(万)</th><th>隠し</th><th></th></tr>
                 </thead>
                 <tbody>
                   <tr v-for="(t, i) in townDraft" :key="i">
                     <td>{{ i }}</td>
                     <td><input v-model="t.name" /></td>
                     <td><input type="number" v-model.number="t.land_price" min="0" /></td>
+                    <td class="chk-cell"><input type="checkbox" v-model="t.hidden" title="ワープで行けない隠し町" /></td>
                     <td><button class="btn danger mini" :disabled="townDraft.length <= 1" @click="removeTown(i)">削除</button></td>
                   </tr>
                 </tbody>

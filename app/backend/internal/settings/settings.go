@@ -37,10 +37,11 @@ type Game struct {
 }
 
 // TownConfig is one configurable town: its name and land price (万円)。街番号は
-// 並び順(0始まり)で決まる。
+// 並び順(0始まり)で決まる。Hidden はワープ不可の隠し町。
 type TownConfig struct {
 	Name      string `json:"name"`
 	LandPrice int    `json:"land_price"`
+	Hidden    bool   `json:"hidden"`
 }
 
 // Store is a thread-safe, DB-backed holder of the current game settings.

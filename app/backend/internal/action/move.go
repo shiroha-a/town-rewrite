@@ -234,6 +234,10 @@ func (s *Service) DoWarp(ctx context.Context, playerID int64, dest int, idempote
 	if dest < 0 || dest >= building.TownCount() {
 		return nil, &ConditionError{Message: "行き先の街の指定が正しくありません。"}
 	}
+	// 隠し町へはワープできない。
+	if building.IsHidden(dest) {
+		return nil, &ConditionError{Message: "その街へはワープできません。"}
+	}
 	return s.runAction(ctx, playerID, "warp", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
 		var current int
 		if err := tx.QueryRow(ctx, `SELECT current_town FROM players WHERE id = $1`, playerID).Scan(&current); err != nil {

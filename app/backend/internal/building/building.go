@@ -17,11 +17,14 @@ const MochiieMax = 4
 // yenPerMan converts a 万円 price to 円.
 const yenPerMan = 10000
 
-// Town is one of the five buildable towns (town_ini.cgi). LandPrice is in 万円.
+// Town is one of the buildable towns (town_ini.cgi). LandPrice is in 万円.
+// Hidden towns (隠し町/kakushimachi) are excluded from the warp destination list
+// and cannot be warped to.
 type Town struct {
 	No        int    `json:"no"`
 	Name      string `json:"name"`
 	LandPrice int    `json:"land_price"`
+	Hidden    bool   `json:"hidden"`
 }
 
 // defaultTowns lists the five legacy towns (0=公園 .. 4=謎の街). Used to seed the
@@ -74,6 +77,18 @@ func TownCount() int {
 	townsMu.RLock()
 	defer townsMu.RUnlock()
 	return len(towns)
+}
+
+// IsHidden reports whether the town at no is a hidden town (warp-excluded).
+func IsHidden(no int) bool {
+	townsMu.RLock()
+	defer townsMu.RUnlock()
+	for _, t := range towns {
+		if t.No == no {
+			return t.Hidden
+		}
+	}
+	return false
 }
 
 // townByNo finds a town by its number.

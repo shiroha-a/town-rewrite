@@ -229,8 +229,9 @@ function nav(view: string) {
 
 // ワープ(高額・即時)。トップ画面の持ち物欄の下のプルダウンで行き先を選び移動する。
 const warpFee = WARP_FEE;
+// ワープ候補: 現在地と隠し町(hidden)を除く。
 const warpDests = computed(() =>
-  townList.value.filter((t) => t.no !== props.player.current_town),
+  townList.value.filter((t) => t.no !== props.player.current_town && !t.hidden),
 );
 const warpDest = ref<number>(warpDests.value[0]?.no ?? 0);
 // 現在の街が変わったら、行き先候補から現在地を除いて既定を選び直す。

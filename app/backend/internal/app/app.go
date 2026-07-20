@@ -138,7 +138,7 @@ func runWeb(ctx context.Context, cfg *config.Config, logger *slog.Logger, player
 func defaultTownConfigs() []settings.TownConfig {
 	out := []settings.TownConfig{}
 	for _, t := range building.DefaultTowns() {
-		out = append(out, settings.TownConfig{Name: t.Name, LandPrice: t.LandPrice})
+		out = append(out, settings.TownConfig{Name: t.Name, LandPrice: t.LandPrice, Hidden: t.Hidden})
 	}
 	return out
 }
@@ -150,7 +150,7 @@ func syncTowns(tcs []settings.TownConfig) {
 	}
 	ts := make([]building.Town, len(tcs))
 	for i, tc := range tcs {
-		ts[i] = building.Town{No: i, Name: tc.Name, LandPrice: tc.LandPrice}
+		ts[i] = building.Town{No: i, Name: tc.Name, LandPrice: tc.LandPrice, Hidden: tc.Hidden}
 	}
 	building.SetTowns(ts)
 }

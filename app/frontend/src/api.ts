@@ -371,10 +371,11 @@ export interface GameSettings {
   towns: TownConfig[]; // 街の一覧(round-trip用。編集は専用エディタ)
 }
 
-// 街設定(名前・地価)。街番号は並び順(0始まり)。
+// 街設定(名前・地価・隠し町)。街番号は並び順(0始まり)。
 export interface TownConfig {
   name: string;
   land_price: number;
+  hidden: boolean; // ワープ不可の隠し町
 }
 
 // 街(番号付き)。GET /towns の戻り値。
@@ -382,6 +383,7 @@ export interface Town {
   no: number;
   name: string;
   land_price: number;
+  hidden: boolean;
 }
 
 export interface TownFacility {

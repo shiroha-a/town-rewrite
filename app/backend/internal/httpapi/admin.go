@@ -24,13 +24,14 @@ func (s *Server) towns(w http.ResponseWriter, _ *http.Request) {
 type townReq struct {
 	Name      string `json:"name"`
 	LandPrice int    `json:"land_price"`
+	Hidden    bool   `json:"hidden"`
 }
 
 // syncBuildingTowns pushes the town config into the building runtime cache.
 func syncBuildingTowns(tcs []settings.TownConfig) {
 	ts := make([]building.Town, len(tcs))
 	for i, tc := range tcs {
-		ts[i] = building.Town{No: i, Name: tc.Name, LandPrice: tc.LandPrice}
+		ts[i] = building.Town{No: i, Name: tc.Name, LandPrice: tc.LandPrice, Hidden: tc.Hidden}
 	}
 	building.SetTowns(ts)
 }
@@ -59,7 +60,7 @@ func (s *Server) adminUpdateTowns(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "地価は0以上にしてください。")
 			return
 		}
-		tcs[i] = settings.TownConfig{Name: tr.Name, LandPrice: tr.LandPrice}
+		tcs[i] = settings.TownConfig{Name: tr.Name, LandPrice: tr.LandPrice, Hidden: tr.Hidden}
 	}
 	g := s.settings.Get()
 	g.Towns = tcs

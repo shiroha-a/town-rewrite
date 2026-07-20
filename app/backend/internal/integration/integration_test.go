@@ -2964,6 +2964,22 @@ func TestTowns(t *testing.T) {
 	if _, c := moveTown(t, srv.URL, admin.ID, 5, "walk", "tw6"); c != http.StatusOK {
 		t.Errorf("move to town 5 (6 towns): status=%d, want 200", c)
 	}
+
+	// 隠し町(hidden)にはワープできない。街2を隠し町にする。
+	hidden := []map[string]any{
+		{"name": "A", "land_price": 100}, {"name": "B", "land_price": 100},
+		{"name": "C", "land_price": 100, "hidden": true}, {"name": "D", "land_price": 100},
+		{"name": "E", "land_price": 100}, {"name": "F", "land_price": 100},
+	}
+	if code, _ := adminPut(t, srv.URL, "/api/v1/admin/towns", admin.ID, hidden); code != http.StatusOK {
+		t.Fatalf("set hidden town: status=%d", code)
+	}
+	if _, c := warp(t, srv.URL, admin.ID, 2, "wh1"); c != http.StatusUnprocessableEntity {
+		t.Errorf("warp to hidden town: status=%d, want 422", c)
+	}
+	if _, c := warp(t, srv.URL, admin.ID, 1, "wh2"); c != http.StatusOK {
+		t.Errorf("warp to normal town: status=%d, want 200", c)
+	}
 }
 
 func TestBuildHouse(t *testing.T) {
