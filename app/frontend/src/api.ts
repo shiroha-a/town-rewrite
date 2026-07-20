@@ -393,6 +393,7 @@ export interface MoveResult {
   means: string;
   vehicle: string; // 使った乗り物名(徒歩なら空)
   fare: number;
+  travel_secs: number; // 移動時間(秒)。到着までのカウントダウンに使う
   stat_gains: Record<string, number>;
   accident: boolean;
   accident_item: string;

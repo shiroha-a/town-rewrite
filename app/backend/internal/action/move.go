@@ -75,6 +75,7 @@ type MoveResult struct {
 	Means        string         // "walk"/"bus"
 	Vehicle      string         // 使った乗り物名(徒歩なら空)
 	Fare         int64          // 支払った料金
+	TravelSecs   int            // 移動時間(秒)。到着までのカウントダウン表示に使う
 	StatGains    map[string]int // 徒歩/自転車の能力上昇(表示名→上昇量)
 	Accident     bool           // 交通事故が起きたか
 	AccidentItem string         // 事故で耐久度が減った乗り物
@@ -194,6 +195,7 @@ func (s *Service) DoMoveTown(ctx context.Context, playerID int64, dest int, mean
 			}
 		}
 		result.ArrivedTown = arrived
+		result.TravelSecs = moveSecs
 		// 現在の街を更新。
 		if _, err := tx.Exec(ctx, `UPDATE players SET current_town = $1 WHERE id = $2`, arrived, playerID); err != nil {
 			return fmt.Errorf("update current town: %w", err)

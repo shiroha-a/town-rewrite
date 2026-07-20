@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue';
-import { api, WARP_FEE, assetUrl, type Player, type Params, type TownFacility, type TownAsset, type WorkResponse } from '../api';
+import { api, WARP_FEE, assetUrl, type Player, type Params, type TownFacility, type TownAsset, type MoveResult, type WorkResponse } from '../api';
 import { satietyLabel } from '../params';
 import CommandIcon from './CommandIcon.vue';
 import PowerBar from './PowerBar.vue';
@@ -130,35 +130,21 @@ const tickerItems = computed(() =>
 );
 const dirMark = (d: PriceDir) => (d === 'up' ? '▲' : d === 'down' ? '▼' : '');
 
-// 移動施設(徒歩/バス)クリックで街移動する。current_town変化後はリロードで再描画。
+// 街移動中の状態(移動時間ぶん「移動中」を表示し、完了後に画面を切り替える)。
+type Moving = { destName: string; remain: number; icon: string };
+const moving = ref<Moving | null>(null);
+let movingTimer: number | undefined;
+
+// 移動施設(徒歩/バス)クリックで街移動する。サーバーは即時に移動を確定し移動時間を
+// 返す。クライアントは移動時間ぶん「移動中(カウントダウン)」を表示し、完了後に
+// リロードして到着先の街へ画面を切り替える。
 async function doMoveTown(f: TownFacility) {
+  if (moving.value) return; // 移動中は多重移動不可
   const means = f.key === 'bus' ? 'bus' : 'walk';
   const destName = TOWN_NAMES[f.dest] ?? '';
+  let res;
   try {
-    const res = await api.moveTown(props.player.id, f.dest, means);
-    const mr = res.move_result;
-    // 移動手段の1行目(バス / 乗り物名 / 徒歩)。
-    let howLine: string;
-    if (means === 'bus') howLine = 'バスで移動（500円）';
-    else if (mr.vehicle) howLine = `${mr.vehicle}で移動`;
-    else howLine = '徒歩で移動';
-    const lines = [howLine];
-    // 徒歩/自転車で能力が上がったら列挙する。
-    const gains = Object.entries(mr.stat_gains);
-    if (gains.length > 0) {
-      lines.push(gains.map(([name, up]) => `${name}+${up}`).join(' '));
-    }
-    if (mr.accident) lines.push(`交通事故！${mr.accident_item}の耐久度-1`);
-    if (mr.lost) lines.push('迷子になった…ダウンタウンに着いた');
-    // 迷子で目的地と違う街に着いたら実際の到着街名を出す。
-    const arrivedName = TOWN_NAMES[mr.arrived_town] ?? destName;
-    showToast({
-      variant: mr.accident || mr.lost ? 'event-bad' : 'work',
-      title: `${arrivedName}へ移動しました`,
-      lines,
-      icon: f.img,
-    });
-    emit('reload');
+    res = await api.moveTown(props.player.id, f.dest, means);
   } catch (e) {
     showToast({
       variant: 'error',
@@ -166,11 +152,52 @@ async function doMoveTown(f: TownFacility) {
       lines: [e instanceof Error ? e.message : String(e)],
       icon: f.img,
     });
+    return;
   }
+  const mr = res.move_result;
+  const arrivedName = TOWN_NAMES[mr.arrived_town] ?? destName;
+  const secs = Math.max(0, mr.travel_secs);
+  if (secs <= 0) {
+    arriveMove(mr, arrivedName, f.img);
+    return;
+  }
+  // 移動中バナーをカウントダウン表示。0になったら到着処理。
+  moving.value = { destName: arrivedName, remain: secs, icon: f.img };
+  if (movingTimer !== undefined) window.clearInterval(movingTimer);
+  movingTimer = window.setInterval(() => {
+    if (!moving.value) return;
+    moving.value.remain -= 1;
+    if (moving.value.remain <= 0) {
+      window.clearInterval(movingTimer);
+      const icon = moving.value.icon;
+      moving.value = null;
+      arriveMove(mr, arrivedName, icon);
+    }
+  }, 1000);
+}
+
+// 到着処理: 結果トーストを出し、リロードして現在の街を切り替える。
+function arriveMove(mr: MoveResult, arrivedName: string, icon: string) {
+  const lines: string[] = [];
+  if (mr.means === 'bus') lines.push('バスで移動（500円）');
+  else if (mr.vehicle) lines.push(`${mr.vehicle}で移動`);
+  else lines.push('徒歩で移動');
+  const gains = Object.entries(mr.stat_gains);
+  if (gains.length > 0) lines.push(gains.map(([name, up]) => `${name}+${up}`).join(' '));
+  if (mr.accident) lines.push(`交通事故！${mr.accident_item}の耐久度-1`);
+  if (mr.lost) lines.push('迷子になった…ダウンタウンに着いた');
+  showToast({
+    variant: mr.accident || mr.lost ? 'event-bad' : 'work',
+    title: `${arrivedName}に到着しました`,
+    lines,
+    icon,
+  });
+  emit('reload');
 }
 
 function clickFacility(f: TownFacility) {
   if (!f.ready) return;
+  if (moving.value) return; // 移動中は操作不可
   if (f.key === 'walk' || f.key === 'bus') {
     doMoveTown(f);
     return;
@@ -337,6 +364,7 @@ onUnmounted(() => {
   if (timer !== undefined) window.clearInterval(timer);
   if (stockTimer !== undefined) window.clearInterval(stockTimer);
   if (toastTimer !== undefined) window.clearTimeout(toastTimer);
+  if (movingTimer !== undefined) window.clearInterval(movingTimer);
 });
 const serverCorrectedNow = computed(() => nowMs.value + skewMs.value);
 
@@ -430,6 +458,17 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
       <div class="toast-body">
         <div class="toast-title">{{ toast.title }}</div>
         <div v-for="(l, i) in toast.lines" :key="i" class="toast-line">{{ l }}</div>
+      </div>
+    </div>
+  </transition>
+
+  <!-- 移動中バナー(到着までカウントダウン)。移動時間ぶん表示し、完了で画面が変わる。 -->
+  <transition name="wt">
+    <div v-if="moving" class="toast moving" role="status">
+      <span class="toast-icon"><CommandIcon :name="moving.icon" /></span>
+      <div class="toast-body">
+        <div class="toast-title">{{ moving.destName }}へ移動中…</div>
+        <div class="toast-line">到着まであと{{ moving.remain }}秒</div>
       </div>
     </div>
   </transition>

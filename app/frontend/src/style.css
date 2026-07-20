@@ -533,6 +533,13 @@ body {
 .toast.error .toast-icon {
   background: linear-gradient(180deg, #e57373 0%, #d33 100%);
 }
+/* 移動中バナー: 青紫系。到着までのカウントダウンを表示する。 */
+.toast.moving .toast-title {
+  color: #5b3fd0;
+}
+.toast.moving .toast-icon {
+  background: linear-gradient(180deg, #9b6cff 0%, #7a3ff2 100%);
+}
 /* iOS風スライド: 上に隠れた状態から中央上部へ降りてくる。translateXは維持する。 */
 .wt-enter-active {
   transition:

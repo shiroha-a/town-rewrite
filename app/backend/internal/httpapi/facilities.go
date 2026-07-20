@@ -22,6 +22,7 @@ type moveResultResp struct {
 	Means        string         `json:"means"`
 	Vehicle      string         `json:"vehicle"`
 	Fare         int64          `json:"fare"`
+	TravelSecs   int            `json:"travel_secs"`
 	StatGains    map[string]int `json:"stat_gains"`
 	Accident     bool           `json:"accident"`
 	AccidentItem string         `json:"accident_item"`
@@ -71,6 +72,7 @@ func (s *Server) moveTown(w http.ResponseWriter, r *http.Request) {
 			Means:        result.Means,
 			Vehicle:      result.Vehicle,
 			Fare:         result.Fare,
+			TravelSecs:   result.TravelSecs,
 			StatGains:    gains,
 			Accident:     result.Accident,
 			AccidentItem: result.AccidentItem,
