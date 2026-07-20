@@ -262,6 +262,11 @@ function assetImgAt(col: number, rowIdx: number): string {
   const i = assetIdxAt(col, rowIdx);
   return i >= 0 ? assets.value[i].img : '';
 }
+// 指定した街の背景アセット画像(施設レイヤーで背景を薄く参照表示するのに使う)。
+function assetImgForTown(col: number, rowIdx: number, town: number): string {
+  const a = assets.value.find((x) => x.town === town && x.col === col && x.row === rowIdx);
+  return a ? a.img : '';
+}
 // マスをクリックで背景を配置。選択中の筆と同じなら除去(トグル)、違えば差し替え。
 function paintAsset(col: number, rowIdx: number) {
   const i = assetIdxAt(col, rowIdx);
@@ -878,7 +883,15 @@ async function deleteEdit() {
                         @drop="onDrop(c, ri)"
                       >
                         <img
+                          v-if="assetImgForTown(c, ri, facilityTown)"
+                          class="bg-ref"
+                          :src="`/img/${assetImgForTown(c, ri, facilityTown)}.gif`"
+                          alt=""
+                          draggable="false"
+                        />
+                        <img
                           v-if="mapFacilityAt(c, ri, facilityTown) >= 0"
+                          class="fac-icon"
                           :src="`/img/${townmap[mapFacilityAt(c, ri, facilityTown)].img}.gif`"
                           width="24"
                           height="24"
@@ -1335,6 +1348,20 @@ async function deleteEdit() {
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  position: relative;
+}
+/* 施設レイヤーで背景アセットを薄く参照表示(施設アイコンは前面)。 */
+.map-grid .cell .bg-ref {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.4;
+  pointer-events: none;
+}
+.map-grid .cell .fac-icon {
+  position: relative;
+  z-index: 1;
 }
 .map-grid .cell.occ {
   background: #fff;
