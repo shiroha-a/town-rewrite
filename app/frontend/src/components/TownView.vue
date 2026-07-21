@@ -308,9 +308,9 @@ const commands = computed(() => {
     { key: 'doukyo', img: 'doukyo', alt: 'キャラ作成' },
     { key: 'aisatu', img: 'aisatu', alt: 'あいさつ' },
   );
-  // 家を持っていれば「家の設定」(建設会社の自分の家一覧へ)を出す。
+  // 家を持っていれば「家の設定」(my_house_settei相当の専用画面)を出す。
   if (hasOwnHouse.value) {
-    list.push({ key: 'kentiku', img: 'myhome', alt: '家の設定' });
+    list.push({ key: 'myhouse', img: 'myhome', alt: '家の設定' });
   }
   list.push({ key: 'off', img: 'off', alt: 'ログアウト' });
   return list;

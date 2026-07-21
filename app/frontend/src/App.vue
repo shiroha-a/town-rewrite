@@ -13,6 +13,7 @@ import FacilityMenuView from './components/FacilityMenuView.vue';
 import HanbaiView from './components/HanbaiView.vue';
 import KentikuView from './components/KentikuView.vue';
 import HouseView from './components/HouseView.vue';
+import MyHouseView from './components/MyHouseView.vue';
 import OnsenView from './components/OnsenView.vue';
 import HospitalView from './components/HospitalView.vue';
 import SchoolView from './components/SchoolView.vue';
@@ -120,6 +121,7 @@ const facilityTitles: Record<string, string> = {
     <HanbaiView v-else-if="view === 'hanbai'" :player="player" @update="onUpdate" @back="back" />
     <KentikuView v-else-if="view === 'kentiku'" :player="player" @update="onUpdate" @back="back" />
     <HouseView v-else-if="view === 'house' && houseId" :player="player" :house-id="houseId" @update="onUpdate" @back="back" />
+    <MyHouseView v-else-if="view === 'myhouse'" :player="player" @update="onUpdate" @back="back" />
     <FacilityMenuView
       v-else-if="view === 'gym'"
       :player="player"
