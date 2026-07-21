@@ -17,8 +17,7 @@ import { useToast } from '../toast';
 // 建設会社(建築系フェーズ2a): 5つの街の空地に家を建てる。建築費は普通口座から
 // 引き落とす。1軒目は地価+外装+内装、2軒目以降は地価+外装×2。1人4軒まで。
 const props = defineProps<{ player: Player }>();
-// visit: 家をクリックしたとき家訪問画面(HouseView)を開く。
-const emit = defineEmits<{ update: [player: Player]; back: []; visit: [houseId: number] }>();
+const emit = defineEmits<{ update: [player: Player]; back: [] }>();
 
 const yen = (n: number) => n.toLocaleString('ja-JP');
 const state = ref<BuildingState | null>(null);
@@ -111,12 +110,9 @@ function cellTitle(row: number, col: number): string {
   return `${rowLabel(row)}${col}`;
 }
 function clickCell(row: number, col: number) {
-  const h = houseAt(row, col);
-  if (h) {
-    // 家 → 家訪問画面(HouseView)を開く
-    emit('visit', h.id);
-    return;
-  }
+  // 建築画面のグリッドは建てる場所を選ぶためのもの。家はクリックしても
+  // 何もしない(訪問は街マップの家クリックから)。tooltipで家主名だけ分かる。
+  if (houseAt(row, col)) return;
   // 空地に指定されたマス(施設・家なし)だけ建築選択できる。
   if (!plotAt(row, col) || facilityAt(row, col)) return;
   selectedCell.value = { row, col };
@@ -885,7 +881,7 @@ async function savePrice(it: ShopStockItem) {
 }
 .cell.house {
   background: #fff6e0;
-  cursor: pointer;
+  cursor: default;
 }
 .cell.house.own {
   outline: 2px solid #cc7a00;
