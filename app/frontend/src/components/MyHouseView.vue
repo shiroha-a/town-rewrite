@@ -234,7 +234,7 @@ const rebuildCost = computed(() => {
   const ext = state.value?.exteriors.find((e) => e.key === rebuildExterior.value);
   const inte = state.value?.interiors.find((i) => i.rank === rebuildInterior.value);
   if (!ext || !inte) return 0;
-  return (ext.price + inte.price) * 10000;
+  return ext.price * inte.multiplier * 10000;
 });
 async function doRebuild() {
   const h = house.value;
@@ -427,7 +427,7 @@ async function doSell() {
       <!-- 家の外観、内装の変更(レガシー: house_change 選択画面) -->
       <div class="panel-white sec">
         <div class="sec-head">●家の外観、内装（コンテンツ枠数）の変更</div>
-        <div class="note">建て替え費用は「外装＋内装」×10000円を現金から支払います（地価は不要）。</div>
+        <div class="note">建て替え費用は「外装×内装ランク倍率」×10000円を現金から支払います（地価は不要）。</div>
         <button v-if="!rebuildOpen" class="btn mini" :disabled="busy" @click="rebuildOpen = true">選択画面へ</button>
         <template v-else>
           <div class="rebuild-ext">
@@ -437,7 +437,7 @@ async function doSell() {
           <div class="row-line">
             <label class="fld">内装
               <select v-model.number="rebuildInterior">
-                <option v-for="i in state!.interiors" :key="i.rank" :value="i.rank">{{ i.name }}（{{ i.price }}万・枠{{ i.slots }}）</option>
+                <option v-for="i in state!.interiors" :key="i.rank" :value="i.rank">{{ i.name }}（費用×{{ i.multiplier }}・枠{{ i.slots }}）</option>
               </select>
             </label>
             <span class="cost">費用 {{ yen(rebuildCost) }}円（現金）</span>

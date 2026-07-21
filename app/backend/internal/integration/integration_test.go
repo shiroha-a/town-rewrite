@@ -3007,13 +3007,13 @@ func TestBuildHouse(t *testing.T) {
 		building.SetTowns(building.DefaultTowns())
 	}
 
-	// 1軒目: 謎の街(4) の A1 に house1 + D内装。費用=(250+150+100)*10000=5,000,000。
+	// 1軒目: 謎の街(4) の A1 に house1 + D内装。費用=(250+150)×1×10000=4,000,000。
 	got, code := buildHouse(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, "b1")
 	if code != http.StatusOK {
 		t.Fatalf("build 1st: status=%d", code)
 	}
-	if got.Savings != 25_000_000 {
-		t.Errorf("savings after 1st = %d, want 25000000", got.Savings)
+	if got.Savings != 26_000_000 {
+		t.Errorf("savings after 1st = %d, want 26000000", got.Savings)
 	}
 	var count int
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM player_houses WHERE owner_id=$1`, p.ID).Scan(&count); err != nil {
@@ -3038,8 +3038,8 @@ func TestBuildHouse(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("build 2nd: status=%d", code)
 	}
-	if got.Savings != 19_500_000 {
-		t.Errorf("savings after 2nd = %d, want 19500000", got.Savings)
+	if got.Savings != 20_500_000 {
+		t.Errorf("savings after 2nd = %d, want 20500000", got.Savings)
 	}
 
 	// 3・4軒目まで建てられる。
@@ -3122,10 +3122,10 @@ func TestSellRebuildHouse(t *testing.T) {
 	register(t, srv.URL, "misskey.example", "admin0") // 1人目=admin
 	p := register(t, srv.URL, "misskey.example", "builder2")
 	creditSavings(t, pool, p.ID, 10_000_000)
-	creditCash(t, pool, p.ID, 30_000_000)
+	creditCash(t, pool, p.ID, 40_000_000)
 	seedPlots(t, pool, [][3]int{{4, 0, 1}})
 
-	// 建築(謎の街 A1, house1, D内装)。savings 10M-5M=5M。
+	// 建築(謎の街 A1, house1, D内装)。savings 10M-4M=6M。
 	if _, c := buildHouse(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, "s1"); c != http.StatusOK {
 		t.Fatalf("build: %d", c)
 	}
@@ -3134,14 +3134,14 @@ func TestSellRebuildHouse(t *testing.T) {
 		t.Fatalf("house id: %v", err)
 	}
 
-	// 建て替え(house4, A内装)。費用=(800+1200)*10000=20,000,000を現金から。
+	// 建て替え(house4, A内装)。費用=800×4×10000=32,000,000を現金から。
 	got, c := rebuildHouse(t, srv.URL, p.ID, houseID, "house4", 0, "s2")
 	if c != http.StatusOK {
 		t.Fatalf("rebuild: %d", c)
 	}
-	// 現金 = 初期50万 + 3000万 - 2000万 = 10,500,000
-	if got.Money != 10_500_000 {
-		t.Errorf("cash after rebuild = %d, want 10500000", got.Money)
+	// 現金 = 初期50万 + 4000万 - 3200万 = 8,500,000
+	if got.Money != 8_500_000 {
+		t.Errorf("cash after rebuild = %d, want 8500000", got.Money)
 	}
 	var (
 		ext string
@@ -3159,8 +3159,8 @@ func TestSellRebuildHouse(t *testing.T) {
 	if c != http.StatusOK {
 		t.Fatalf("sell: %d", c)
 	}
-	if got2.Money != 13_000_000 { // 10,500,000 + 2,500,000
-		t.Errorf("cash after sell = %d, want 13000000", got2.Money)
+	if got2.Money != 11_000_000 { // 8,500,000 + 2,500,000
+		t.Errorf("cash after sell = %d, want 11000000", got2.Money)
 	}
 	var cnt int
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM player_houses WHERE owner_id=$1`, p.ID).Scan(&cnt); err != nil {
@@ -3266,8 +3266,8 @@ func TestSaisenAndComment(t *testing.T) {
 		"savings:"+strconv.FormatInt(owner.ID, 10)).Scan(&ownerSavings); err != nil {
 		t.Fatalf("owner savings: %v", err)
 	}
-	if ownerSavings != 5_005_100 { // 建築後5M + 自分さい銭100 + 5000
-		t.Errorf("owner savings = %d, want 5005100", ownerSavings)
+	if ownerSavings != 6_005_100 { // 建築後6M + 自分さい銭100 + 5000
+		t.Errorf("owner savings = %d, want 6005100", ownerSavings)
 	}
 
 	// 同一相手への上限(20000円/日)。5000×3をさらに積んで計20000、次の100は拒否。
@@ -3411,8 +3411,8 @@ func TestShiire(t *testing.T) {
 	if c != http.StatusOK {
 		t.Fatalf("shiire: %d", c)
 	}
-	if got.Savings != 20_000_000-5_000_000-price*3 { // 建築後15M - 仕入れ
-		t.Errorf("savings = %d, want %d", got.Savings, 15_000_000-price*3)
+	if got.Savings != 20_000_000-4_000_000-price*3 { // 建築後16M - 仕入れ
+		t.Errorf("savings = %d, want %d", got.Savings, 16_000_000-price*3)
 	}
 	var (
 		stock    int
@@ -3544,8 +3544,8 @@ func TestBuyFromHouseShop(t *testing.T) {
 		"savings:"+strconv.FormatInt(owner.ID, 10)).Scan(&ownerSav); err != nil {
 		t.Fatalf("owner savings: %v", err)
 	}
-	if ownerSav != 15_000_000-price*3+shelf*2 {
-		t.Errorf("owner savings = %d, want %d", ownerSav, 15_000_000-price*3+shelf*2)
+	if ownerSav != 16_000_000-price*3+shelf*2 {
+		t.Errorf("owner savings = %d, want %d", ownerSav, 16_000_000-price*3+shelf*2)
 	}
 
 	// 自分の店では買えない。

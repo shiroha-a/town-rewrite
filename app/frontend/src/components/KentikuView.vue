@@ -6,7 +6,7 @@ import ExteriorPicker from './ExteriorPicker.vue';
 import { useToast } from '../toast';
 
 // 建設会社(建築系フェーズ2a): 5つの街の空地に家を建てる。建築費は普通口座から
-// 引き落とす。1軒目は地価+外装+内装、2軒目以降は地価+外装×2。1人4軒まで。
+// 引き落とす。1軒目は(地価+外装)×内装倍率、2軒目以降は地価+外装×2。1人4軒まで。
 const props = defineProps<{ player: Player }>();
 const emit = defineEmits<{ update: [player: Player]; back: [] }>();
 
@@ -147,7 +147,7 @@ const cost = computed(() => {
   if (isFirstHouse.value) {
     const inte = s.interiors.find((i) => i.rank === selectedInterior.value);
     if (!inte) return 0;
-    man = town.land_price + ext.price + inte.price;
+    man = (town.land_price + ext.price) * inte.multiplier;
   } else {
     man = town.land_price + ext.price * 2;
   }
@@ -198,7 +198,7 @@ async function build() {
     <div class="kentiku-header">
       <div class="lead">
         建設会社です。街の空地に家を建てられます。<br />
-        1軒目は「地価＋外装＋内装」、2軒目以降は「地価＋外装×2」の建築費が<b>普通口座</b>から引き落とされます（1人{{ state?.mochiie_max ?? 4 }}軒まで）。
+        1軒目は「（地価＋外装）×内装ランク倍率」、2軒目以降は「地価＋外装×2」の建築費が<b>普通口座</b>から引き落とされます（1人{{ state?.mochiie_max ?? 4 }}軒まで）。
       </div>
       <div class="title">建設会社</div>
     </div>
@@ -252,7 +252,7 @@ async function build() {
           <span class="lbl">内装</span>
           <select v-model.number="selectedInterior" class="sel">
             <option v-for="i in state.interiors" :key="i.rank" :value="i.rank">
-              {{ i.name }}（{{ i.price }}万・枠{{ i.slots }}）
+              {{ i.name }}（費用×{{ i.multiplier }}・枠{{ i.slots }}）
             </option>
           </select>
         </div>

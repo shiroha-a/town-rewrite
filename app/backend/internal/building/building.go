@@ -157,20 +157,21 @@ func ExteriorPrice(key string) (int, bool) {
 }
 
 // Interior is a house interior rank. Slots is the number of in-house content
-// slots the rank grants (used from フェーズ3). Price is in 万円.
+// slots the rank grants (used from フェーズ3). Multiplier scales the build /
+// rebuild cost (乗算式: 枠数=倍率).
 type Interior struct {
-	Rank  int    `json:"rank"`  // 0=A(最上級)..3=D
-	Name  string `json:"name"`  // "A".."D"
-	Price int    `json:"price"` // 万円
-	Slots int    `json:"slots"` // 家内コンテンツ枠
+	Rank       int    `json:"rank"`       // 0=A(最上級)..3=D
+	Name       string `json:"name"`       // "A".."D"
+	Multiplier int    `json:"multiplier"` // 費用倍率(D=1..A=4)
+	Slots      int    `json:"slots"`      // 家内コンテンツ枠
 }
 
-// interiors lists the four interior ranks (best-first).
+// interiors lists the four interior ranks (best-first). 倍率は枠数と同じ。
 var interiors = []Interior{
-	{Rank: 0, Name: "A", Price: 1200, Slots: 4},
-	{Rank: 1, Name: "B", Price: 800, Slots: 3},
-	{Rank: 2, Name: "C", Price: 400, Slots: 2},
-	{Rank: 3, Name: "D", Price: 100, Slots: 1},
+	{Rank: 0, Name: "A", Multiplier: 4, Slots: 4},
+	{Rank: 1, Name: "B", Multiplier: 3, Slots: 3},
+	{Rank: 2, Name: "C", Multiplier: 2, Slots: 2},
+	{Rank: 3, Name: "D", Multiplier: 1, Slots: 1},
 }
 
 // Interiors returns a copy of the interior rank table.
@@ -213,7 +214,7 @@ func IsHouseContentKind(k string) bool {
 // BuildCost returns the construction cost in 円 for a house. houseCount is the
 // number of houses the player already owns (0 = building the first, i.e. マイホーム).
 //
-//	1軒目:      地価 + 外装 + 内装(A-D)
+//	1軒目:      (地価 + 外装) × 内装倍率(D=1..A=4)
 //	2軒目以降:  地価 + 外装×2  (tuika=家のみ; 運営/株式会社/持ち物店はフェーズ4以降)
 func BuildCost(townNo int, exterior string, interiorRank, houseCount int) (int64, error) {
 	t, ok := townByNo(townNo)
@@ -230,7 +231,7 @@ func BuildCost(townNo int, exterior string, interiorRank, houseCount int) (int64
 		if !ok {
 			return 0, fmt.Errorf("unknown interior rank %d", interiorRank)
 		}
-		man = t.LandPrice + ext + in.Price
+		man = (t.LandPrice + ext) * in.Multiplier
 	} else {
 		man = t.LandPrice + ext*2
 	}
@@ -249,7 +250,7 @@ func RebuildCost(exterior string, interiorRank int) (int64, error) {
 	if !ok {
 		return 0, fmt.Errorf("unknown interior rank %d", interiorRank)
 	}
-	return int64(ext+in.Price) * yenPerMan, nil
+	return int64(ext*in.Multiplier) * yenPerMan, nil
 }
 
 // SellValue returns the refund in 円 when a house is demolished/sold: the town's

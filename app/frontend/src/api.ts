@@ -639,7 +639,7 @@ export interface BuildingExterior {
 export interface BuildingInterior {
   rank: number;
   name: string;
-  price: number;
+  multiplier: number; // 費用倍率(D=1..A=4。建築/建て替え費に乗算)
   slots: number;
 }
 // 家のコンテンツ枠。内装ランクで枠数が決まり(A=4..D=1)、設定した枠だけが訪問者に見える。
