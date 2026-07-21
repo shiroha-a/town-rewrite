@@ -11,6 +11,7 @@ import {
   type ShopStockItem,
 } from '../api';
 import Toast from './Toast.vue';
+import ExteriorPicker from './ExteriorPicker.vue';
 import { useToast } from '../toast';
 
 // 家の設定(レガシー original_house.cgi my_house_settei)。コマンドバーの
@@ -428,21 +429,22 @@ async function doSell() {
         <div class="sec-head">●家の外観、内装（コンテンツ枠数）の変更</div>
         <div class="note">建て替え費用は「外装＋内装」×10000円を現金から支払います（地価は不要）。</div>
         <button v-if="!rebuildOpen" class="btn mini" :disabled="busy" @click="rebuildOpen = true">選択画面へ</button>
-        <div v-else class="row-line">
-          <label class="fld">外装
-            <select v-model="rebuildExterior">
-              <option v-for="e in state!.exteriors" :key="e.key" :value="e.key">{{ e.key }}（{{ e.price }}万）</option>
-            </select>
-          </label>
-          <label class="fld">内装
-            <select v-model.number="rebuildInterior">
-              <option v-for="i in state!.interiors" :key="i.rank" :value="i.rank">{{ i.name }}（{{ i.price }}万・枠{{ i.slots }}）</option>
-            </select>
-          </label>
-          <span class="cost">費用 {{ yen(rebuildCost) }}円（現金）</span>
-          <button class="btn mini primary-btn" :disabled="busy" @click="doRebuild">建て替える</button>
-          <button class="btn mini" :disabled="busy" @click="rebuildOpen = false">やめる</button>
-        </div>
+        <template v-else>
+          <div class="rebuild-ext">
+            <div class="fld">外装</div>
+            <ExteriorPicker v-model="rebuildExterior" :exteriors="state!.exteriors" />
+          </div>
+          <div class="row-line">
+            <label class="fld">内装
+              <select v-model.number="rebuildInterior">
+                <option v-for="i in state!.interiors" :key="i.rank" :value="i.rank">{{ i.name }}（{{ i.price }}万・枠{{ i.slots }}）</option>
+              </select>
+            </label>
+            <span class="cost">費用 {{ yen(rebuildCost) }}円（現金）</span>
+            <button class="btn mini primary-btn" :disabled="busy" @click="doRebuild">建て替える</button>
+            <button class="btn mini" :disabled="busy" @click="rebuildOpen = false">やめる</button>
+          </div>
+        </template>
       </div>
 
       <!-- 家の売却(レガシー: ●家の売却) -->
@@ -587,6 +589,12 @@ async function doSell() {
   padding: 3px;
   margin: 4px 0;
   resize: vertical;
+}
+.rebuild-ext {
+  margin: 6px 0;
+}
+.rebuild-ext .fld {
+  margin-bottom: 4px;
 }
 .inp-num.wide {
   width: 80px;

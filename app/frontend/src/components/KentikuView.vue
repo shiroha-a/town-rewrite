@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { api, assetUrl, type Player, type BuildingState, type TownFacility, type TownAsset } from '../api';
 import Toast from './Toast.vue';
+import ExteriorPicker from './ExteriorPicker.vue';
 import { useToast } from '../toast';
 
 // 建設会社(建築系フェーズ2a): 5つの街の空地に家を建てる。建築費は普通口座から
@@ -243,14 +244,9 @@ async function build() {
           <span class="lbl">建築位置</span>
           <span class="val">{{ townName(selectedTown) }}／{{ rowLabel(selectedCell.row) }}{{ selectedCell.col }}</span>
         </div>
-        <div class="row">
+        <div class="row ext-row">
           <span class="lbl">外装</span>
-          <select v-model="selectedExterior" class="sel">
-            <option v-for="e in state.exteriors" :key="e.key" :value="e.key">
-              {{ e.key }}（{{ e.price }}万）
-            </option>
-          </select>
-          <img class="preview" :src="`/img/${selectedExterior}.gif`" :alt="selectedExterior" />
+          <ExteriorPicker v-model="selectedExterior" :exteriors="state.exteriors" />
         </div>
         <div v-if="isFirstHouse" class="row">
           <span class="lbl">内装</span>
@@ -451,12 +447,11 @@ async function build() {
   font-size: 13px;
   padding: 2px 4px;
 }
-.build-form .preview {
-  width: 40px;
-  height: 40px;
-  object-fit: contain;
-  border: 1px solid #ccc;
-  background: #fafafa;
+.build-form .ext-row {
+  align-items: flex-start;
+}
+.build-form .ext-row .lbl {
+  padding-top: 6px;
 }
 .build-form .note {
   color: #888;
