@@ -220,9 +220,8 @@ func (s *Service) DoSaisen(ctx context.Context, playerID, houseID, amount int64,
 		if err != nil {
 			return fmt.Errorf("load house owner: %w", err)
 		}
-		if ownerID == playerID {
-			return &ConditionError{Message: "自分の家にはさい銭できません。"}
-		}
+		// レガシー(saisensuru)は自分の家へのさい銭も許す(現金→自分の普通口座)。
+		// 日次上限(相手別2万/受取10万)は自分の家にも適用される。
 		if state.Money < amount {
 			return &ConditionError{Message: "所持金が足りません。"}
 		}

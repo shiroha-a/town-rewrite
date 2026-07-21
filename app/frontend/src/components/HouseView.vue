@@ -266,7 +266,8 @@ async function doDeleteBbs(post: BbsPost) {
             {{ tabLabel(c) }}
           </button>
         </div>
-        <div v-if="!house.own" class="saisen-box">
+        <!-- さい銭箱(レガシー同様、自分の家でも表示。現金→家主の普通口座) -->
+        <div class="saisen-box">
           <span class="saisen-label">さい銭箱</span>
           <select v-model.number="saisenAmount">
             <option v-for="a in saisenChoices" :key="a" :value="a">{{ yen(a) }}円</option>

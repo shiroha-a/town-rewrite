@@ -3237,9 +3237,9 @@ func TestSaisenAndComment(t *testing.T) {
 		t.Errorf("setumei = %q, want いらっしゃい", setumei)
 	}
 
-	// 自分の家にはさい銭できない。
-	if _, c := saisen(t, srv.URL, owner.ID, houseID, 100, "s0"); c != http.StatusUnprocessableEntity {
-		t.Errorf("self saisen: %d, want 422", c)
+	// 自分の家へのさい銭も可(レガシー同様。現金→自分の普通口座)。
+	if _, c := saisen(t, srv.URL, owner.ID, houseID, 100, "s0"); c != http.StatusOK {
+		t.Errorf("self saisen: %d, want 200", c)
 	}
 
 	// 訪問者がさい銭(5000円): 現金-5000、家主の普通口座+5000。
@@ -3255,8 +3255,8 @@ func TestSaisenAndComment(t *testing.T) {
 		"savings:"+strconv.FormatInt(owner.ID, 10)).Scan(&ownerSavings); err != nil {
 		t.Fatalf("owner savings: %v", err)
 	}
-	if ownerSavings != 5_005_000 { // 建築後5M + 5000
-		t.Errorf("owner savings = %d, want 5005000", ownerSavings)
+	if ownerSavings != 5_005_100 { // 建築後5M + 自分さい銭100 + 5000
+		t.Errorf("owner savings = %d, want 5005100", ownerSavings)
 	}
 
 	// 同一相手への上限(20000円/日)。5000×3をさらに積んで計20000、次の100は拒否。
