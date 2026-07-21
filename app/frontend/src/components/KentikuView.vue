@@ -94,7 +94,7 @@ function cellTitle(row: number, col: number): string {
   const f = facilityAt(row, col);
   if (f) return f.alt;
   const h = houseAt(row, col);
-  if (h) return h.setumei ? `${h.owner_name}さんの家「${h.setumei}」` : `${h.owner_name}さんの家`;
+  if (h) return h.setumei ? `${h.owner_name}さんの家\n「${h.setumei}」` : `${h.owner_name}さんの家`;
   if (plotAt(row, col)) return `${rowLabel(row)}${col}（空地）`;
   return `${rowLabel(row)}${col}`;
 }

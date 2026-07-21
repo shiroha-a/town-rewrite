@@ -248,9 +248,9 @@ function clickHouse(h: HouseCell) {
   emit('navigate', 'house', h.id);
 }
 
-// 家のツールチップ。家主が設定したマウスオーバーコメント(setumei)を表示する。
+// 家のツールチップ。家主が設定したマウスオーバーコメント(setumei)を改行して表示する。
 function houseTitle(h: HouseCell): string {
-  return h.setumei ? `${h.owner_name}さんの家「${h.setumei}」` : `${h.owner_name}さんの家`;
+  return h.setumei ? `${h.owner_name}さんの家\n「${h.setumei}」` : `${h.owner_name}さんの家`;
 }
 
 // ワープ(高額・即時)。トップ画面の持ち物欄の下のプルダウンで行き先を選び移動する。
