@@ -6,7 +6,7 @@ import CommandIcon from './CommandIcon.vue';
 import PowerBar from './PowerBar.vue';
 
 const props = defineProps<{ player: Player }>();
-const emit = defineEmits<{ navigate: [view: string]; reload: []; logout: [] }>();
+const emit = defineEmits<{ navigate: [view: string, param?: number]; reload: []; logout: [] }>();
 
 const yen = (n: number) => n.toLocaleString('ja-JP');
 
@@ -240,6 +240,12 @@ function clickFacility(f: TownFacility) {
 function nav(view: string) {
   if (moving.value) return;
   emit('navigate', view);
+}
+
+// 家をクリック → その家のコンテンツ(家訪問画面)を開く。
+function clickHouse(h: HouseCell) {
+  if (moving.value) return;
+  emit('navigate', 'house', h.id);
 }
 
 // ワープ(高額・即時)。トップ画面の持ち物欄の下のプルダウンで行き先を選び移動する。
@@ -561,12 +567,12 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
                 :title="`${r}${c}（空き地）`"
                 alt="空き地"
               />
-              <!-- 家。クリックで建設会社(訪問)へ。 -->
+              <!-- 家。クリックでその家のコンテンツ(訪問パネル)を開く。 -->
               <button
                 v-else-if="houseAt(c, ri)"
                 class="facility house-cell"
                 :title="`${houseAt(c, ri)!.owner_name}さんの家`"
-                @click="nav('kentiku')"
+                @click="clickHouse(houseAt(c, ri)!)"
               >
                 <img :src="`/img/${houseAt(c, ri)!.exterior}.gif`" :alt="`${houseAt(c, ri)!.owner_name}さんの家`" />
               </button>

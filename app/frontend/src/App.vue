@@ -12,6 +12,7 @@ import SyokudouView from './components/SyokudouView.vue';
 import FacilityMenuView from './components/FacilityMenuView.vue';
 import HanbaiView from './components/HanbaiView.vue';
 import KentikuView from './components/KentikuView.vue';
+import HouseView from './components/HouseView.vue';
 import OnsenView from './components/OnsenView.vue';
 import HospitalView from './components/HospitalView.vue';
 import SchoolView from './components/SchoolView.vue';
@@ -56,8 +57,11 @@ function onLogout() {
   view.value = 'town';
   localStorage.removeItem(STORAGE_KEY);
 }
-function navigate(v: string) {
+// 家訪問(view='house')で開く家のID。街の家クリックからnavigate経由で渡される。
+const houseId = ref<number | null>(null);
+function navigate(v: string, param?: number) {
   view.value = v;
+  houseId.value = v === 'house' && typeof param === 'number' ? param : null;
 }
 function back() {
   view.value = 'town';
@@ -115,6 +119,7 @@ const facilityTitles: Record<string, string> = {
     <SyokudouView v-else-if="view === 'syokudou'" :player="player" @update="onUpdate" @back="back" />
     <HanbaiView v-else-if="view === 'hanbai'" :player="player" @update="onUpdate" @back="back" />
     <KentikuView v-else-if="view === 'kentiku'" :player="player" @update="onUpdate" @back="back" />
+    <HouseView v-else-if="view === 'house' && houseId" :player="player" :house-id="houseId" @update="onUpdate" @back="back" />
     <FacilityMenuView
       v-else-if="view === 'gym'"
       :player="player"
