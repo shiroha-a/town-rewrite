@@ -630,6 +630,7 @@ export interface BuildingTown {
   no: number;
   name: string;
   land_price: number;
+  hidden: boolean; // 隠し町(建築対象外)
 }
 export interface BuildingExterior {
   key: string;

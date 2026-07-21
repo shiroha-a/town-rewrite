@@ -24,8 +24,12 @@ import (
 // the legacy cost formula (1軒目=地価+外装+内装, 2軒目以降=地価+外装×2).
 func (s *Service) DoBuildHouse(ctx context.Context, playerID int64, town, row, col int, exterior string, interiorRank int, idempotencyKey string) (*player.Player, error) {
 	return s.runAction(ctx, playerID, "build_house", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
-		if town < 0 || col < 1 || col > townmap.Cols || row < 0 || row >= townmap.Rows {
+		if town < 0 || town >= building.TownCount() || col < 1 || col > townmap.Cols || row < 0 || row >= townmap.Rows {
 			return &ConditionError{Message: "建築場所の指定が正しくありません。"}
+		}
+		// 隠し町には家を建てられない。
+		if building.IsHidden(town) {
+			return &ConditionError{Message: "その街には家を建てられません。"}
 		}
 		// 所有軒数(上限)。建てる前の軒数で1軒目/2軒目以降の費用式を分ける。
 		var count int

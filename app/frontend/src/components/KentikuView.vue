@@ -21,10 +21,18 @@ const selectedCell = ref<{ row: number; col: number } | null>(null);
 const selectedExterior = ref('');
 const selectedInterior = ref(3); // 既定はD(最安)
 
+// 建築対象の街: 隠し町は選べない。
+const buildableTowns = computed(() => state.value?.towns.filter((t) => !t.hidden) ?? []);
+
 async function refresh() {
   state.value = await api.building(props.player.id);
   if (!selectedExterior.value && state.value.exteriors.length > 0) {
     selectedExterior.value = state.value.exteriors[0].key;
+  }
+  // 選択中の街が隠し町(または消滅)なら先頭の通常街へ戻す。
+  if (!buildableTowns.value.some((t) => t.no === selectedTown.value)) {
+    selectedTown.value = buildableTowns.value[0]?.no ?? 0;
+    selectedCell.value = null;
   }
 }
 
@@ -181,10 +189,10 @@ async function build() {
     <div v-if="message" class="message error" data-test="message">{{ message }}</div>
 
     <template v-if="state">
-      <!-- 街タブ -->
+      <!-- 街タブ(隠し町は建築対象外) -->
       <div class="town-tabs">
         <button
-          v-for="t in state.towns"
+          v-for="t in buildableTowns"
           :key="t.no"
           class="tab"
           :class="{ active: selectedTown === t.no }"

@@ -2996,6 +2996,17 @@ func TestBuildHouse(t *testing.T) {
 		t.Errorf("non-plot: status=%d, want 422", c)
 	}
 
+	// 隠し町には建てられない(空地があっても拒否)。
+	{
+		ts := building.DefaultTowns()
+		ts[4].Hidden = true
+		building.SetTowns(ts)
+		if _, c := buildHouse(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, "bh"); c != http.StatusUnprocessableEntity {
+			t.Errorf("hidden town: status=%d, want 422", c)
+		}
+		building.SetTowns(building.DefaultTowns())
+	}
+
 	// 1軒目: 謎の街(4) の A1 に house1 + D内装。費用=(250+150+100)*10000=5,000,000。
 	got, code := buildHouse(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, "b1")
 	if code != http.StatusOK {
