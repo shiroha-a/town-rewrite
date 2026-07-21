@@ -378,12 +378,14 @@ func (s *Server) houseBbs(w http.ResponseWriter, r *http.Request) {
 type postBbsReq struct {
 	HouseID        int64  `json:"house_id"`
 	Kind           string `json:"kind"`
-	Title          string `json:"title"` // 家主板の記事タイトル(任意)
+	Title          string `json:"title"`     // 家主板の記事タイトル(任意)
+	ParentNo       int    `json:"parent_no"` // 通常掲示板のレス先スレッドNO(0=新規)
 	Body           string `json:"body"`
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
 // postBbs writes a message to a house's bulletin board (掲示板書き込み).
+// On success the response carries the money reward for the post (bbs_result).
 func (s *Server) postBbs(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -399,16 +401,27 @@ func (s *Server) postBbs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "house_id and body are required")
 		return
 	}
-	p, err := s.actions.DoPostBbs(r.Context(), id, req.HouseID, req.Kind, req.Title, req.Body, req.IdempotencyKey)
-	writeFacilityResult(w, p, err)
+	p, result, err := s.actions.DoPostBbs(r.Context(), id, req.HouseID, req.Kind, req.Title, req.Body, req.ParentNo, req.IdempotencyKey)
+	if err != nil {
+		writeFacilityResult(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		playerResp
+		BbsResult *action.BbsPostResult `json:"bbs_result"`
+	}{toResp(p), result})
 }
 
 type deleteBbsReq struct {
-	PostID         int64  `json:"post_id"`
+	HouseID        int64  `json:"house_id"`
+	Kind           string `json:"kind"`
+	ArticleNo      int64  `json:"article_no"` // 記事no.(投稿ID)
+	ThreadNo       int64  `json:"thread_no"`  // 親記事no.(NO.x、スレッドごと削除)
+	All            bool   `json:"all"`        // 全記事削除
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
-// deleteBbs deletes a bulletin-board post (家主または投稿者).
+// deleteBbs deletes bulletin-board posts (記事no./親記事no./全記事削除).
 func (s *Server) deleteBbs(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -420,11 +433,11 @@ func (s *Server) deleteBbs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if req.PostID <= 0 {
-		writeError(w, http.StatusBadRequest, "post_id is required")
+	if req.HouseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
 		return
 	}
-	p, err := s.actions.DoDeleteBbs(r.Context(), id, req.PostID, req.IdempotencyKey)
+	p, err := s.actions.DoDeleteBbs(r.Context(), id, req.HouseID, req.Kind, req.ArticleNo, req.ThreadNo, req.All, req.IdempotencyKey)
 	writeFacilityResult(w, p, err)
 }
 

@@ -473,21 +473,27 @@ func (s *Service) HouseShop(ctx context.Context, viewerID, houseID int64) (*Hous
 }
 
 // BbsPost is one bulletin-board message on a house board (フェーズ3b).
+// Normal-board posts are threaded: parents carry ThreadNo (NO.x), replies carry
+// ParentNo referencing their parent's ThreadNo.
 type BbsPost struct {
 	ID         int64  `json:"id"`
 	Kind       string `json:"kind"` // normal / nushi
 	AuthorID   int64  `json:"author_id"`
 	AuthorName string `json:"author_name"`
-	Title      string `json:"title"` // 家主板(nushi)の記事タイトル
+	AuthorJob  string `json:"author_job"` // 投稿時の職業(（職業）表示用)
+	Title      string `json:"title"`      // 家主板(nushi)の記事タイトル
 	Body       string `json:"body"`
+	ThreadNo   int    `json:"thread_no"`  // 親記事のNO.x(レスは0)
+	ParentNo   int    `json:"parent_no"`  // レス先スレッドNO(親記事は0)
 	CreatedAt  string `json:"created_at"` // RFC3339
 }
 
 // HouseBbs returns a house's bulletin-board posts (newest first, both boards).
 func (s *Service) HouseBbs(ctx context.Context, houseID int64) ([]BbsPost, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, kind, COALESCE(author_id, 0), author_name, title, body, created_at
-		 FROM house_bbs WHERE house_id = $1 ORDER BY created_at DESC LIMIT 100`, houseID)
+		`SELECT id, kind, COALESCE(author_id, 0), author_name, COALESCE(author_job, ''), title, body,
+		        COALESCE(thread_no, 0), COALESCE(parent_no, 0), created_at
+		 FROM house_bbs WHERE house_id = $1 ORDER BY id DESC LIMIT 300`, houseID)
 	if err != nil {
 		return nil, fmt.Errorf("list bbs: %w", err)
 	}
@@ -498,7 +504,8 @@ func (s *Service) HouseBbs(ctx context.Context, houseID int64) ([]BbsPost, error
 			p       BbsPost
 			created time.Time
 		)
-		if err := rows.Scan(&p.ID, &p.Kind, &p.AuthorID, &p.AuthorName, &p.Title, &p.Body, &created); err != nil {
+		if err := rows.Scan(&p.ID, &p.Kind, &p.AuthorID, &p.AuthorName, &p.AuthorJob, &p.Title, &p.Body,
+			&p.ThreadNo, &p.ParentNo, &created); err != nil {
 			return nil, fmt.Errorf("scan bbs: %w", err)
 		}
 		p.CreatedAt = created.Format(time.RFC3339)

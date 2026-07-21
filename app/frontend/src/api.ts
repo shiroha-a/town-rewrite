@@ -739,10 +739,18 @@ export interface BbsPost {
   kind: string;
   author_id: number;
   author_name: string;
+  author_job: string; // 投稿時の職業(（職業）表示用)
   title: string; // 家主板(nushi)の記事タイトル
   body: string;
+  thread_no: number; // 親記事のNO.x(レスは0)
+  parent_no: number; // レス先スレッドNO(親記事は0)
   created_at: string;
 }
+export interface BbsPostResult {
+  reward: number;
+  bonus: boolean;
+}
+export type PostBbsResp = Player & { bbs_result: BbsPostResult };
 export interface ShopStockItem {
   item_id: number;
   name: string;
@@ -1076,17 +1084,27 @@ export const api = {
     }),
   houseBbs: (id: number, houseId: number) =>
     request<BbsPost[]>('GET', `/players/${id}/building/bbs?house_id=${houseId}`),
-  postBbs: (id: number, houseId: number, kind: string, body: string, title = '') =>
-    request<Player>('POST', `/players/${id}/building/bbs/post`, {
+  postBbs: (id: number, houseId: number, kind: string, body: string, title = '', parentNo = 0) =>
+    request<PostBbsResp>('POST', `/players/${id}/building/bbs/post`, {
       house_id: houseId,
       kind,
       title,
       body,
+      parent_no: parentNo,
       idempotency_key: newIdempotencyKey(),
     }),
-  deleteBbs: (id: number, postId: number) =>
+  deleteBbs: (
+    id: number,
+    houseId: number,
+    kind: string,
+    opts: { articleNo?: number; threadNo?: number; all?: boolean },
+  ) =>
     request<Player>('POST', `/players/${id}/building/bbs/delete`, {
-      post_id: postId,
+      house_id: houseId,
+      kind,
+      article_no: opts.articleNo ?? 0,
+      thread_no: opts.threadNo ?? 0,
+      all: opts.all ?? false,
       idempotency_key: newIdempotencyKey(),
     }),
   houseShopStock: (id: number, houseId: number) =>

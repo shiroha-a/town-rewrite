@@ -196,27 +196,57 @@ async function doBuy() {
   }
 }
 
-// 掲示板(通常=textarea投稿+ページング / 家主板=ブログ風記事+5件ページング)。
+// 掲示板(レガシーnormal_bbs: スレッド形式・投稿でお金・記事no指定削除 /
+// 家主板gentei: ブログ風記事5件ページング・投稿は家の設定から)。
 const bbs = ref<BbsPost[]>([]);
 const bbsBody = ref('');
-const nushiTitle = ref('');
-const nushiBody = ref('');
+const replyBodies = ref<Record<number, string>>({});
 const normalPosts = computed(() => bbs.value.filter((p) => p.kind === 'normal'));
 const nushiPosts = computed(() => bbs.value.filter((p) => p.kind === 'nushi'));
+// スレッド構成: 親記事(thread_no)ごとにレス(parent_no)をまとめ、
+// スレッド内の最新投稿が新しい順に並べる(レスでスレッドが最上部へ浮上)。
+interface BbsThread {
+  parent: BbsPost;
+  replies: BbsPost[];
+}
+const bbsThreads = computed<BbsThread[]>(() => {
+  const map = new Map<number, BbsThread>();
+  for (const p of normalPosts.value) {
+    if (p.thread_no > 0) map.set(p.thread_no, { parent: p, replies: [] });
+  }
+  for (const p of normalPosts.value) {
+    if (p.parent_no > 0) map.get(p.parent_no)?.replies.push(p);
+  }
+  const arr = [...map.values()];
+  for (const t of arr) t.replies.sort((a, b) => a.id - b.id);
+  const lastId = (t: BbsThread) => Math.max(t.parent.id, ...t.replies.map((r) => r.id));
+  arr.sort((a, b) => lastId(b) - lastId(a));
+  return arr;
+});
 const BBS_PER_PAGE = 10;
 const NUSHI_PER_PAGE = 5; // レガシー gentei_kensuu 既定
 const bbsPage = ref(0);
 const nushiPage = ref(0);
-const bbsPagePosts = computed(() =>
-  normalPosts.value.slice(bbsPage.value * BBS_PER_PAGE, (bbsPage.value + 1) * BBS_PER_PAGE),
+const bbsPageThreads = computed(() =>
+  bbsThreads.value.slice(bbsPage.value * BBS_PER_PAGE, (bbsPage.value + 1) * BBS_PER_PAGE),
 );
 const nushiPagePosts = computed(() =>
   nushiPosts.value.slice(nushiPage.value * NUSHI_PER_PAGE, (nushiPage.value + 1) * NUSHI_PER_PAGE),
 );
-const bbsMaxPage = computed(() => Math.max(0, Math.ceil(normalPosts.value.length / BBS_PER_PAGE) - 1));
+const bbsMaxPage = computed(() => Math.max(0, Math.ceil(bbsThreads.value.length / BBS_PER_PAGE) - 1));
 const nushiMaxPage = computed(() => Math.max(0, Math.ceil(nushiPosts.value.length / NUSHI_PER_PAGE) - 1));
-function canDeletePost(post: BbsPost): boolean {
-  return (house.value?.own ?? false) || post.author_id === props.player.id;
+// 本文中のURLをリンク化するためのトークン分割(レガシーの自動リンク)。
+function linkTokens(body: string): { link: boolean; v: string }[] {
+  const out: { link: boolean; v: string }[] = [];
+  const re = /https?:\/\/[\w.~\-/?&+=:@%;#]+/g;
+  let last = 0;
+  for (const m of body.matchAll(re)) {
+    if (m.index > last) out.push({ link: false, v: body.slice(last, m.index) });
+    out.push({ link: true, v: m[0] });
+    last = m.index + m[0].length;
+  }
+  if (last < body.length) out.push({ link: false, v: body.slice(last) });
+  return out;
 }
 async function loadBbs() {
   bbs.value = [];
@@ -226,21 +256,26 @@ async function loadBbs() {
     bbs.value = [];
   }
 }
-async function doPostBbs(kind: string) {
-  if (!house.value) return;
-  const body = kind === 'nushi' ? nushiBody.value : bbsBody.value;
-  const title = kind === 'nushi' ? nushiTitle.value : '';
-  if (!body.trim()) return;
+async function doPostBbs(body: string, parentNo = 0) {
+  if (!house.value || !body.trim()) return;
   busy.value = true;
   try {
-    const after = await api.postBbs(props.player.id, house.value.id, kind, body, title);
+    const after = await api.postBbs(props.player.id, house.value.id, 'normal', body, '', parentNo);
     emit('update', after);
-    if (kind === 'nushi') {
-      nushiBody.value = '';
-      nushiTitle.value = '';
-    } else bbsBody.value = '';
+    if (parentNo > 0) replyBodies.value[parentNo] = '';
+    else bbsBody.value = '';
     bbs.value = await api.houseBbs(props.player.id, house.value.id);
-    showToast({ variant: 'item', title: '投稿しました', lines: [], icon: 'item' });
+    const r = after.bbs_result;
+    showToast({
+      variant: 'item',
+      title: '投稿しました',
+      lines: [
+        r.bonus
+          ? `●ボーナスです！${yen(r.reward)}円のお金をゲットしました。`
+          : `●${yen(r.reward)}円のお金を得ました。`,
+      ],
+      icon: 'item',
+    });
   } catch (e) {
     showToast({
       variant: 'error',
@@ -252,13 +287,22 @@ async function doPostBbs(kind: string) {
     busy.value = false;
   }
 }
-async function doDeleteBbs(post: BbsPost) {
+// 記事no./親記事no./全記事削除(レガシーbbs_delete)と家主板の記事no.削除(gentei_delete)。
+const delArticleNo = ref('');
+const delThreadNo = ref('');
+const delNushiNo = ref('');
+async function doDeleteBbs(kind: string, opts: { articleNo?: number; threadNo?: number; all?: boolean }) {
   if (!house.value) return;
+  if (opts.all && !window.confirm('全記事を削除します。よろしいですか？')) return;
   busy.value = true;
   try {
-    const after = await api.deleteBbs(props.player.id, post.id);
+    const after = await api.deleteBbs(props.player.id, house.value.id, kind, opts);
     emit('update', after);
     bbs.value = await api.houseBbs(props.player.id, house.value.id);
+    delArticleNo.value = '';
+    delThreadNo.value = '';
+    delNushiNo.value = '';
+    showToast({ variant: 'item', title: '記事を削除しました。', lines: [], icon: 'item' });
   } catch (e) {
     showToast({
       variant: 'error',
@@ -304,54 +348,80 @@ async function doDeleteBbs(post: BbsPost) {
         </span>
       </div>
 
-      <!-- 通常掲示板(レガシーbbs1: #ffffcc・青点線枠・中央寄せ) -->
-      <div v-if="current && current.kind === 'bbs'" class="cbox bbs-box">
-        <div class="bbs-title">{{ tabLabel(current) }}</div>
-        <div v-if="current.comment" class="bbs-lead">{{ current.comment }}</div>
-        <div class="bbs-form">
-          <textarea v-model="bbsBody" maxlength="500" rows="4" class="bbs-area"></textarea>
-          <div><button class="btn" :disabled="busy" @click="doPostBbs('normal')">新規投稿</button></div>
-        </div>
-        <div class="bbs-posts">
-          <div v-if="normalPosts.length === 0" class="bbs-empty">まだ書き込みはありません。</div>
-          <div v-for="p in bbsPagePosts" :key="p.id" class="bbs-post">
-            <span class="bbs-author">{{ p.author_name }}</span>
-            <span class="bbs-date">（{{ fmtDate(p.created_at) }}）</span>
-            <span class="bbs-no">記事no.{{ p.id }}</span>
-            <button v-if="canDeletePost(p)" class="bbs-del" :disabled="busy" @click="doDeleteBbs(p)">×</button>
-            <div class="bbs-body">{{ p.body }}</div>
+      <!-- 通常掲示板(レガシーbbs1: #ffffcc・青点線枠・スレッド形式) -->
+      <template v-if="current && current.kind === 'bbs'">
+        <div class="cbox bbs-box">
+          <div class="bbs-title">{{ tabLabel(current) }}</div>
+          <div v-if="current.comment" class="bbs-lead">{{ current.comment }}</div>
+          <div class="bbs-form">
+            <textarea v-model="bbsBody" rows="4" class="bbs-area"></textarea>
+            <div><button class="btn" :disabled="busy" @click="doPostBbs(bbsBody)">新規投稿</button></div>
           </div>
-        </div>
-        <div v-if="bbsMaxPage > 0" class="pager">
-          <button class="btn" :disabled="bbsPage <= 0" @click="bbsPage--">BACK</button>
-          <button class="btn" :disabled="bbsPage >= bbsMaxPage" @click="bbsPage++">NEXT</button>
-        </div>
-      </div>
-
-      <!-- 家主板(レガシーgentei: #ffffcc・緑点線枠・記事形式) -->
-      <div v-else-if="current && current.kind === 'nushi'" class="cbox nushi-box">
-        <div class="nushi-title">{{ tabLabel(current) }}</div>
-        <div v-if="current.comment" class="nushi-lead">{{ current.comment }}</div>
-        <div v-if="house.own" class="bbs-form">
-          <input v-model="nushiTitle" maxlength="40" placeholder="記事タイトル" class="bbs-input" />
-          <textarea v-model="nushiBody" maxlength="500" rows="4" class="bbs-area" placeholder="本文"></textarea>
-          <div><button class="btn" :disabled="busy" @click="doPostBbs('nushi')">投稿する</button></div>
-        </div>
-        <div class="bbs-posts">
-          <div v-if="nushiPosts.length === 0" class="bbs-empty">まだ記事はありません。</div>
-          <div v-for="p in nushiPagePosts" :key="p.id" class="nushi-article">
-            <div class="nushi-daimei">{{ p.title || '(無題)' }}</div>
-            <div class="nushi-body">
-              {{ p.body }}（{{ fmtDate(p.created_at) }}）<span class="bbs-no">記事no.{{ p.id }}</span>
-              <button v-if="canDeletePost(p)" class="bbs-del" :disabled="busy" @click="doDeleteBbs(p)">×</button>
+          <div class="bbs-posts">
+            <div v-if="bbsThreads.length === 0" class="bbs-empty">まだ書き込みはありません。</div>
+            <div v-for="t in bbsPageThreads" :key="t.parent.thread_no" class="bbs-thread">
+              <hr class="thread-hr" />
+              <div class="thread-no">NO.{{ t.parent.thread_no }}</div>
+              <div>
+                <span class="bbs-author">{{ t.parent.author_name }}<span v-if="t.parent.author_job" class="bbs-job">（{{ t.parent.author_job }}）</span></span>：<span class="bbs-body-inline"><template v-for="(tk, i) in linkTokens(t.parent.body)" :key="i"><a v-if="tk.link" :href="tk.v" target="_blank" rel="noopener noreferrer">{{ tk.v }}</a><template v-else>{{ tk.v }}</template></template></span>（{{ fmtDate(t.parent.created_at) }}）<span class="bbs-no">記事no.{{ t.parent.id }}</span>
+              </div>
+              <div class="reply-form">
+                <textarea v-model="replyBodies[t.parent.thread_no]" rows="2" class="reply-area"></textarea>
+                <button class="btn" :disabled="busy" @click="doPostBbs(replyBodies[t.parent.thread_no] ?? '', t.parent.thread_no)">レス</button>
+              </div>
+              <div v-for="p in t.replies" :key="p.id" class="bbs-reply">
+                <span class="bbs-author">{{ p.author_name }}<span v-if="p.author_job" class="bbs-job">（{{ p.author_job }}）</span></span>：<span class="bbs-body-inline"><template v-for="(tk, i) in linkTokens(p.body)" :key="i"><a v-if="tk.link" :href="tk.v" target="_blank" rel="noopener noreferrer">{{ tk.v }}</a><template v-else>{{ tk.v }}</template></template></span>（{{ fmtDate(p.created_at) }}）<span class="bbs-no">記事no.{{ p.id }}</span>
+              </div>
             </div>
           </div>
+          <div v-if="bbsMaxPage > 0" class="pager">
+            <button class="btn" :disabled="bbsPage <= 0" @click="bbsPage--">BACK</button>
+            <button class="btn" :disabled="bbsPage >= bbsMaxPage" @click="bbsPage++">NEXT</button>
+          </div>
         </div>
-        <div v-if="nushiMaxPage > 0" class="pager">
-          <button class="btn" :disabled="nushiPage <= 0" @click="nushiPage--">BACK</button>
-          <button class="btn" :disabled="nushiPage >= nushiMaxPage" @click="nushiPage++">NEXT</button>
+        <!-- 記事削除フォーム(レガシー: 記事no./親記事no./全記事削除) -->
+        <div class="del-form">
+          <div>
+            記事no.
+            <input v-model="delArticleNo" size="8" class="del-input" />
+            <button class="btn" :disabled="busy" @click="doDeleteBbs('normal', { articleNo: Number(delArticleNo) || 0 })">削除</button>
+            親記事no.
+            <input v-model="delThreadNo" size="8" class="del-input" />
+            <button class="btn" :disabled="busy" @click="doDeleteBbs('normal', { threadNo: Number(delThreadNo) || 0 })">削除</button>
+            <button class="btn" :disabled="busy" @click="doDeleteBbs('normal', { all: true })">全記事削除</button>
+          </div>
+          <br />
+          ※ゲーム管理者のみ「記事no.」を指定して記事を削除することができます。<br />
+          ※投稿することでお金を得ることができますが、無意味な発言、荒らし行為など不適切な投稿があった場合、減金、ホストの公開、アクセス拒否などのペナルティがありますのでご注意ください。
         </div>
-      </div>
+      </template>
+
+      <!-- 家主板(レガシーgentei: #ffffcc・緑点線枠・記事形式。投稿は家の設定から) -->
+      <template v-else-if="current && current.kind === 'nushi'">
+        <div class="cbox nushi-box">
+          <div class="nushi-title">{{ tabLabel(current) }}</div>
+          <div v-if="current.comment" class="nushi-lead">{{ current.comment }}</div>
+          <div class="bbs-posts">
+            <div v-if="nushiPosts.length === 0" class="bbs-empty">まだ記事はありません。</div>
+            <div v-for="p in nushiPagePosts" :key="p.id" class="nushi-article">
+              <div class="nushi-daimei">{{ p.title || '(無題)' }}</div>
+              <div class="nushi-body">{{ p.body }}（{{ fmtDate(p.created_at) }}）<span class="bbs-no">記事no.{{ p.id }}</span></div>
+            </div>
+          </div>
+          <div v-if="nushiMaxPage > 0" class="pager">
+            <button class="btn" :disabled="nushiPage <= 0" @click="nushiPage--">BACK</button>
+            <button class="btn" :disabled="nushiPage >= nushiMaxPage" @click="nushiPage++">NEXT</button>
+          </div>
+        </div>
+        <div class="del-form">
+          <div>
+            記事no.
+            <input v-model="delNushiNo" size="8" class="del-input" />
+            <button class="btn" :disabled="busy" @click="doDeleteBbs('nushi', { articleNo: Number(delNushiNo) || 0 })">削除</button>
+          </div>
+          ※記事を書いた本人とゲーム管理者のみ「記事no.」を指定して記事を削除することができます。
+        </div>
+      </template>
 
       <!-- お店(レガシーomise: #ffcc33地・白タイトル行・全パラメータ列の商品表) -->
       <template v-else-if="current && current.kind === 'shop'">
@@ -438,6 +508,11 @@ async function doDeleteBbs(post: BbsPost) {
           sandbox="allow-scripts allow-forms allow-popups"
           referrerpolicy="no-referrer"
         ></iframe>
+      </div>
+
+      <!-- 画面下部の退出ボタン(レガシーhooter: 家を出る) -->
+      <div class="ie-deru">
+        <button class="btn" @click="emit('back')">家を出る</button>
       </div>
     </template>
   </div>
@@ -541,36 +616,47 @@ async function doDeleteBbs(post: BbsPost) {
   padding: 3px;
   resize: vertical;
 }
-.bbs-input {
-  width: 100%;
-  box-sizing: border-box;
-  font-size: 12px;
-  padding: 3px;
-  margin-bottom: 4px;
-}
 .bbs-posts {
   margin-top: 8px;
 }
-.bbs-post {
-  padding: 4px 0;
-  border-bottom: 1px dashed #ccc;
+.thread-hr {
+  border: none;
+  border-top: 1px solid #999;
+  margin: 10px 0;
+}
+.thread-no {
+  font-size: 15px;
+  color: #336699;
 }
 .bbs-author {
   font-size: 11px;
   color: #ff6600;
-  font-weight: bold;
 }
-.bbs-date {
-  color: #999;
-  font-size: 10px;
+.bbs-job {
+  font-size: 9px;
+}
+.bbs-body-inline {
+  white-space: pre-line;
+  color: #666;
 }
 .bbs-no {
   font-size: 9px;
   color: #999;
 }
-.bbs-body {
-  white-space: pre-line;
-  color: #444;
+.reply-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  margin: 4px 0;
+}
+.reply-area {
+  width: 70%;
+  font-size: 12px;
+  padding: 2px;
+  resize: vertical;
+}
+.bbs-reply {
+  margin: 2px 0;
 }
 .nushi-article {
   margin-bottom: 6px;
@@ -585,15 +671,27 @@ async function doDeleteBbs(post: BbsPost) {
   white-space: pre-line;
   color: #555;
 }
-.bbs-del {
-  border: none;
-  background: none;
-  color: #c44;
-  cursor: pointer;
-  font-weight: bold;
-}
 .bbs-empty {
   color: #999;
+}
+/* 記事削除フォーム(コンテンツボックス下・10px #444) */
+.del-form {
+  width: 500px;
+  max-width: 96%;
+  margin: 8px auto 0;
+  font-size: 10px;
+  color: #444444;
+  text-align: center;
+}
+.del-input {
+  width: 70px;
+  font-size: 11px;
+  padding: 1px 3px;
+}
+/* 画面下部の退出ボタン */
+.ie-deru {
+  text-align: center;
+  margin: 24px 0 12px;
 }
 .pager {
   display: flex;

@@ -95,6 +95,21 @@ function selectHouse(h: MyHouse) {
 const shopConfigured = computed(
   () => (house.value?.contents.some((c) => c.kind === 'shop') ?? false) || (house.value?.has_shop ?? false),
 );
+// 家主掲示板の投稿フォームを出すか(レガシーは家の設定側から投稿する)。
+const nushiConfigured = computed(() => house.value?.contents.some((c) => c.kind === 'nushi') ?? false);
+const nushiTitle = ref('');
+const nushiBody = ref('');
+async function postNushi() {
+  const h = house.value;
+  if (!h || !nushiBody.value.trim()) return;
+  await run(async () => {
+    const after = await api.postBbs(props.player.id, h.id, 'nushi', nushiBody.value, nushiTitle.value);
+    emit('update', after);
+    nushiTitle.value = '';
+    nushiBody.value = '';
+    showToast({ variant: 'item', title: '投稿しました。', lines: [], icon: 'item' });
+  });
+}
 
 async function run(fn: () => Promise<void>) {
   busy.value = true;
@@ -399,6 +414,15 @@ async function doSell() {
         <button class="btn mini primary-btn" :disabled="busy" @click="saveContents">決定</button>
       </div>
 
+      <!-- 家主掲示板への投稿(レガシー: gentei_settei ■投稿) -->
+      <div v-if="nushiConfigured" class="panel-white sec">
+        <div class="sec-head">■家主掲示板への投稿</div>
+        <div class="note">家主掲示板の記事はここから投稿します（最新50件まで保存）。</div>
+        <label class="fld">タイトル<input v-model="nushiTitle" maxlength="40" class="inp" /></label>
+        <div><textarea v-model="nushiBody" rows="4" class="nushi-area"></textarea></div>
+        <button class="btn mini primary-btn" :disabled="busy" @click="postNushi">投稿</button>
+      </div>
+
       <!-- 家の外観、内装の変更(レガシー: house_change 選択画面) -->
       <div class="panel-white sec">
         <div class="sec-head">●家の外観、内装（コンテンツ枠数）の変更</div>
@@ -554,6 +578,15 @@ async function doSell() {
   width: 60px;
   font-size: 12px;
   padding: 2px;
+}
+.nushi-area {
+  width: 100%;
+  max-width: 480px;
+  box-sizing: border-box;
+  font-size: 12px;
+  padding: 3px;
+  margin: 4px 0;
+  resize: vertical;
 }
 .inp-num.wide {
   width: 80px;

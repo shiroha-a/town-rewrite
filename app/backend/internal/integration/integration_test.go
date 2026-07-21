@@ -3631,8 +3631,14 @@ func buyFromShopFull(t *testing.T, base string, playerID, houseID, itemID int64,
 
 func postBbs(t *testing.T, base string, playerID, houseID int64, kind, body, idemKey string) (playerResp, int) {
 	t.Helper()
+	return postBbsReply(t, base, playerID, houseID, kind, body, 0, idemKey)
+}
+
+// postBbsReply posts with an explicit parent thread NO (通常掲示板のレス).
+func postBbsReply(t *testing.T, base string, playerID, houseID int64, kind, body string, parentNo int, idemKey string) (playerResp, int) {
+	t.Helper()
 	reqBody, _ := json.Marshal(map[string]any{
-		"house_id": houseID, "kind": kind, "body": body, "idempotency_key": idemKey,
+		"house_id": houseID, "kind": kind, "body": body, "parent_no": parentNo, "idempotency_key": idemKey,
 	})
 	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/bbs/post",
 		"application/json", bytes.NewReader(reqBody))
@@ -3649,9 +3655,18 @@ func postBbs(t *testing.T, base string, playerID, houseID int64, kind, body, ide
 	return p, resp.StatusCode
 }
 
-func deleteBbs(t *testing.T, base string, playerID, postID int64, idemKey string) (playerResp, int) {
+func deleteBbs(t *testing.T, base string, playerID, houseID int64, kind string, articleNo int64, idemKey string) (playerResp, int) {
 	t.Helper()
-	reqBody, _ := json.Marshal(map[string]any{"post_id": postID, "idempotency_key": idemKey})
+	return deleteBbsFull(t, base, playerID, houseID, kind, articleNo, 0, false, idemKey)
+}
+
+// deleteBbsFull covers 親記事no.(スレッドごと)と全記事削除も指定できる版。
+func deleteBbsFull(t *testing.T, base string, playerID, houseID int64, kind string, articleNo, threadNo int64, all bool, idemKey string) (playerResp, int) {
+	t.Helper()
+	reqBody, _ := json.Marshal(map[string]any{
+		"house_id": houseID, "kind": kind, "article_no": articleNo, "thread_no": threadNo,
+		"all": all, "idempotency_key": idemKey,
+	})
 	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/bbs/delete",
 		"application/json", bytes.NewReader(reqBody))
 	if err != nil {
@@ -3802,18 +3817,135 @@ func TestHouseBbs(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT id FROM house_bbs WHERE author_id=$1`, visitor.ID).Scan(&postID); err != nil {
 		t.Fatalf("post id: %v", err)
 	}
-	// 無関係の第三者は削除できない。
+	// 無関係の第三者は削除できない(家主・管理者のみ)。
 	other := register(t, srv.URL, "misskey.example", "bbsother")
-	if _, c := deleteBbs(t, srv.URL, other.ID, postID, "d1"); c != http.StatusUnprocessableEntity {
+	if _, c := deleteBbs(t, srv.URL, other.ID, houseID, "normal", postID, "d1"); c != http.StatusUnprocessableEntity {
 		t.Errorf("other delete: %d, want 422", c)
 	}
-	// 家主は訪問者の投稿を削除できる。
-	if _, c := deleteBbs(t, srv.URL, owner.ID, postID, "d2"); c != http.StatusOK {
+	// 投稿した本人でも通常掲示板は削除できない(レガシー: 家主・管理者のみ)。
+	if _, c := deleteBbs(t, srv.URL, visitor.ID, houseID, "normal", postID, "d1b"); c != http.StatusUnprocessableEntity {
+		t.Errorf("author delete: %d, want 422", c)
+	}
+	// 家主は記事no.指定で訪問者の投稿を削除できる。
+	if _, c := deleteBbs(t, srv.URL, owner.ID, houseID, "normal", postID, "d2"); c != http.StatusOK {
 		t.Fatalf("owner delete: %d", c)
 	}
 	pool.QueryRow(ctx, `SELECT COUNT(*) FROM house_bbs WHERE house_id=$1 AND kind='normal'`, houseID).Scan(&normalCnt)
 	if normalCnt != 0 {
 		t.Errorf("normal after delete = %d, want 0", normalCnt)
+	}
+}
+
+// TestHouseBbsThreads covers the legacy normal_bbs spec: threaded replies with
+// NO.x numbering, the per-post money reward, 二重投稿 rejection, the weighted
+// length limit, and deletion by 記事no./親記事no./全記事削除.
+func TestHouseBbsThreads(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	register(t, srv.URL, "misskey.example", "thadmin")
+	owner := register(t, srv.URL, "misskey.example", "throwner")
+	visitor := register(t, srv.URL, "misskey.example", "thvisitor")
+	creditSavings(t, pool, owner.ID, 10_000_000)
+	seedPlots(t, pool, [][3]int{{4, 0, 1}})
+	if _, c := buildHouse(t, srv.URL, owner.ID, 4, 0, 1, "house1", 2, "b1"); c != http.StatusOK {
+		t.Fatalf("build: %d", c)
+	}
+	var houseID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM player_houses WHERE owner_id=$1`, owner.ID).Scan(&houseID); err != nil {
+		t.Fatalf("house id: %v", err)
+	}
+	if _, c := setContents(t, srv.URL, owner.ID, houseID,
+		[]map[string]any{{"slot": 0, "kind": "bbs"}, {"slot": 1, "kind": "nushi"}}, "c1"); c != http.StatusOK {
+		t.Fatalf("set contents: %d", c)
+	}
+	cashOf := func(id int64) int64 {
+		var m int64
+		if err := pool.QueryRow(ctx, `SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account = $1`,
+			fmt.Sprintf("player:%d", id)).Scan(&m); err != nil {
+			t.Fatalf("cash of %d: %v", id, err)
+		}
+		return m
+	}
+
+	// 投稿でお金がもらえる(通常1001〜3009円、ボーナス時最大15006円)。
+	before := cashOf(visitor.ID)
+	if _, c := postBbs(t, srv.URL, visitor.ID, houseID, "normal", "スレ1本文", "t1"); c != http.StatusOK {
+		t.Fatalf("post thread1: %d", c)
+	}
+	reward := cashOf(visitor.ID) - before
+	if reward < 1001 || reward > 15006 {
+		t.Errorf("reward = %d, want 1001..15006", reward)
+	}
+	// 二重投稿(同一人物・同一本文)は拒否。
+	if _, c := postBbs(t, srv.URL, visitor.ID, houseID, "normal", "スレ1本文", "t1b"); c != http.StatusUnprocessableEntity {
+		t.Errorf("duplicate post: %d, want 422", c)
+	}
+	// 全角100字超は拒否(重み付き200)。
+	long := ""
+	for i := 0; i < 101; i++ {
+		long += "あ"
+	}
+	if _, c := postBbs(t, srv.URL, visitor.ID, houseID, "normal", long, "t1c"); c != http.StatusUnprocessableEntity {
+		t.Errorf("long post: %d, want 422", c)
+	}
+	if _, c := postBbs(t, srv.URL, visitor.ID, houseID, "normal", "スレ2本文", "t2"); c != http.StatusOK {
+		t.Fatalf("post thread2: %d", c)
+	}
+	// スレッドNO.1へのレス。存在しないスレッドへのレスは拒否。
+	if _, c := postBbsReply(t, srv.URL, owner.ID, houseID, "normal", "レスです", 1, "r1"); c != http.StatusOK {
+		t.Fatalf("reply: %d", c)
+	}
+	if _, c := postBbsReply(t, srv.URL, owner.ID, houseID, "normal", "宛先なし", 99, "r2"); c != http.StatusUnprocessableEntity {
+		t.Errorf("reply to missing thread: %d, want 422", c)
+	}
+	var parents, replies int
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM house_bbs WHERE house_id=$1 AND kind='normal' AND thread_no IS NOT NULL`, houseID).Scan(&parents)
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM house_bbs WHERE house_id=$1 AND kind='normal' AND parent_no=1`, houseID).Scan(&replies)
+	if parents != 2 || replies != 1 {
+		t.Fatalf("parents/replies = %d/%d, want 2/1", parents, replies)
+	}
+
+	// レスが付いた親記事は記事no.指定では削除できない。
+	var parent1ID int64
+	pool.QueryRow(ctx, `SELECT id FROM house_bbs WHERE house_id=$1 AND kind='normal' AND thread_no=1`, houseID).Scan(&parent1ID)
+	if _, c := deleteBbs(t, srv.URL, owner.ID, houseID, "normal", parent1ID, "d1"); c != http.StatusUnprocessableEntity {
+		t.Errorf("delete parent with reply: %d, want 422", c)
+	}
+	// 親記事no.指定でスレッドごと削除できる。
+	if _, c := deleteBbsFull(t, srv.URL, owner.ID, houseID, "normal", 0, 1, false, "d2"); c != http.StatusOK {
+		t.Fatalf("delete thread: %d", c)
+	}
+	var cnt int
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM house_bbs WHERE house_id=$1 AND kind='normal'`, houseID).Scan(&cnt)
+	if cnt != 1 {
+		t.Errorf("after thread delete = %d, want 1", cnt)
+	}
+	// 通常掲示板は書いた本人でも削除できない(家主・管理者のみ)。
+	var parent2ID int64
+	pool.QueryRow(ctx, `SELECT id FROM house_bbs WHERE house_id=$1 AND kind='normal' AND thread_no=2`, houseID).Scan(&parent2ID)
+	if _, c := deleteBbs(t, srv.URL, visitor.ID, houseID, "normal", parent2ID, "d3"); c != http.StatusUnprocessableEntity {
+		t.Errorf("author delete: %d, want 422", c)
+	}
+	// 全記事削除。
+	if _, c := deleteBbsFull(t, srv.URL, owner.ID, houseID, "normal", 0, 0, true, "d4"); c != http.StatusOK {
+		t.Fatalf("delete all: %d", c)
+	}
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM house_bbs WHERE house_id=$1 AND kind='normal'`, houseID).Scan(&cnt)
+	if cnt != 0 {
+		t.Errorf("after all delete = %d, want 0", cnt)
+	}
+
+	// 家主板: 家主が投稿し、記事no.指定で本人(家主)が削除できる。他人は不可。
+	if _, c := postBbs(t, srv.URL, owner.ID, houseID, "nushi", "家主記事", "n1"); c != http.StatusOK {
+		t.Fatalf("post nushi: %d", c)
+	}
+	var nushiID int64
+	pool.QueryRow(ctx, `SELECT id FROM house_bbs WHERE house_id=$1 AND kind='nushi'`, houseID).Scan(&nushiID)
+	if _, c := deleteBbs(t, srv.URL, visitor.ID, houseID, "nushi", nushiID, "n2"); c != http.StatusUnprocessableEntity {
+		t.Errorf("visitor nushi delete: %d, want 422", c)
+	}
+	if _, c := deleteBbs(t, srv.URL, owner.ID, houseID, "nushi", nushiID, "n3"); c != http.StatusOK {
+		t.Fatalf("owner nushi delete: %d", c)
 	}
 }
 

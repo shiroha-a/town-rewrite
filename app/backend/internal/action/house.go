@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -578,28 +579,64 @@ func (s *Service) DoBuyFromHouseShop(ctx context.Context, buyerID, houseID, item
 	return p, result, nil
 }
 
-// maxBbsBodyLen caps a bulletin-board post body length.
-const maxBbsBodyLen = 500
+// maxBbsBodyWeight caps a normal-board post body (レガシー: 全角100字半角200字。
+// ASCII=1、それ以外=2の重み付き長で数える)。
+const maxBbsBodyWeight = 200
 
-// DoPostBbs posts a message to a house's bulletin board (フェーズ3b). kind is
-// "normal" (anyone) or "nushi" (家主板, owner only).
-func (s *Service) DoPostBbs(ctx context.Context, playerID, houseID int64, kind, title, body, idempotencyKey string) (*player.Player, error) {
+// maxNormalBbsPosts caps stored normal-board posts per house (レガシー
+// $bbs_kizi_max相当。超過時は最古の記事から削除される)。
+const maxNormalBbsPosts = 200
+
+// maxNushiBbsPosts caps stored 家主板 articles per house (レガシーgentei_registは
+// 最新50件まで保持する)。
+const maxNushiBbsPosts = 50
+
+// bbsWeightedLen returns the legacy Shift_JIS-style length: ASCII counts 1,
+// everything else counts 2.
+func bbsWeightedLen(s string) int {
+	n := 0
+	for _, r := range s {
+		if r <= 0x7f {
+			n++
+		} else {
+			n += 2
+		}
+	}
+	return n
+}
+
+// BbsPostResult carries the money reward granted for a normal-board post.
+type BbsPostResult struct {
+	Reward int64 `json:"reward"`
+	Bonus  bool  `json:"bonus"`
+}
+
+// DoPostBbs posts a message to a house's bulletin board (レガシーbbs_regist/
+// gentei_regist). kind is "normal" (anyone, threaded, rewards money) or "nushi"
+// (家主板, owner only, posted from 家の設定). parentNo(>0) replies to the normal
+// board thread NO.parentNo and floats the thread to the top.
+func (s *Service) DoPostBbs(ctx context.Context, playerID, houseID int64, kind, title, body string, parentNo int, idempotencyKey string) (*player.Player, *BbsPostResult, error) {
 	body = strings.TrimSpace(body)
 	title = strings.TrimSpace(title)
 	if body == "" {
-		return nil, &ConditionError{Message: "本文を入力してください。"}
+		return nil, nil, &ConditionError{Message: "コメントが入力されていません"}
 	}
-	if utf8.RuneCountInString(body) > maxBbsBodyLen {
-		return nil, &ConditionError{Message: fmt.Sprintf("本文は%d文字以内で入力してください。", maxBbsBodyLen)}
+	if kind == "normal" && bbsWeightedLen(body) > maxBbsBodyWeight {
+		// レガシーbbs_registのエラーメッセージそのまま(挨拶と共通の文言)。
+		return nil, nil, &ConditionError{Message: "挨拶は全角100字半角200字以内です"}
+	}
+	if kind == "nushi" && utf8.RuneCountInString(body) > 500 {
+		return nil, nil, &ConditionError{Message: "本文は500文字以内で入力してください。"}
 	}
 	// 記事タイトル(家主板のブログ風記事用)。
 	if utf8.RuneCountInString(title) > 40 {
-		return nil, &ConditionError{Message: "記事タイトルは40文字以内で入力してください。"}
+		return nil, nil, &ConditionError{Message: "記事タイトルは40文字以内で入力してください。"}
 	}
 	if kind != "normal" && kind != "nushi" {
-		return nil, &ConditionError{Message: "掲示板の種類が正しくありません。"}
+		return nil, nil, &ConditionError{Message: "掲示板の種類が正しくありません。"}
 	}
-	return s.runAction(ctx, playerID, "house_bbs_post", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+	result := &BbsPostResult{}
+	p, err := s.runAction(ctx, playerID, "house_bbs_post", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
 		var ownerID int64
 		err := tx.QueryRow(ctx, `SELECT owner_id FROM player_houses WHERE id = $1`, houseID).Scan(&ownerID)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -622,17 +659,89 @@ func (s *Service) DoPostBbs(ctx context.Context, playerID, houseID int64, kind, 
 		} else if !ok {
 			return &ConditionError{Message: "この家にはその掲示板がありません。"}
 		}
-		var name string
-		if err := tx.QueryRow(ctx, `SELECT display_name FROM players WHERE id = $1`, playerID).Scan(&name); err != nil {
+		// 二重投稿チェック(直近の記事と同一人物・同一本文)。
+		var lastAuthor int64
+		var lastBody string
+		err = tx.QueryRow(ctx,
+			`SELECT COALESCE(author_id, 0), body FROM house_bbs WHERE house_id = $1 AND kind = $2 ORDER BY id DESC LIMIT 1`,
+			houseID, kind).Scan(&lastAuthor, &lastBody)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("load last post: %w", err)
+		}
+		if err == nil && lastAuthor == playerID && lastBody == body {
+			return &ConditionError{Message: "二重投稿です"}
+		}
+		var name, job string
+		if err := tx.QueryRow(ctx,
+			`SELECT p.display_name, COALESCE(ps.job, '') FROM players p
+			 LEFT JOIN player_status ps ON ps.player_id = p.id WHERE p.id = $1`,
+			playerID).Scan(&name, &job); err != nil {
 			return fmt.Errorf("load name: %w", err)
 		}
+		var threadNo, parentRef *int
+		if kind == "normal" {
+			if parentNo > 0 {
+				// レス: 親スレッドの存在確認。
+				var ok bool
+				if err := tx.QueryRow(ctx,
+					`SELECT EXISTS(SELECT 1 FROM house_bbs WHERE house_id = $1 AND kind = 'normal' AND thread_no = $2)`,
+					houseID, parentNo).Scan(&ok); err != nil {
+					return fmt.Errorf("check parent: %w", err)
+				}
+				if !ok {
+					return &ConditionError{Message: "該当する記事no.が見つかりません。"}
+				}
+				parentRef = &parentNo
+			} else {
+				// 新規スレッド: 家ごとの通し番号(NO.x)を採番。
+				var next int
+				if err := tx.QueryRow(ctx,
+					`SELECT COALESCE(MAX(thread_no), 0) + 1 FROM house_bbs WHERE house_id = $1 AND kind = 'normal'`,
+					houseID).Scan(&next); err != nil {
+					return fmt.Errorf("next thread no: %w", err)
+				}
+				threadNo = &next
+			}
+		}
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO house_bbs (house_id, kind, author_id, author_name, title, body) VALUES ($1, $2, $3, $4, $5, $6)`,
-			houseID, kind, playerID, name, title, body); err != nil {
+			`INSERT INTO house_bbs (house_id, kind, author_id, author_name, author_job, title, body, thread_no, parent_no)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			houseID, kind, playerID, name, job, title, body, threadNo, parentRef); err != nil {
 			return fmt.Errorf("insert bbs: %w", err)
+		}
+		// 保持上限を超えた分は最古の記事から削除(レガシーは末尾行をpop)。
+		maxPosts := maxNormalBbsPosts
+		if kind == "nushi" {
+			maxPosts = maxNushiBbsPosts
+		}
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM house_bbs WHERE house_id = $1 AND kind = $2 AND id NOT IN (
+			   SELECT id FROM house_bbs WHERE house_id = $1 AND kind = $2 ORDER BY id DESC LIMIT $3)`,
+			houseID, kind, maxPosts); err != nil {
+			return fmt.Errorf("trim bbs: %w", err)
+		}
+		// 通常掲示板への投稿はお金がもらえる(レガシー: 1/10でボーナス)。
+		if kind == "normal" {
+			base := rand.Intn(10) + 1
+			if base == 7 {
+				result.Reward = int64(base + rand.Intn(10000) + 5000)
+				result.Bonus = true
+			} else {
+				result.Reward = int64(base + rand.Intn(2000) + 1000)
+			}
+			if err := s.ledger.PostTx(ctx, tx, "bbs_reward", "", []ledger.Entry{
+				{Account: ledger.SystemAccount("bbs_reward"), Delta: -result.Reward},
+				{Account: ledger.PlayerAccount(playerID), Delta: result.Reward},
+			}); err != nil {
+				return fmt.Errorf("bbs reward: %w", err)
+			}
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return p, result, nil
 }
 
 // HouseContentSlot is one requested content slot assignment (コンテンツ枠設定)。
@@ -721,31 +830,105 @@ func hasHouseContent(ctx context.Context, tx pgx.Tx, houseID int64, kind string)
 	return ok, nil
 }
 
-// DoDeleteBbs deletes a bulletin-board post. The house owner or the post's
-// author may delete it.
-func (s *Service) DoDeleteBbs(ctx context.Context, playerID, postID int64, idempotencyKey string) (*player.Player, error) {
+// DoDeleteBbs deletes bulletin-board posts (レガシーbbs_delete/gentei_delete)。
+// 通常掲示板(kind=normal)は家主かゲーム管理者のみが実行でき、articleNo(記事no.=
+// 投稿ID)で1件、threadNo(親記事no.=NO.x)でスレッドごと、all=trueで全記事を削除する。
+// レスが付いた親記事はarticleNo指定では削除できない。家主板(kind=nushi)は
+// articleNoで1件のみ、書いた本人かゲーム管理者が削除できる。
+func (s *Service) DoDeleteBbs(ctx context.Context, playerID, houseID int64, kind string, articleNo, threadNo int64, all bool, idempotencyKey string) (*player.Player, error) {
+	if kind != "normal" && kind != "nushi" {
+		return nil, &ConditionError{Message: "掲示板の種類が正しくありません。"}
+	}
+	if articleNo <= 0 && threadNo <= 0 && !all {
+		return nil, &ConditionError{Message: "記事no.が指定されていません"}
+	}
 	return s.runAction(ctx, playerID, "house_bbs_delete", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
-		var (
-			houseID  int64
-			authorID int64
-		)
-		err := tx.QueryRow(ctx, `SELECT house_id, COALESCE(author_id, 0) FROM house_bbs WHERE id = $1`, postID).
-			Scan(&houseID, &authorID)
+		var ownerID int64
+		err := tx.QueryRow(ctx, `SELECT owner_id FROM player_houses WHERE id = $1`, houseID).Scan(&ownerID)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return &ConditionError{Message: "その投稿はありません。"}
+			return &ConditionError{Message: "その家は存在しません。"}
 		}
 		if err != nil {
-			return fmt.Errorf("load post: %w", err)
+			return fmt.Errorf("load house: %w", err)
 		}
-		var ownerID int64
-		if err := tx.QueryRow(ctx, `SELECT owner_id FROM player_houses WHERE id = $1`, houseID).Scan(&ownerID); err != nil {
-			return fmt.Errorf("load owner: %w", err)
+		var isAdmin bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM player_roles WHERE player_id = $1 AND role = 'admin')`,
+			playerID).Scan(&isAdmin); err != nil {
+			return fmt.Errorf("check admin: %w", err)
 		}
-		if playerID != ownerID && playerID != authorID {
-			return &ConditionError{Message: "その投稿は削除できません。"}
+		if kind == "nushi" {
+			if playerID != ownerID && !isAdmin {
+				return &ConditionError{Message: "家主（配偶者）、ゲーム管理者以外は記事削除できません。"}
+			}
+			if articleNo <= 0 {
+				return &ConditionError{Message: "記事no.が指定されていません"}
+			}
+			var authorID int64
+			err := tx.QueryRow(ctx,
+				`SELECT COALESCE(author_id, 0) FROM house_bbs WHERE id = $1 AND house_id = $2 AND kind = 'nushi'`,
+				articleNo, houseID).Scan(&authorID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return &ConditionError{Message: "該当する記事no.が見つかりません。"}
+			}
+			if err != nil {
+				return fmt.Errorf("load post: %w", err)
+			}
+			if authorID != playerID && !isAdmin {
+				return &ConditionError{Message: "書いた本人以外は記事削除できません。"}
+			}
+			if _, err := tx.Exec(ctx, `DELETE FROM house_bbs WHERE id = $1`, articleNo); err != nil {
+				return fmt.Errorf("delete bbs: %w", err)
+			}
+			return nil
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM house_bbs WHERE id = $1`, postID); err != nil {
-			return fmt.Errorf("delete bbs: %w", err)
+		// 通常掲示板: 家主か管理者のみ(レガシーの画面注記は「管理者のみ」だが
+		// 実装は自分の家なら家主も可)。
+		if playerID != ownerID && !isAdmin {
+			return &ConditionError{Message: "管理者以外は記事削除できません。"}
+		}
+		switch {
+		case all:
+			if _, err := tx.Exec(ctx,
+				`DELETE FROM house_bbs WHERE house_id = $1 AND kind = 'normal'`, houseID); err != nil {
+				return fmt.Errorf("delete all bbs: %w", err)
+			}
+		case articleNo > 0:
+			var postThread *int
+			err := tx.QueryRow(ctx,
+				`SELECT thread_no FROM house_bbs WHERE id = $1 AND house_id = $2 AND kind = 'normal'`,
+				articleNo, houseID).Scan(&postThread)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return &ConditionError{Message: "該当する記事no.が見つかりません。"}
+			}
+			if err != nil {
+				return fmt.Errorf("load post: %w", err)
+			}
+			if postThread != nil {
+				var hasReply bool
+				if err := tx.QueryRow(ctx,
+					`SELECT EXISTS(SELECT 1 FROM house_bbs WHERE house_id = $1 AND kind = 'normal' AND parent_no = $2)`,
+					houseID, *postThread).Scan(&hasReply); err != nil {
+					return fmt.Errorf("check replies: %w", err)
+				}
+				if hasReply {
+					return &ConditionError{Message: "子記事のついた親記事は削除できません。"}
+				}
+			}
+			if _, err := tx.Exec(ctx, `DELETE FROM house_bbs WHERE id = $1`, articleNo); err != nil {
+				return fmt.Errorf("delete bbs: %w", err)
+			}
+		default:
+			// 親記事no.(NO.x)指定: スレッドごと(親+レス)削除。
+			tag, err := tx.Exec(ctx,
+				`DELETE FROM house_bbs WHERE house_id = $1 AND kind = 'normal' AND (thread_no = $2 OR parent_no = $2)`,
+				houseID, threadNo)
+			if err != nil {
+				return fmt.Errorf("delete thread: %w", err)
+			}
+			if tag.RowsAffected() == 0 {
+				return &ConditionError{Message: "該当する記事no.が見つかりません。"}
+			}
 		}
 		return nil
 	})
