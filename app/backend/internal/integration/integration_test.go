@@ -3489,6 +3489,15 @@ func TestBuyFromHouseShop(t *testing.T) {
 		t.Fatalf("shiire: %d", c)
 	}
 
+	// コンテンツ枠に「お店」を設定していない家では買えない。
+	if _, c := buyFromShop(t, srv.URL, visitor.ID, houseID, itemID, 1, "buy0"); c != http.StatusUnprocessableEntity {
+		t.Errorf("buy before shop content: %d, want 422", c)
+	}
+	if _, c := setContents(t, srv.URL, owner.ID, houseID,
+		[]map[string]any{{"slot": 0, "kind": "shop"}}, "c1"); c != http.StatusOK {
+		t.Fatalf("set shop content: %d", c)
+	}
+
 	// 訪問者が2個購入。店頭価格 = 仕入れ値×掛け率2。
 	shelf := price * 2
 	got, c := buyFromShop(t, srv.URL, visitor.ID, houseID, itemID, 2, "buy1")
@@ -3576,6 +3585,75 @@ func deleteBbs(t *testing.T, base string, playerID, postID int64, idemKey string
 	return p, resp.StatusCode
 }
 
+// setContents replaces a house's content slots (コンテンツ枠設定).
+func setContents(t *testing.T, base string, playerID, houseID int64, contents []map[string]any, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"house_id": houseID, "contents": contents, "idempotency_key": idemKey,
+	})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/contents",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("set contents: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+func TestHouseContents(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	register(t, srv.URL, "misskey.example", "admin0")
+	owner := register(t, srv.URL, "misskey.example", "contentowner")
+	other := register(t, srv.URL, "misskey.example", "contentother")
+	creditSavings(t, pool, owner.ID, 10_000_000)
+	seedPlots(t, pool, [][3]int{{4, 0, 1}})
+	// Dランク(3)=1枠の家。
+	if _, c := buildHouse(t, srv.URL, owner.ID, 4, 0, 1, "house1", 3, "b1"); c != http.StatusOK {
+		t.Fatalf("build: %d", c)
+	}
+	var houseID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM player_houses WHERE owner_id=$1`, owner.ID).Scan(&houseID); err != nil {
+		t.Fatalf("house id: %v", err)
+	}
+
+	// 枠0に掲示板を設定できる。
+	if _, c := setContents(t, srv.URL, owner.ID, houseID,
+		[]map[string]any{{"slot": 0, "kind": "bbs", "title": "みんなの板"}}, "c1"); c != http.StatusOK {
+		t.Fatalf("set slot0: %d", c)
+	}
+	// Dランクは1枠なので枠1は指定できない。
+	if _, c := setContents(t, srv.URL, owner.ID, houseID,
+		[]map[string]any{{"slot": 1, "kind": "bbs"}}, "c2"); c != http.StatusUnprocessableEntity {
+		t.Errorf("slot over limit: %d, want 422", c)
+	}
+	// 不正な種類は拒否。
+	if _, c := setContents(t, srv.URL, owner.ID, houseID,
+		[]map[string]any{{"slot": 0, "kind": "casino"}}, "c3"); c != http.StatusUnprocessableEntity {
+		t.Errorf("bad kind: %d, want 422", c)
+	}
+	// 他人の家は設定できない。
+	if _, c := setContents(t, srv.URL, other.ID, houseID,
+		[]map[string]any{{"slot": 0, "kind": "bbs"}}, "c4"); c != http.StatusUnprocessableEntity {
+		t.Errorf("non-owner: %d, want 422", c)
+	}
+	// 設定はbuilding APIのcontentsに反映される(掲示板のみ)。
+	var kind, title string
+	if err := pool.QueryRow(ctx,
+		`SELECT kind, title FROM house_contents WHERE house_id=$1 AND slot=0`, houseID).Scan(&kind, &title); err != nil {
+		t.Fatalf("read content: %v", err)
+	}
+	if kind != "bbs" || title != "みんなの板" {
+		t.Errorf("content = %s/%s, want bbs/みんなの板", kind, title)
+	}
+}
+
 func TestHouseBbs(t *testing.T) {
 	srv, pool := setup(t)
 	ctx := context.Background()
@@ -3584,12 +3662,23 @@ func TestHouseBbs(t *testing.T) {
 	visitor := register(t, srv.URL, "misskey.example", "bbsvisitor")
 	creditSavings(t, pool, owner.ID, 10_000_000)
 	seedPlots(t, pool, [][3]int{{4, 0, 1}})
-	if _, c := buildHouse(t, srv.URL, owner.ID, 4, 0, 1, "house1", 3, "b1"); c != http.StatusOK {
+	// Cランク(2)=2枠(掲示板+家主板を公開するため)。
+	if _, c := buildHouse(t, srv.URL, owner.ID, 4, 0, 1, "house1", 2, "b1"); c != http.StatusOK {
 		t.Fatalf("build: %d", c)
 	}
 	var houseID int64
 	if err := pool.QueryRow(ctx, `SELECT id FROM player_houses WHERE owner_id=$1`, owner.ID).Scan(&houseID); err != nil {
 		t.Fatalf("house id: %v", err)
+	}
+
+	// コンテンツ枠未設定の掲示板には書き込めない(新築時は非公開)。
+	if _, c := postBbs(t, srv.URL, visitor.ID, houseID, "normal", "まだ無い", "p0"); c != http.StatusUnprocessableEntity {
+		t.Errorf("post before contents: %d, want 422", c)
+	}
+	// 枠に掲示板と家主板を設定。
+	if _, c := setContents(t, srv.URL, owner.ID, houseID,
+		[]map[string]any{{"slot": 0, "kind": "bbs"}, {"slot": 1, "kind": "nushi"}}, "c1"); c != http.StatusOK {
+		t.Fatalf("set contents: %d", c)
 	}
 
 	// 訪問者が通常掲示板に投稿。

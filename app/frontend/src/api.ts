@@ -632,6 +632,12 @@ export interface BuildingInterior {
   price: number;
   slots: number;
 }
+// 家のコンテンツ枠。内装ランクで枠数が決まり(A=4..D=1)、設定した枠だけが訪問者に見える。
+export interface HouseContent {
+  slot: number;
+  kind: string; // 'bbs'=通常掲示板 / 'shop'=お店 / 'nushi'=家主板
+  title: string;
+}
 export interface HouseCell {
   id: number;
   town: number;
@@ -641,6 +647,7 @@ export interface HouseCell {
   setumei: string;
   owner_name: string;
   own: boolean;
+  contents: HouseContent[];
 }
 export interface MyHouse {
   id: number;
@@ -650,11 +657,13 @@ export interface MyHouse {
   exterior: string;
   setumei: string;
   interior_rank: number;
+  slots: number;
   built_at: string;
   has_shop: boolean;
   shop_title: string;
   shop_kind: string;
   shop_markup: number;
+  contents: HouseContent[];
 }
 export interface PlotCell {
   town: number;
@@ -1002,6 +1011,13 @@ export const api = {
     request<Player>('POST', `/players/${id}/building/comment`, {
       house_id: houseId,
       setumei,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  // 家のコンテンツ枠を設定(全置き換え)。kind空は非公開。
+  setHouseContents: (id: number, houseId: number, contents: HouseContent[]) =>
+    request<Player>('POST', `/players/${id}/building/contents`, {
+      house_id: houseId,
+      contents,
       idempotency_key: newIdempotencyKey(),
     }),
   saisen: (id: number, houseId: number, amount: number) =>

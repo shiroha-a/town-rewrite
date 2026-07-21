@@ -190,6 +190,25 @@ func interiorByRank(rank int) (Interior, bool) {
 	return Interior{}, false
 }
 
+// SlotsByRank returns the number of in-house content slots for an interior rank
+// (A=4..D=1)。レガシー: rank0/空=4枠。範囲外は最小の1枠。
+func SlotsByRank(rank int) int {
+	if in, ok := interiorByRank(rank); ok {
+		return in.Slots
+	}
+	return 1
+}
+
+// IsHouseContentKind reports whether k is a valid in-house content kind.
+// ""=非公開(枠を使わない), "bbs"=通常掲示板, "shop"=お店, "nushi"=家主板。
+func IsHouseContentKind(k string) bool {
+	switch k {
+	case "", "bbs", "shop", "nushi":
+		return true
+	}
+	return false
+}
+
 // BuildCost returns the construction cost in 円 for a house. houseCount is the
 // number of houses the player already owns (0 = building the first, i.e. マイホーム).
 //

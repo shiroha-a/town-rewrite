@@ -273,6 +273,51 @@ function syncDrafts() {
   const d: Record<number, string> = {};
   for (const h of state.value?.my_houses ?? []) d[h.id] = h.setumei ?? '';
   commentDrafts.value = d;
+  // コンテンツ枠の編集ドラフト(枠数ぶんの行。未設定枠はkind空=公開しない)。
+  const cd: Record<number, { kind: string; title: string }[]> = {};
+  for (const h of state.value?.my_houses ?? []) {
+    const rows: { kind: string; title: string }[] = [];
+    for (let s = 0; s < h.slots; s++) {
+      const c = h.contents.find((x) => x.slot === s);
+      rows.push({ kind: c?.kind ?? '', title: c?.title ?? '' });
+    }
+    cd[h.id] = rows;
+  }
+  contentDrafts.value = cd;
+}
+
+// コンテンツ枠の設定(レガシー my_house_settei)。枠数は内装ランクで決まる。
+const CONTENT_KINDS = [
+  { value: '', label: '公開しない' },
+  { value: 'bbs', label: '通常掲示板' },
+  { value: 'shop', label: 'お店' },
+  { value: 'nushi', label: '家主板' },
+];
+const contentDrafts = ref<Record<number, { kind: string; title: string }[]>>({});
+async function saveContents(h: MyHouse) {
+  busy.value = true;
+  try {
+    const rows = contentDrafts.value[h.id] ?? [];
+    const contents = rows.map((r, s) => ({ slot: s, kind: r.kind, title: r.title }));
+    const after = await api.setHouseContents(props.player.id, h.id, contents);
+    emit('update', after);
+    await refresh();
+    showToast({
+      variant: 'item',
+      title: 'コンテンツを保存しました',
+      lines: [`${townName(h.town)}／${rowLabel(h.row)}${h.col} の公開コンテンツを更新しました`],
+      icon: 'item',
+    });
+  } catch (e) {
+    showToast({
+      variant: 'error',
+      title: '保存できませんでした',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'item',
+    });
+  } finally {
+    busy.value = false;
+  }
 }
 async function doSaisen() {
   if (!visitingHouse.value) return;
@@ -470,6 +515,18 @@ const bbsBody = ref('');
 const nushiBody = ref('');
 const normalPosts = computed(() => visitBbs.value.filter((p) => p.kind === 'normal'));
 const nushiPosts = computed(() => visitBbs.value.filter((p) => p.kind === 'nushi'));
+
+// 訪問中の家のコンテンツ枠。設定された種類だけ訪問パネルに表示する。
+function visitHas(kind: string): boolean {
+  return visitingHouse.value?.contents.some((c) => c.kind === kind) ?? false;
+}
+// 枠のタイトル(設定されていれば見出しに使う)。
+function visitTitle(kind: string, fallback: string): string {
+  const c = visitingHouse.value?.contents.find((x) => x.kind === kind);
+  return c?.title || fallback;
+}
+// 公開コンテンツが1つも無い家か(案内表示用)。
+const visitNoContents = computed(() => (visitingHouse.value?.contents.length ?? 0) === 0);
 function canDeletePost(post: BbsPost): boolean {
   return (visitingHouse.value?.own ?? false) || post.author_id === props.player.id;
 }
@@ -646,9 +703,14 @@ async function savePrice(it: ShopStockItem) {
           <button class="btn saisen-btn" :disabled="busy" @click="doSaisen">さい銭する</button>
         </div>
 
-        <!-- 家の店(訪問販売) -->
-        <div v-if="visitShop && visitShop.has_shop" class="visit-shop">
-          <div class="vs-title">{{ visitShop.title || 'お店' }}（{{ visitShop.syubetu }}）</div>
+        <!-- 公開コンテンツ無し(家主がコンテンツ枠を未設定) -->
+        <div v-if="visitNoContents" class="visit-note">
+          この家には公開されているコンテンツがありません。
+        </div>
+
+        <!-- 家の店(訪問販売)。コンテンツ枠に「お店」が設定された家だけ表示。 -->
+        <div v-if="visitHas('shop') && visitShop && visitShop.has_shop" class="visit-shop">
+          <div class="vs-title">{{ visitTitle('shop', visitShop.title || 'お店') }}（{{ visitShop.syubetu }}）</div>
           <div v-if="visitShop.own" class="visit-note">
             あなたの店です。仕入れ・設定は「自分の家」欄から行えます。
           </div>
@@ -687,32 +749,36 @@ async function savePrice(it: ShopStockItem) {
           </div>
         </div>
 
-        <!-- 掲示板 -->
-        <div class="visit-bbs">
-          <div class="vs-title">通常掲示板</div>
-          <div class="bbs-form">
-            <input v-model="bbsBody" maxlength="500" placeholder="コメントを書く" class="bbs-input" />
-            <button class="btn mini" :disabled="busy" @click="doPostBbs('normal')">書き込む</button>
-          </div>
-          <ul class="bbs-list">
-            <li v-if="normalPosts.length === 0" class="bbs-empty">まだ書き込みはありません。</li>
-            <li v-for="p in normalPosts" :key="p.id">
-              <span class="bbs-author">{{ p.author_name }}</span>：{{ p.body }}
-              <button v-if="canDeletePost(p)" class="bbs-del" :disabled="busy" @click="doDeleteBbs(p)">×</button>
-            </li>
-          </ul>
-          <div class="vs-title">家主板</div>
-          <div v-if="visitingHouse.own" class="bbs-form">
-            <input v-model="nushiBody" maxlength="500" placeholder="家主板に書く" class="bbs-input" />
-            <button class="btn mini" :disabled="busy" @click="doPostBbs('nushi')">書き込む</button>
-          </div>
-          <ul class="bbs-list">
-            <li v-if="nushiPosts.length === 0" class="bbs-empty">まだ書き込みはありません。</li>
-            <li v-for="p in nushiPosts" :key="p.id">
-              <span class="bbs-author">{{ p.author_name }}</span>：{{ p.body }}
-              <button v-if="canDeletePost(p)" class="bbs-del" :disabled="busy" @click="doDeleteBbs(p)">×</button>
-            </li>
-          </ul>
+        <!-- 掲示板(コンテンツ枠に設定された板だけ表示) -->
+        <div v-if="visitHas('bbs') || visitHas('nushi')" class="visit-bbs">
+          <template v-if="visitHas('bbs')">
+            <div class="vs-title">{{ visitTitle('bbs', '通常掲示板') }}</div>
+            <div class="bbs-form">
+              <input v-model="bbsBody" maxlength="500" placeholder="コメントを書く" class="bbs-input" />
+              <button class="btn mini" :disabled="busy" @click="doPostBbs('normal')">書き込む</button>
+            </div>
+            <ul class="bbs-list">
+              <li v-if="normalPosts.length === 0" class="bbs-empty">まだ書き込みはありません。</li>
+              <li v-for="p in normalPosts" :key="p.id">
+                <span class="bbs-author">{{ p.author_name }}</span>：{{ p.body }}
+                <button v-if="canDeletePost(p)" class="bbs-del" :disabled="busy" @click="doDeleteBbs(p)">×</button>
+              </li>
+            </ul>
+          </template>
+          <template v-if="visitHas('nushi')">
+            <div class="vs-title">{{ visitTitle('nushi', '家主板') }}</div>
+            <div v-if="visitingHouse.own" class="bbs-form">
+              <input v-model="nushiBody" maxlength="500" placeholder="家主板に書く" class="bbs-input" />
+              <button class="btn mini" :disabled="busy" @click="doPostBbs('nushi')">書き込む</button>
+            </div>
+            <ul class="bbs-list">
+              <li v-if="nushiPosts.length === 0" class="bbs-empty">まだ書き込みはありません。</li>
+              <li v-for="p in nushiPosts" :key="p.id">
+                <span class="bbs-author">{{ p.author_name }}</span>：{{ p.body }}
+                <button v-if="canDeletePost(p)" class="bbs-del" :disabled="busy" @click="doDeleteBbs(p)">×</button>
+              </li>
+            </ul>
+          </template>
         </div>
       </div>
 
@@ -796,6 +862,24 @@ async function savePrice(it: ShopStockItem) {
                 class="mh-cinput"
               />
               <button class="btn mini" :disabled="busy" @click="saveComment(h)">コメント保存</button>
+            </div>
+            <!-- コンテンツ枠(内装ランクで枠数が決まる)。設定した枠だけ訪問者に表示。 -->
+            <div class="mh-contents">
+              <div class="mh-contents-head">コンテンツ枠（内装{{ ['A','B','C','D'][h.interior_rank] ?? '?' }}ランク・{{ h.slots }}枠）</div>
+              <div v-for="(row, s) in contentDrafts[h.id]" :key="s" class="mh-content-row">
+                <span class="slot-no">枠{{ s + 1 }}</span>
+                <select v-model="row.kind">
+                  <option v-for="k in CONTENT_KINDS" :key="k.value" :value="k.value">{{ k.label }}</option>
+                </select>
+                <input
+                  v-if="row.kind"
+                  v-model="row.title"
+                  maxlength="20"
+                  class="mh-cinput slot-title"
+                  placeholder="タイトル(省略可)"
+                />
+              </div>
+              <button class="btn mini" :disabled="busy" @click="saveContents(h)">コンテンツ保存</button>
             </div>
             <div class="mh-shop">
               <span v-if="h.has_shop" class="shop-badge">
@@ -1170,6 +1254,35 @@ async function savePrice(it: ShopStockItem) {
   flex: 1 1 auto;
   font-size: 12px;
   padding: 2px 4px;
+}
+/* コンテンツ枠エディタ(内装ランクで枠数が決まる)。 */
+.mh-contents {
+  margin-top: 6px;
+  border: 1px dashed #cfd8c0;
+  padding: 6px;
+}
+.mh-contents-head {
+  font-size: 12px;
+  font-weight: bold;
+  color: #4a7a2a;
+  margin-bottom: 4px;
+}
+.mh-content-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.mh-content-row .slot-no {
+  font-size: 11px;
+  color: #667;
+  flex: 0 0 auto;
+}
+.mh-content-row select {
+  font-size: 12px;
+}
+.slot-title {
+  max-width: 180px;
 }
 .mh-shop {
   display: flex;

@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+
+	"github.com/shiroha-a/town/internal/action"
 )
 
 // building returns the construction-company screen state: the five towns and
@@ -145,6 +147,40 @@ func (s *Server) houseComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p, err := s.actions.DoSetHouseComment(r.Context(), id, req.HouseID, req.Setumei, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
+type houseContentsReq struct {
+	HouseID  int64 `json:"house_id"`
+	Contents []struct {
+		Slot  int    `json:"slot"`
+		Kind  string `json:"kind"`
+		Title string `json:"title"`
+	} `json:"contents"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// houseContents sets the house's content slots (コンテンツ枠設定)。
+func (s *Server) houseContents(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req houseContentsReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
+		return
+	}
+	contents := make([]action.HouseContentSlot, 0, len(req.Contents))
+	for _, c := range req.Contents {
+		contents = append(contents, action.HouseContentSlot{Slot: c.Slot, Kind: c.Kind, Title: c.Title})
+	}
+	p, err := s.actions.DoSetHouseContents(r.Context(), id, req.HouseID, contents, req.IdempotencyKey)
 	writeFacilityResult(w, p, err)
 }
 

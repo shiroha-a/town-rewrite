@@ -435,6 +435,12 @@ func (s *Service) DoBuyFromHouseShop(ctx context.Context, buyerID, houseID, item
 		if ownerID == buyerID {
 			return &ConditionError{Message: "自分の店では買えません。"}
 		}
+		// コンテンツ枠に「お店」が設定されていない家では買えない(店が非公開)。
+		if ok, err := hasHouseContent(ctx, tx, houseID, "shop"); err != nil {
+			return err
+		} else if !ok {
+			return &ConditionError{Message: "この家の店は公開されていません。"}
+		}
 		var (
 			buyPrice  int64
 			sellPrice *int64
@@ -529,6 +535,17 @@ func (s *Service) DoPostBbs(ctx context.Context, playerID, houseID int64, kind, 
 		if kind == "nushi" && ownerID != playerID {
 			return &ConditionError{Message: "家主板には家主しか書き込めません。"}
 		}
+		// コンテンツ枠に設定されていない掲示板には書き込めない。
+		// (掲示板のkind 'normal' はコンテンツ枠では 'bbs')
+		contentKind := kind
+		if kind == "normal" {
+			contentKind = "bbs"
+		}
+		if ok, err := hasHouseContent(ctx, tx, houseID, contentKind); err != nil {
+			return err
+		} else if !ok {
+			return &ConditionError{Message: "この家にはその掲示板がありません。"}
+		}
 		var name string
 		if err := tx.QueryRow(ctx, `SELECT display_name FROM players WHERE id = $1`, playerID).Scan(&name); err != nil {
 			return fmt.Errorf("load name: %w", err)
@@ -540,6 +557,80 @@ func (s *Service) DoPostBbs(ctx context.Context, playerID, houseID int64, kind, 
 		}
 		return nil
 	})
+}
+
+// HouseContentSlot is one requested content slot assignment (コンテンツ枠設定)。
+type HouseContentSlot struct {
+	Slot  int
+	Kind  string // ""=非公開 / "bbs" / "shop" / "nushi"
+	Title string
+}
+
+const maxContentTitleLen = 20
+
+// DoSetHouseContents replaces the house's content slots (レガシー my_house_settei)。
+// 内装ランクで決まる枠数までしか設定できない。空kindの枠は非公開(未設定)扱い。
+func (s *Service) DoSetHouseContents(ctx context.Context, playerID, houseID int64, contents []HouseContentSlot, idempotencyKey string) (*player.Player, error) {
+	for _, c := range contents {
+		if !building.IsHouseContentKind(c.Kind) {
+			return nil, &ConditionError{Message: "コンテンツの種類が正しくありません。"}
+		}
+		if utf8.RuneCountInString(c.Title) > maxContentTitleLen {
+			return nil, &ConditionError{Message: fmt.Sprintf("タイトルは%d文字以内で入力してください。", maxContentTitleLen)}
+		}
+	}
+	return s.runAction(ctx, playerID, "house_contents", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		var ownerID int64
+		var rank int
+		err := tx.QueryRow(ctx, `SELECT owner_id, interior_rank FROM player_houses WHERE id = $1`, houseID).
+			Scan(&ownerID, &rank)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &ConditionError{Message: "その家は存在しません。"}
+		}
+		if err != nil {
+			return fmt.Errorf("load house: %w", err)
+		}
+		if ownerID != playerID {
+			return &ConditionError{Message: "自分の家のコンテンツだけ設定できます。"}
+		}
+		slots := building.SlotsByRank(rank)
+		seen := map[int]bool{}
+		for _, c := range contents {
+			if c.Slot < 0 || c.Slot >= slots {
+				return &ConditionError{Message: fmt.Sprintf("この家のコンテンツ枠は%dつまでです。", slots)}
+			}
+			if seen[c.Slot] {
+				return &ConditionError{Message: "同じ枠を複数回指定できません。"}
+			}
+			seen[c.Slot] = true
+		}
+		// 全置き換え: 一旦消して、公開する枠(kindあり)だけ入れ直す。
+		if _, err := tx.Exec(ctx, `DELETE FROM house_contents WHERE house_id = $1`, houseID); err != nil {
+			return fmt.Errorf("clear contents: %w", err)
+		}
+		for _, c := range contents {
+			if c.Kind == "" {
+				continue
+			}
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO house_contents (house_id, slot, kind, title) VALUES ($1, $2, $3, $4)`,
+				houseID, c.Slot, c.Kind, strings.TrimSpace(c.Title)); err != nil {
+				return fmt.Errorf("insert content: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
+// hasHouseContent reports whether the house has a content slot of the kind.
+func hasHouseContent(ctx context.Context, tx pgx.Tx, houseID int64, kind string) (bool, error) {
+	var ok bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM house_contents WHERE house_id = $1 AND kind = $2)`,
+		houseID, kind).Scan(&ok); err != nil {
+		return false, fmt.Errorf("check house content: %w", err)
+	}
+	return ok, nil
 }
 
 // DoDeleteBbs deletes a bulletin-board post. The house owner or the post's

@@ -29,33 +29,44 @@ type BuildingState struct {
 	Rows       int                 `json:"rows"`
 }
 
+// HouseContent is one configured in-house content slot (コンテンツ枠)。訪問者には
+// 設定された枠のコンテンツだけが枠順に表示される。
+type HouseContent struct {
+	Slot  int    `json:"slot"`
+	Kind  string `json:"kind"` // 'bbs'=通常掲示板 / 'shop'=お店 / 'nushi'=家主板
+	Title string `json:"title"`
+}
+
 // HouseCell is a house on the map (any owner), used for grid rendering and
 // visiting. Setumei is the owner's mouse-over comment (フェーズ3a).
 type HouseCell struct {
-	ID        int64  `json:"id"`
-	Town      int    `json:"town"`
-	Row       int    `json:"row"`
-	Col       int    `json:"col"`
-	Exterior  string `json:"exterior"`
-	Setumei   string `json:"setumei"`
-	OwnerName string `json:"owner_name"`
-	Own       bool   `json:"own"`
+	ID        int64          `json:"id"`
+	Town      int            `json:"town"`
+	Row       int            `json:"row"`
+	Col       int            `json:"col"`
+	Exterior  string         `json:"exterior"`
+	Setumei   string         `json:"setumei"`
+	OwnerName string         `json:"owner_name"`
+	Own       bool           `json:"own"`
+	Contents  []HouseContent `json:"contents"`
 }
 
 // MyHouse is one of the player's own houses (for the owned-houses list).
 type MyHouse struct {
-	ID           int64  `json:"id"`
-	Town         int    `json:"town"`
-	Row          int    `json:"row"`
-	Col          int    `json:"col"`
-	Exterior     string `json:"exterior"`
-	Setumei      string  `json:"setumei"`
-	InteriorRank int     `json:"interior_rank"`
-	BuiltAt      string  `json:"built_at"` // RFC3339
-	HasShop      bool    `json:"has_shop"`
-	ShopTitle    string  `json:"shop_title"`
-	ShopKind     string  `json:"shop_kind"`
-	ShopMarkup   float64 `json:"shop_markup"`
+	ID           int64          `json:"id"`
+	Town         int            `json:"town"`
+	Row          int            `json:"row"`
+	Col          int            `json:"col"`
+	Exterior     string         `json:"exterior"`
+	Setumei      string         `json:"setumei"`
+	InteriorRank int            `json:"interior_rank"`
+	Slots        int            `json:"slots"`    // 内装ランクで決まるコンテンツ枠数
+	BuiltAt      string         `json:"built_at"` // RFC3339
+	HasShop      bool           `json:"has_shop"`
+	ShopTitle    string         `json:"shop_title"`
+	ShopKind     string         `json:"shop_kind"`
+	ShopMarkup   float64        `json:"shop_markup"`
+	Contents     []HouseContent `json:"contents"`
 }
 
 // PlotCell is an admin-designated empty plot on which a house may be built.
@@ -110,18 +121,57 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 			return nil, fmt.Errorf("scan my house: %w", err)
 		}
 		h.BuiltAt = built.Format(time.RFC3339)
+		h.Slots = building.SlotsByRank(h.InteriorRank)
 		st.MyHouses = append(st.MyHouses, h)
 	}
 	if err := mrows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate my houses: %w", err)
 	}
+	// 自分の家のコンテンツ枠は全家一覧(ListHouses)で取得済みのものを引き当てる。
+	byID := map[int64][]HouseContent{}
+	for _, h := range st.Houses {
+		byID[h.ID] = h.Contents
+	}
+	for i := range st.MyHouses {
+		st.MyHouses[i].Contents = byID[st.MyHouses[i].ID]
+		if st.MyHouses[i].Contents == nil {
+			st.MyHouses[i].Contents = []HouseContent{}
+		}
+	}
 	st.HouseCount = len(st.MyHouses)
 	return st, nil
+}
+
+// loadHouseContents returns every house's configured content slots, keyed by
+// house id and ordered by slot.
+func (s *Service) loadHouseContents(ctx context.Context) (map[int64][]HouseContent, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT house_id, slot, kind, title FROM house_contents ORDER BY house_id, slot`)
+	if err != nil {
+		return nil, fmt.Errorf("list house contents: %w", err)
+	}
+	defer rows.Close()
+	out := map[int64][]HouseContent{}
+	for rows.Next() {
+		var (
+			houseID int64
+			c       HouseContent
+		)
+		if err := rows.Scan(&houseID, &c.Slot, &c.Kind, &c.Title); err != nil {
+			return nil, fmt.Errorf("scan house content: %w", err)
+		}
+		out[houseID] = append(out[houseID], c)
+	}
+	return out, rows.Err()
 }
 
 // ListHouses returns every house across all towns (for map rendering). Own is
 // set relative to playerID (pass 0 for none).
 func (s *Service) ListHouses(ctx context.Context, playerID int64) ([]HouseCell, error) {
+	contents, err := s.loadHouseContents(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.pool.Query(ctx,
 		`SELECT h.id, h.town, h.grid_row, h.grid_col, h.exterior, h.setumei, h.owner_id, COALESCE(p.display_name, '')
 		 FROM player_houses h LEFT JOIN players p ON p.id = h.owner_id
@@ -140,6 +190,10 @@ func (s *Service) ListHouses(ctx context.Context, playerID int64) ([]HouseCell, 
 			return nil, fmt.Errorf("scan house: %w", err)
 		}
 		c.Own = ownerID == playerID
+		c.Contents = contents[c.ID]
+		if c.Contents == nil {
+			c.Contents = []HouseContent{}
+		}
 		out = append(out, c)
 	}
 	return out, rows.Err()
