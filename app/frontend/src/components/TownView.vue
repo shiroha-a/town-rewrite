@@ -248,6 +248,11 @@ function clickHouse(h: HouseCell) {
   emit('navigate', 'house', h.id);
 }
 
+// 家のツールチップ。家主が設定したマウスオーバーコメント(setumei)を表示する。
+function houseTitle(h: HouseCell): string {
+  return h.setumei ? `${h.owner_name}さんの家「${h.setumei}」` : `${h.owner_name}さんの家`;
+}
+
 // ワープ(高額・即時)。トップ画面の持ち物欄の下のプルダウンで行き先を選び移動する。
 const warpFee = WARP_FEE;
 // ワープ候補: 現在地と隠し町(hidden)を除く。
@@ -571,7 +576,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
               <button
                 v-else-if="houseAt(c, ri)"
                 class="facility house-cell"
-                :title="`${houseAt(c, ri)!.owner_name}さんの家`"
+                :title="houseTitle(houseAt(c, ri)!)"
                 @click="clickHouse(houseAt(c, ri)!)"
               >
                 <img :src="`/img/${houseAt(c, ri)!.exterior}.gif`" :alt="`${houseAt(c, ri)!.owner_name}さんの家`" />
