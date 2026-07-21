@@ -414,9 +414,15 @@ func (s *Service) DoShiire(ctx context.Context, playerID, houseID, itemID int64,
 // The shelf price is the per-item price if set, otherwise 仕入れ値×掛け率. Payment
 // goes to the owner's bank savings and the item transfers to the buyer. A player
 // cannot buy from their own shop.
+// maxBuyQty is the legacy per-purchase quantity limit (item_kosuuseigen).
+const maxBuyQty = 4
+
 func (s *Service) DoBuyFromHouseShop(ctx context.Context, buyerID, houseID, itemID int64, qty int, idempotencyKey string) (*player.Player, error) {
 	if qty <= 0 {
 		qty = 1
+	}
+	if qty > maxBuyQty {
+		return nil, &ConditionError{Message: fmt.Sprintf("一度に買えるのは%d個までです。", maxBuyQty)}
 	}
 	return s.runAction(ctx, buyerID, "house_shop_buy", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
 		var (
@@ -512,13 +518,18 @@ const maxBbsBodyLen = 500
 
 // DoPostBbs posts a message to a house's bulletin board (フェーズ3b). kind is
 // "normal" (anyone) or "nushi" (家主板, owner only).
-func (s *Service) DoPostBbs(ctx context.Context, playerID, houseID int64, kind, body, idempotencyKey string) (*player.Player, error) {
+func (s *Service) DoPostBbs(ctx context.Context, playerID, houseID int64, kind, title, body, idempotencyKey string) (*player.Player, error) {
 	body = strings.TrimSpace(body)
+	title = strings.TrimSpace(title)
 	if body == "" {
 		return nil, &ConditionError{Message: "本文を入力してください。"}
 	}
 	if utf8.RuneCountInString(body) > maxBbsBodyLen {
 		return nil, &ConditionError{Message: fmt.Sprintf("本文は%d文字以内で入力してください。", maxBbsBodyLen)}
+	}
+	// 記事タイトル(家主板のブログ風記事用)。
+	if utf8.RuneCountInString(title) > 40 {
+		return nil, &ConditionError{Message: "記事タイトルは40文字以内で入力してください。"}
 	}
 	if kind != "normal" && kind != "nushi" {
 		return nil, &ConditionError{Message: "掲示板の種類が正しくありません。"}
@@ -551,8 +562,8 @@ func (s *Service) DoPostBbs(ctx context.Context, playerID, houseID int64, kind, 
 			return fmt.Errorf("load name: %w", err)
 		}
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO house_bbs (house_id, kind, author_id, author_name, body) VALUES ($1, $2, $3, $4, $5)`,
-			houseID, kind, playerID, name, body); err != nil {
+			`INSERT INTO house_bbs (house_id, kind, author_id, author_name, title, body) VALUES ($1, $2, $3, $4, $5, $6)`,
+			houseID, kind, playerID, name, title, body); err != nil {
 			return fmt.Errorf("insert bbs: %w", err)
 		}
 		return nil
@@ -562,8 +573,9 @@ func (s *Service) DoPostBbs(ctx context.Context, playerID, houseID int64, kind, 
 // HouseContentSlot is one requested content slot assignment (コンテンツ枠設定)。
 type HouseContentSlot struct {
 	Slot  int
-	Kind  string // ""=非公開 / "bbs" / "shop" / "nushi"
+	Kind  string // ""=非公開 / "bbs" / "shop" / "nushi" / "url"
 	Title string
+	URL   string // kind="url" の埋め込みURL(http/httpsのみ)
 }
 
 const maxContentTitleLen = 20
@@ -577,6 +589,13 @@ func (s *Service) DoSetHouseContents(ctx context.Context, playerID, houseID int6
 		}
 		if utf8.RuneCountInString(c.Title) > maxContentTitleLen {
 			return nil, &ConditionError{Message: fmt.Sprintf("タイトルは%d文字以内で入力してください。", maxContentTitleLen)}
+		}
+		// 独自URLはhttp/httpsのみ許可(javascript:等の混入防止)。
+		if c.Kind == "url" {
+			u := strings.TrimSpace(c.URL)
+			if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+				return nil, &ConditionError{Message: "独自URLはhttp://またはhttps://で始まるURLを入力してください。"}
+			}
 		}
 	}
 	return s.runAction(ctx, playerID, "house_contents", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
@@ -613,8 +632,8 @@ func (s *Service) DoSetHouseContents(ctx context.Context, playerID, houseID int6
 				continue
 			}
 			if _, err := tx.Exec(ctx,
-				`INSERT INTO house_contents (house_id, slot, kind, title) VALUES ($1, $2, $3, $4)`,
-				houseID, c.Slot, c.Kind, strings.TrimSpace(c.Title)); err != nil {
+				`INSERT INTO house_contents (house_id, slot, kind, title, url) VALUES ($1, $2, $3, $4, $5)`,
+				houseID, c.Slot, c.Kind, strings.TrimSpace(c.Title), strings.TrimSpace(c.URL)); err != nil {
 				return fmt.Errorf("insert content: %w", err)
 			}
 		}

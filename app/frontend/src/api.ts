@@ -635,8 +635,9 @@ export interface BuildingInterior {
 // 家のコンテンツ枠。内装ランクで枠数が決まり(A=4..D=1)、設定した枠だけが訪問者に見える。
 export interface HouseContent {
   slot: number;
-  kind: string; // 'bbs'=通常掲示板 / 'shop'=お店 / 'nushi'=家主板
+  kind: string; // 'bbs'=通常掲示板 / 'shop'=お店 / 'nushi'=家主板 / 'url'=独自URL
   title: string;
+  url: string; // kind='url' の埋め込みURL
 }
 export interface HouseCell {
   id: number;
@@ -719,6 +720,7 @@ export interface BbsPost {
   kind: string;
   author_id: number;
   author_name: string;
+  title: string; // 家主板(nushi)の記事タイトル
   body: string;
   created_at: string;
 }
@@ -1054,10 +1056,11 @@ export const api = {
     }),
   houseBbs: (id: number, houseId: number) =>
     request<BbsPost[]>('GET', `/players/${id}/building/bbs?house_id=${houseId}`),
-  postBbs: (id: number, houseId: number, kind: string, body: string) =>
+  postBbs: (id: number, houseId: number, kind: string, body: string, title = '') =>
     request<Player>('POST', `/players/${id}/building/bbs/post`, {
       house_id: houseId,
       kind,
+      title,
       body,
       idempotency_key: newIdempotencyKey(),
     }),

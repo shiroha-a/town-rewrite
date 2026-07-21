@@ -156,6 +156,7 @@ type houseContentsReq struct {
 		Slot  int    `json:"slot"`
 		Kind  string `json:"kind"`
 		Title string `json:"title"`
+		URL   string `json:"url"`
 	} `json:"contents"`
 	IdempotencyKey string `json:"idempotency_key"`
 }
@@ -178,7 +179,7 @@ func (s *Server) houseContents(w http.ResponseWriter, r *http.Request) {
 	}
 	contents := make([]action.HouseContentSlot, 0, len(req.Contents))
 	for _, c := range req.Contents {
-		contents = append(contents, action.HouseContentSlot{Slot: c.Slot, Kind: c.Kind, Title: c.Title})
+		contents = append(contents, action.HouseContentSlot{Slot: c.Slot, Kind: c.Kind, Title: c.Title, URL: c.URL})
 	}
 	p, err := s.actions.DoSetHouseContents(r.Context(), id, req.HouseID, contents, req.IdempotencyKey)
 	writeFacilityResult(w, p, err)
@@ -350,6 +351,7 @@ func (s *Server) houseBbs(w http.ResponseWriter, r *http.Request) {
 type postBbsReq struct {
 	HouseID        int64  `json:"house_id"`
 	Kind           string `json:"kind"`
+	Title          string `json:"title"` // 家主板の記事タイトル(任意)
 	Body           string `json:"body"`
 	IdempotencyKey string `json:"idempotency_key"`
 }
@@ -370,7 +372,7 @@ func (s *Server) postBbs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "house_id and body are required")
 		return
 	}
-	p, err := s.actions.DoPostBbs(r.Context(), id, req.HouseID, req.Kind, req.Body, req.IdempotencyKey)
+	p, err := s.actions.DoPostBbs(r.Context(), id, req.HouseID, req.Kind, req.Title, req.Body, req.IdempotencyKey)
 	writeFacilityResult(w, p, err)
 }
 

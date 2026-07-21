@@ -30,11 +30,12 @@ type BuildingState struct {
 }
 
 // HouseContent is one configured in-house content slot (コンテンツ枠)。訪問者には
-// 設定された枠のコンテンツだけが枠順に表示される。
+// 設定された枠のコンテンツだけが枠順に表示される(一番上の枠が入室時の初期表示)。
 type HouseContent struct {
 	Slot  int    `json:"slot"`
-	Kind  string `json:"kind"` // 'bbs'=通常掲示板 / 'shop'=お店 / 'nushi'=家主板
+	Kind  string `json:"kind"` // 'bbs'=通常掲示板 / 'shop'=お店 / 'nushi'=家主板 / 'url'=独自URL
 	Title string `json:"title"`
+	URL   string `json:"url"` // kind='url' の埋め込みURL
 }
 
 // HouseCell is a house on the map (any owner), used for grid rendering and
@@ -146,7 +147,7 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 // house id and ordered by slot.
 func (s *Service) loadHouseContents(ctx context.Context) (map[int64][]HouseContent, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT house_id, slot, kind, title FROM house_contents ORDER BY house_id, slot`)
+		`SELECT house_id, slot, kind, title, url FROM house_contents ORDER BY house_id, slot`)
 	if err != nil {
 		return nil, fmt.Errorf("list house contents: %w", err)
 	}
@@ -157,7 +158,7 @@ func (s *Service) loadHouseContents(ctx context.Context) (map[int64][]HouseConte
 			houseID int64
 			c       HouseContent
 		)
-		if err := rows.Scan(&houseID, &c.Slot, &c.Kind, &c.Title); err != nil {
+		if err := rows.Scan(&houseID, &c.Slot, &c.Kind, &c.Title, &c.URL); err != nil {
 			return nil, fmt.Errorf("scan house content: %w", err)
 		}
 		out[houseID] = append(out[houseID], c)
@@ -443,6 +444,7 @@ type BbsPost struct {
 	Kind       string `json:"kind"` // normal / nushi
 	AuthorID   int64  `json:"author_id"`
 	AuthorName string `json:"author_name"`
+	Title      string `json:"title"` // 家主板(nushi)の記事タイトル
 	Body       string `json:"body"`
 	CreatedAt  string `json:"created_at"` // RFC3339
 }
@@ -450,7 +452,7 @@ type BbsPost struct {
 // HouseBbs returns a house's bulletin-board posts (newest first, both boards).
 func (s *Service) HouseBbs(ctx context.Context, houseID int64) ([]BbsPost, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, kind, COALESCE(author_id, 0), author_name, body, created_at
+		`SELECT id, kind, COALESCE(author_id, 0), author_name, title, body, created_at
 		 FROM house_bbs WHERE house_id = $1 ORDER BY created_at DESC LIMIT 100`, houseID)
 	if err != nil {
 		return nil, fmt.Errorf("list bbs: %w", err)
@@ -462,7 +464,7 @@ func (s *Service) HouseBbs(ctx context.Context, houseID int64) ([]BbsPost, error
 			p       BbsPost
 			created time.Time
 		)
-		if err := rows.Scan(&p.ID, &p.Kind, &p.AuthorID, &p.AuthorName, &p.Body, &created); err != nil {
+		if err := rows.Scan(&p.ID, &p.Kind, &p.AuthorID, &p.AuthorName, &p.Title, &p.Body, &created); err != nil {
 			return nil, fmt.Errorf("scan bbs: %w", err)
 		}
 		p.CreatedAt = created.Format(time.RFC3339)

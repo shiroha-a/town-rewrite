@@ -200,10 +200,11 @@ func SlotsByRank(rank int) int {
 }
 
 // IsHouseContentKind reports whether k is a valid in-house content kind.
-// ""=非公開(枠を使わない), "bbs"=通常掲示板, "shop"=お店, "nushi"=家主板。
+// ""=非公開(枠を使わない), "bbs"=通常掲示板, "shop"=お店, "nushi"=家主板,
+// "url"=独自URL(dokuzi_url)。
 func IsHouseContentKind(k string) bool {
 	switch k {
-	case "", "bbs", "shop", "nushi":
+	case "", "bbs", "shop", "nushi", "url":
 		return true
 	}
 	return false

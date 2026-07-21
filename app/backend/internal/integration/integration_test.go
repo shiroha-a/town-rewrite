@@ -3498,6 +3498,11 @@ func TestBuyFromHouseShop(t *testing.T) {
 		t.Fatalf("set shop content: %d", c)
 	}
 
+	// 一度に買えるのは4個まで(レガシー item_kosuuseigen)。
+	if _, c := buyFromShop(t, srv.URL, visitor.ID, houseID, itemID, 5, "buy5"); c != http.StatusUnprocessableEntity {
+		t.Errorf("buy over qty limit: %d, want 422", c)
+	}
+
 	// 訪問者が2個購入。店頭価格 = 仕入れ値×掛け率2。
 	shelf := price * 2
 	got, c := buyFromShop(t, srv.URL, visitor.ID, houseID, itemID, 2, "buy1")
@@ -3642,6 +3647,20 @@ func TestHouseContents(t *testing.T) {
 	if _, c := setContents(t, srv.URL, other.ID, houseID,
 		[]map[string]any{{"slot": 0, "kind": "bbs"}}, "c4"); c != http.StatusUnprocessableEntity {
 		t.Errorf("non-owner: %d, want 422", c)
+	}
+	// 独自URLはhttp/https以外を拒否。
+	if _, c := setContents(t, srv.URL, owner.ID, houseID,
+		[]map[string]any{{"slot": 0, "kind": "url", "url": "javascript:alert(1)"}}, "c5"); c != http.StatusUnprocessableEntity {
+		t.Errorf("bad url scheme: %d, want 422", c)
+	}
+	if _, c := setContents(t, srv.URL, owner.ID, houseID,
+		[]map[string]any{{"slot": 0, "kind": "url", "title": "リンク", "url": "https://example.com/"}}, "c6"); c != http.StatusOK {
+		t.Errorf("good url: %d, want 200", c)
+	}
+	// 最後に掲示板へ戻す(後段の検証用)。
+	if _, c := setContents(t, srv.URL, owner.ID, houseID,
+		[]map[string]any{{"slot": 0, "kind": "bbs", "title": "みんなの板"}}, "c7"); c != http.StatusOK {
+		t.Fatalf("restore bbs: %d", c)
 	}
 	// 設定はbuilding APIのcontentsに反映される(掲示板のみ)。
 	var kind, title string

@@ -5,6 +5,7 @@ import {
   type Player,
   type Town,
   type HouseCell,
+  type HouseContent,
   type HouseShopView,
   type HouseShopItem,
   type BbsPost,
@@ -12,8 +13,9 @@ import {
 import Toast from './Toast.vue';
 import { useToast } from '../toast';
 
-// 家訪問(レガシー original_house.cgi houmon)。街で家をクリックすると開き、
-// 家主が公開しているコンテンツ(掲示板/お店/家主板)とさい銭箱を表示する。
+// 家訪問(レガシー original_house.cgi houmon)。タブ切替型:
+// 公開コンテンツ枠ごとにボタンが並び、1画面に1コンテンツを表示する。
+// 入室時は一番上の枠のコンテンツが初期表示(レガシー my_con0)。
 const props = defineProps<{ player: Player; houseId: number }>();
 const emit = defineEmits<{ update: [player: Player]; back: [] }>();
 
@@ -27,6 +29,24 @@ const townList = ref<Town[]>([]);
 const townName = (no: number) => townList.value.find((t) => t.no === no)?.name ?? '';
 const rowLabel = (row: number) => String.fromCharCode(65 + row);
 
+// コンテンツ枠(枠順)。タブとして描画し、selectedSlotの枠を表示する。
+const contents = computed<HouseContent[]>(() => house.value?.contents ?? []);
+const selectedSlot = ref<number | null>(null);
+const current = computed<HouseContent | null>(
+  () => contents.value.find((c) => c.slot === selectedSlot.value) ?? null,
+);
+function kindLabel(kind: string): string {
+  return { bbs: '掲示板', shop: 'お店', nushi: '家主板', url: 'リンク' }[kind] ?? kind;
+}
+function tabLabel(c: HouseContent): string {
+  return c.title || kindLabel(c.kind);
+}
+function selectTab(c: HouseContent) {
+  selectedSlot.value = c.slot;
+  bbsPage.value = 0;
+  nushiPage.value = 0;
+}
+
 onMounted(async () => {
   try {
     const [houses, towns] = await Promise.all([api.houses(props.player.id), api.towns()]);
@@ -36,6 +56,14 @@ onMounted(async () => {
       message.value = 'その家は見つかりませんでした。';
       return;
     }
+    // レガシー忠実: 公開コンテンツが無い家には入れない。
+    if (contents.value.length === 0) {
+      message.value = 'まだ人に見せられる家では無いようです。';
+      house.value = null;
+      return;
+    }
+    // 一番上の枠が初期表示。
+    selectedSlot.value = contents.value[0].slot;
     loadShop();
     loadBbs();
   } catch (e) {
@@ -43,15 +71,12 @@ onMounted(async () => {
   }
 });
 
-// コンテンツ枠。設定された種類だけ表示する。
-function has(kind: string): boolean {
-  return house.value?.contents.some((c) => c.kind === kind) ?? false;
-}
-function slotTitle(kind: string, fallback: string): string {
-  const c = house.value?.contents.find((x) => x.kind === kind);
-  return c?.title || fallback;
-}
-const noContents = computed(() => (house.value?.contents.length ?? 0) === 0);
+const fmtDate = (iso: string) => {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
 
 // さい銭(自分の家には不可)。
 const saisenChoices = [100, 500, 1000, 2000, 5000, 10000];
@@ -81,9 +106,10 @@ async function doSaisen() {
   }
 }
 
-// お店(訪問販売)。
+// お店(訪問販売)。個数は1〜4(レガシー item_kosuuseigen)。
 const shop = ref<HouseShopView | null>(null);
 const buyQty = ref<Record<number, number>>({});
+const qtyChoices = [1, 2, 3, 4];
 async function loadShop() {
   shop.value = null;
   try {
@@ -113,12 +139,26 @@ async function doBuy(it: HouseShopItem) {
   }
 }
 
-// 掲示板。
+// 掲示板(通常=textarea投稿+ページング / 家主板=ブログ風記事+ページング)。
 const bbs = ref<BbsPost[]>([]);
 const bbsBody = ref('');
+const nushiTitle = ref('');
 const nushiBody = ref('');
 const normalPosts = computed(() => bbs.value.filter((p) => p.kind === 'normal'));
 const nushiPosts = computed(() => bbs.value.filter((p) => p.kind === 'nushi'));
+// ページング(通常10件/家主板5件。レガシーgentei_kensuu相当)。
+const BBS_PER_PAGE = 10;
+const NUSHI_PER_PAGE = 5;
+const bbsPage = ref(0);
+const nushiPage = ref(0);
+const bbsPagePosts = computed(() =>
+  normalPosts.value.slice(bbsPage.value * BBS_PER_PAGE, (bbsPage.value + 1) * BBS_PER_PAGE),
+);
+const nushiPagePosts = computed(() =>
+  nushiPosts.value.slice(nushiPage.value * NUSHI_PER_PAGE, (nushiPage.value + 1) * NUSHI_PER_PAGE),
+);
+const bbsMaxPage = computed(() => Math.max(0, Math.ceil(normalPosts.value.length / BBS_PER_PAGE) - 1));
+const nushiMaxPage = computed(() => Math.max(0, Math.ceil(nushiPosts.value.length / NUSHI_PER_PAGE) - 1));
 function canDeletePost(post: BbsPost): boolean {
   return (house.value?.own ?? false) || post.author_id === props.player.id;
 }
@@ -133,15 +173,18 @@ async function loadBbs() {
 async function doPostBbs(kind: string) {
   if (!house.value) return;
   const body = kind === 'nushi' ? nushiBody.value : bbsBody.value;
+  const title = kind === 'nushi' ? nushiTitle.value : '';
   if (!body.trim()) return;
   busy.value = true;
   try {
-    const after = await api.postBbs(props.player.id, house.value.id, kind, body);
+    const after = await api.postBbs(props.player.id, house.value.id, kind, body, title);
     emit('update', after);
-    if (kind === 'nushi') nushiBody.value = '';
-    else bbsBody.value = '';
+    if (kind === 'nushi') {
+      nushiBody.value = '';
+      nushiTitle.value = '';
+    } else bbsBody.value = '';
     bbs.value = await api.houseBbs(props.player.id, house.value.id);
-    showToast({ variant: 'item', title: '書き込みました', lines: [], icon: 'item' });
+    showToast({ variant: 'item', title: '投稿しました', lines: [], icon: 'item' });
   } catch (e) {
     showToast({
       variant: 'error',
@@ -176,98 +219,153 @@ async function doDeleteBbs(post: BbsPost) {
 <template>
   <div class="house-page facility-page">
     <Toast :toast="toast" @close="closeToast" />
-    <button class="btn back" @click="emit('back')">街に戻る</button>
 
-    <div v-if="message" class="err">{{ message }}</div>
+    <!-- 訪問不可(コンテンツ未公開)や読み込みエラー -->
+    <div v-if="message" class="panel-white err-panel">
+      <div class="err">{{ message }}</div>
+      <button class="btn back" @click="emit('back')">街に戻る</button>
+    </div>
 
-    <div v-if="house" class="panel-white">
-      <div class="visit-head">
+    <template v-if="house">
+      <!-- ヘッダ行: 街に戻る + コンテンツ切替ボタン + さい銭箱(レガシーhoumonの構成) -->
+      <div class="visit-bar">
+        <button class="btn back" @click="emit('back')">街に戻る</button>
+        <div class="content-tabs">
+          <button
+            v-for="c in contents"
+            :key="c.slot"
+            class="tab"
+            :class="{ active: c.slot === selectedSlot }"
+            @click="selectTab(c)"
+          >
+            {{ tabLabel(c) }}
+          </button>
+        </div>
+        <div v-if="!house.own" class="saisen-box">
+          <span class="saisen-label">さい銭箱</span>
+          <select v-model.number="saisenAmount">
+            <option v-for="a in saisenChoices" :key="a" :value="a">{{ yen(a) }}円</option>
+          </select>
+          <button class="btn saisen-btn" :disabled="busy" @click="doSaisen">さい銭する</button>
+        </div>
+      </div>
+
+      <!-- 家の情報(家主・場所・コメント) -->
+      <div class="house-head panel-white">
         <img :src="`/img/${house.exterior}.gif`" :alt="house.exterior" />
         <div class="visit-info">
           <div class="visit-owner">{{ house.owner_name }}さんの家</div>
           <div class="visit-loc">{{ townName(house.town) }}／{{ rowLabel(house.row) }}{{ house.col }}</div>
         </div>
-      </div>
-      <div v-if="house.setumei" class="visit-comment">「{{ house.setumei }}」</div>
-      <div v-if="house.own" class="visit-note">
-        これはあなたの家です。コメントやコンテンツは建設会社の「自分の家」欄で設定できます。
-      </div>
-      <div v-else class="saisen-box">
-        <span class="saisen-label">さい銭箱</span>
-        <select v-model.number="saisenAmount">
-          <option v-for="a in saisenChoices" :key="a" :value="a">{{ yen(a) }}円</option>
-        </select>
-        <button class="btn saisen-btn" :disabled="busy" @click="doSaisen">さい銭する</button>
+        <div v-if="house.setumei" class="visit-comment">「{{ house.setumei }}」</div>
       </div>
 
-      <!-- 公開コンテンツ無し(家主がコンテンツ枠を未設定) -->
-      <div v-if="noContents" class="visit-note">この家には公開されているコンテンツがありません。</div>
+      <!-- 表示中のコンテンツ(1画面1コンテンツ) -->
+      <div v-if="current" class="panel-white content-panel">
+        <div class="vs-title">{{ tabLabel(current) }}</div>
 
-      <!-- お店(コンテンツ枠に「お店」が設定された家だけ表示) -->
-      <div v-if="has('shop') && shop && shop.has_shop" class="visit-shop">
-        <div class="vs-title">{{ slotTitle('shop', shop.title || 'お店') }}（{{ shop.syubetu }}）</div>
-        <div v-if="shop.own" class="visit-note">あなたの店です。仕入れ・設定は建設会社から行えます。</div>
-        <div v-else-if="shop.items.length === 0" class="orosi-empty">売り切れです。</div>
-        <div v-else class="orosi-scroll">
-          <table class="orosi-table">
-            <thead>
-              <tr>
-                <th class="l">品名</th>
-                <th>価格</th>
-                <th>在庫</th>
-                <th>数量</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="it in shop.items" :key="it.item_id">
-                <td class="l">{{ it.name }}</td>
-                <td class="price">{{ yen(it.price) }}円</td>
-                <td>{{ it.stock }}</td>
-                <td>
-                  <input v-model.number="buyQty[it.item_id]" type="number" min="1" :max="it.stock" class="qty-input" />
-                </td>
-                <td>
-                  <button class="btn mini" :disabled="busy" @click="doBuy(it)">買う</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- 掲示板(コンテンツ枠に設定された板だけ表示) -->
-      <div v-if="has('bbs') || has('nushi')" class="visit-bbs">
-        <template v-if="has('bbs')">
-          <div class="vs-title">{{ slotTitle('bbs', '通常掲示板') }}</div>
+        <!-- 通常掲示板 -->
+        <template v-if="current.kind === 'bbs'">
           <div class="bbs-form">
-            <input v-model="bbsBody" maxlength="500" placeholder="コメントを書く" class="bbs-input" />
-            <button class="btn mini" :disabled="busy" @click="doPostBbs('normal')">書き込む</button>
+            <textarea v-model="bbsBody" maxlength="500" rows="3" placeholder="コメントを書く" class="bbs-area"></textarea>
+            <button class="btn mini" :disabled="busy" @click="doPostBbs('normal')">新規投稿</button>
           </div>
           <ul class="bbs-list">
             <li v-if="normalPosts.length === 0" class="bbs-empty">まだ書き込みはありません。</li>
-            <li v-for="p in normalPosts" :key="p.id">
-              <span class="bbs-author">{{ p.author_name }}</span>：{{ p.body }}
-              <button v-if="canDeletePost(p)" class="bbs-del" :disabled="busy" @click="doDeleteBbs(p)">×</button>
+            <li v-for="p in bbsPagePosts" :key="p.id">
+              <div class="bbs-meta">
+                <span class="bbs-author">{{ p.author_name }}</span>
+                <span class="bbs-date">（{{ fmtDate(p.created_at) }}）</span>
+                <button v-if="canDeletePost(p)" class="bbs-del" :disabled="busy" @click="doDeleteBbs(p)">×</button>
+              </div>
+              <div class="bbs-body">{{ p.body }}</div>
             </li>
           </ul>
-        </template>
-        <template v-if="has('nushi')">
-          <div class="vs-title">{{ slotTitle('nushi', '家主板') }}</div>
-          <div v-if="house.own" class="bbs-form">
-            <input v-model="nushiBody" maxlength="500" placeholder="家主板に書く" class="bbs-input" />
-            <button class="btn mini" :disabled="busy" @click="doPostBbs('nushi')">書き込む</button>
+          <div v-if="bbsMaxPage > 0" class="pager">
+            <button class="btn mini" :disabled="bbsPage <= 0" @click="bbsPage--">BACK</button>
+            <span>{{ bbsPage + 1 }} / {{ bbsMaxPage + 1 }}</span>
+            <button class="btn mini" :disabled="bbsPage >= bbsMaxPage" @click="bbsPage++">NEXT</button>
           </div>
-          <ul class="bbs-list">
-            <li v-if="nushiPosts.length === 0" class="bbs-empty">まだ書き込みはありません。</li>
-            <li v-for="p in nushiPosts" :key="p.id">
-              <span class="bbs-author">{{ p.author_name }}</span>：{{ p.body }}
-              <button v-if="canDeletePost(p)" class="bbs-del" :disabled="busy" @click="doDeleteBbs(p)">×</button>
+        </template>
+
+        <!-- 家主板(ブログ風: 記事タイトル+本文。家主のみ投稿・訪問者は閲覧) -->
+        <template v-else-if="current.kind === 'nushi'">
+          <div v-if="house.own" class="bbs-form nushi-form">
+            <input v-model="nushiTitle" maxlength="40" placeholder="記事タイトル" class="bbs-input" />
+            <textarea v-model="nushiBody" maxlength="500" rows="3" placeholder="本文" class="bbs-area"></textarea>
+            <button class="btn mini" :disabled="busy" @click="doPostBbs('nushi')">投稿する</button>
+          </div>
+          <ul class="bbs-list nushi-list">
+            <li v-if="nushiPosts.length === 0" class="bbs-empty">まだ記事はありません。</li>
+            <li v-for="p in nushiPagePosts" :key="p.id">
+              <div class="nushi-title">{{ p.title || '(無題)' }}</div>
+              <div class="bbs-body">{{ p.body }}</div>
+              <div class="bbs-meta">
+                <span class="bbs-date">（{{ fmtDate(p.created_at) }}）</span>
+                <span class="bbs-no">記事no.{{ p.id }}</span>
+                <button v-if="canDeletePost(p)" class="bbs-del" :disabled="busy" @click="doDeleteBbs(p)">×</button>
+              </div>
             </li>
           </ul>
+          <div v-if="nushiMaxPage > 0" class="pager">
+            <button class="btn mini" :disabled="nushiPage <= 0" @click="nushiPage--">BACK</button>
+            <span>{{ nushiPage + 1 }} / {{ nushiMaxPage + 1 }}</span>
+            <button class="btn mini" :disabled="nushiPage >= nushiMaxPage" @click="nushiPage++">NEXT</button>
+          </div>
+        </template>
+
+        <!-- お店(訪問販売) -->
+        <template v-else-if="current.kind === 'shop'">
+          <template v-if="shop && shop.has_shop">
+            <div class="shop-sub">{{ shop.title || 'お店' }}（{{ shop.syubetu }}）</div>
+            <div v-if="shop.own" class="visit-note">あなたの店です。仕入れ・設定は建設会社から行えます。</div>
+            <div v-else-if="shop.items.length === 0" class="orosi-empty">売り切れです。</div>
+            <div v-else class="orosi-scroll">
+              <table class="orosi-table">
+                <thead>
+                  <tr>
+                    <th class="l">品名</th>
+                    <th>価格</th>
+                    <th>在庫</th>
+                    <th>数量</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="it in shop.items" :key="it.item_id">
+                    <td class="l">{{ it.name }}</td>
+                    <td class="price">{{ yen(it.price) }}円</td>
+                    <td>{{ it.stock }}</td>
+                    <td>
+                      <select v-model.number="buyQty[it.item_id]" class="qty-sel">
+                        <option v-for="q in qtyChoices" :key="q" :value="q">{{ q }}</option>
+                      </select>
+                    </td>
+                    <td>
+                      <button class="btn mini" :disabled="busy" @click="doBuy(it)">買う</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+          <div v-else class="orosi-empty">お店は準備中です。</div>
+        </template>
+
+        <!-- 独自URL(IFRAME埋め込み) -->
+        <template v-else-if="current.kind === 'url'">
+          <iframe
+            :src="current.url"
+            class="dokuzi-frame"
+            sandbox="allow-scripts allow-forms allow-popups"
+            referrerpolicy="no-referrer"
+          ></iframe>
+          <div class="visit-note">
+            外部ページ: <a :href="current.url" target="_blank" rel="noopener noreferrer">{{ current.url }}</a>
+          </div>
         </template>
       </div>
-    </div>
+    </template>
   </div>
 </template>
 
@@ -278,38 +376,63 @@ async function doDeleteBbs(post: BbsPost) {
   min-height: 80vh;
 }
 .btn.back {
-  margin-bottom: 6px;
+  flex: 0 0 auto;
 }
 .btn.mini {
   font-size: 11px;
   padding: 2px 8px;
 }
-.err {
-  background: #fff0f0;
-  border: 1px solid #c99;
+.err-panel .err {
   color: #a33;
-  padding: 6px 10px;
-  font-size: 13px;
+  font-size: 14px;
+  margin-bottom: 8px;
 }
 .panel-white {
   background: #fff;
   border: 1px solid #999;
   padding: 8px;
   margin-top: 8px;
-  max-width: 560px;
+  max-width: 640px;
 }
-.visit-head {
+/* ヘッダ行: 街に戻る + コンテンツタブ + さい銭箱(レガシーの1行構成) */
+.visit-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.content-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: 1 1 auto;
+}
+.content-tabs .tab {
+  background: #eef3e8;
+  border: 1px solid #99a;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #234;
+}
+.content-tabs .tab.active {
+  background: #4a7a2a;
+  color: #fff;
+  font-weight: bold;
+}
+.house-head {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
-.visit-head img {
+.house-head img {
   width: 36px;
   height: 36px;
   object-fit: contain;
 }
 .visit-info {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
 }
 .visit-owner {
   font-weight: bold;
@@ -320,7 +443,6 @@ async function doDeleteBbs(post: BbsPost) {
   color: #789;
 }
 .visit-comment {
-  margin-top: 6px;
   font-size: 13px;
   color: #446;
   background: #f4f8ec;
@@ -333,30 +455,32 @@ async function doDeleteBbs(post: BbsPost) {
   color: #888;
 }
 .saisen-box {
-  margin-top: 8px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding-top: 6px;
-  border-top: 1px dashed #cde;
+  gap: 6px;
+  flex: 0 0 auto;
 }
 .saisen-label {
   font-weight: bold;
   color: #b5651d;
+  font-size: 13px;
 }
 .saisen-btn {
   background: #b5651d;
   color: #fff;
   font-weight: bold;
 }
-.visit-shop {
-  margin-top: 8px;
-  padding-top: 6px;
-  border-top: 1px dashed #cde;
-}
-.vs-title {
+.content-panel .vs-title {
   font-weight: bold;
   color: #7a4a00;
+  margin-bottom: 6px;
+  font-size: 15px;
+  border-bottom: 2px solid #e8d8b0;
+  padding-bottom: 4px;
+}
+.shop-sub {
+  font-size: 12px;
+  color: #667;
   margin-bottom: 4px;
 }
 .orosi-empty {
@@ -391,25 +515,30 @@ async function doDeleteBbs(post: BbsPost) {
   color: #cc3300;
   text-align: right;
 }
-.qty-input {
-  width: 50px;
+.qty-sel {
   font-size: 12px;
-  padding: 2px;
-}
-.visit-bbs {
-  margin-top: 8px;
-  padding-top: 6px;
-  border-top: 1px dashed #cde;
 }
 .bbs-form {
   display: flex;
   gap: 6px;
-  margin-bottom: 4px;
+  margin-bottom: 8px;
+  align-items: flex-end;
+}
+.nushi-form {
+  flex-direction: column;
+  align-items: stretch;
 }
 .bbs-input {
+  font-size: 12px;
+  padding: 3px 4px;
+}
+.bbs-area {
   flex: 1 1 auto;
   font-size: 12px;
-  padding: 2px 4px;
+  padding: 3px 4px;
+  resize: vertical;
+  width: 100%;
+  box-sizing: border-box;
 }
 .bbs-list {
   list-style: none;
@@ -418,13 +547,35 @@ async function doDeleteBbs(post: BbsPost) {
   font-size: 12px;
 }
 .bbs-list li {
-  padding: 2px 0;
+  padding: 6px 0;
   border-bottom: 1px solid #eee;
   color: #445;
+}
+.bbs-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 .bbs-author {
   font-weight: bold;
   color: #367;
+}
+.bbs-date {
+  color: #999;
+  font-size: 11px;
+}
+.bbs-no {
+  color: #aaa;
+  font-size: 10px;
+}
+.bbs-body {
+  white-space: pre-line;
+  margin-top: 2px;
+}
+.nushi-title {
+  font-weight: bold;
+  color: #634;
+  font-size: 13px;
 }
 .bbs-del {
   border: none;
@@ -435,5 +586,18 @@ async function doDeleteBbs(post: BbsPost) {
 }
 .bbs-empty {
   color: #999;
+}
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #667;
+}
+.dokuzi-frame {
+  width: 100%;
+  height: 420px;
+  border: 1px solid #ccc;
+  background: #fff;
 }
 </style>

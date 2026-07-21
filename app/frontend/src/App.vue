@@ -118,7 +118,7 @@ const facilityTitles: Record<string, string> = {
     <JobChangeView v-else-if="view === 'jobchange'" :player="player" @update="onUpdate" @back="back" />
     <SyokudouView v-else-if="view === 'syokudou'" :player="player" @update="onUpdate" @back="back" />
     <HanbaiView v-else-if="view === 'hanbai'" :player="player" @update="onUpdate" @back="back" />
-    <KentikuView v-else-if="view === 'kentiku'" :player="player" @update="onUpdate" @back="back" />
+    <KentikuView v-else-if="view === 'kentiku'" :player="player" @update="onUpdate" @back="back" @visit="(id) => navigate('house', id)" />
     <HouseView v-else-if="view === 'house' && houseId" :player="player" :house-id="houseId" @update="onUpdate" @back="back" />
     <FacilityMenuView
       v-else-if="view === 'gym'"
