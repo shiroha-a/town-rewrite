@@ -3541,15 +3541,92 @@ func TestBuyFromHouseShop(t *testing.T) {
 	if _, c := buyFromShop(t, srv.URL, owner.ID, houseID, itemID, 1, "buy2"); c != http.StatusUnprocessableEntity {
 		t.Errorf("self buy: %d, want 422", c)
 	}
-	// 在庫不足(残1に5個)。
-	if _, c := buyFromShop(t, srv.URL, visitor.ID, houseID, itemID, 5, "buy3"); c != http.StatusUnprocessableEntity {
+	// 在庫不足(残1に4個)。
+	if _, c := buyFromShop(t, srv.URL, visitor.ID, houseID, itemID, 4, "buy3"); c != http.StatusUnprocessableEntity {
 		t.Errorf("over stock: %d, want 422", c)
+	}
+
+	// ご近所キャッシュバック: 買い手が店と同じ街(4)に家を建てると単価10%引き。
+	seedPlots(t, pool, [][3]int{{4, 1, 5}})
+	creditSavings(t, pool, visitor.ID, 6_000_000)
+	if _, c := buildHouse(t, srv.URL, visitor.ID, 4, 1, 5, "house1", 3, "vb1"); c != http.StatusOK {
+		t.Fatalf("visitor build: %d", c)
+	}
+	moneyBefore := 1_500_000 - shelf*2
+	cashback := (shelf / 10) * 1
+	br, got2, c := buyFromShopFull(t, srv.URL, visitor.ID, houseID, itemID, 1, "cash", "buy4")
+	if c != http.StatusOK {
+		t.Fatalf("neighbor buy: %d", c)
+	}
+	if br.Cashback != cashback {
+		t.Errorf("cashback = %d, want %d", br.Cashback, cashback)
+	}
+	if got2.Money != moneyBefore-(shelf-cashback) {
+		t.Errorf("neighbor buyer money = %d, want %d", got2.Money, moneyBefore-(shelf-cashback))
+	}
+
+	// クレジット払い: クレジットカード所持で普通口座から支払える。
+	if _, c := shiire(t, srv.URL, owner.ID, houseID, itemID, 2, "s2"); c != http.StatusOK {
+		t.Fatalf("restock: %d", c)
+	}
+	// カード無しはエラー。
+	if _, _, c := buyFromShopFull(t, srv.URL, visitor.ID, houseID, itemID, 1, "credit", "buy5c"); c != http.StatusUnprocessableEntity {
+		t.Errorf("credit without card: %d, want 422", c)
+	}
+	giveItem(t, pool, visitor.ID, "クレジットカード", 1)
+	var savBefore int64
+	if err := pool.QueryRow(ctx,
+		`SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account=$1`,
+		"savings:"+strconv.FormatInt(visitor.ID, 10)).Scan(&savBefore); err != nil {
+		t.Fatalf("visitor savings: %v", err)
+	}
+	br2, got3, c := buyFromShopFull(t, srv.URL, visitor.ID, houseID, itemID, 1, "credit", "buy6")
+	if c != http.StatusOK {
+		t.Fatalf("credit buy: %d", c)
+	}
+	if br2.Method != "credit" {
+		t.Errorf("method = %s, want credit", br2.Method)
+	}
+	if got3.Savings != savBefore-br2.Paid {
+		t.Errorf("savings after credit = %d, want %d", got3.Savings, savBefore-br2.Paid)
 	}
 
 	led := ledger.New(pool)
 	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
 		t.Errorf("ledger zero-sum broken: %d", sum)
 	}
+}
+
+// buyResultT mirrors the buy_result payload of the shop-buy response.
+type buyResultT struct {
+	Total    int64  `json:"total"`
+	Cashback int64  `json:"cashback"`
+	Paid     int64  `json:"paid"`
+	Method   string `json:"method"`
+}
+
+// buyFromShopFull buys with an explicit pay method and returns the buy_result.
+func buyFromShopFull(t *testing.T, base string, playerID, houseID, itemID int64, qty int, method, idemKey string) (buyResultT, playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"house_id": houseID, "item_id": itemID, "qty": qty, "pay_method": method, "idempotency_key": idemKey,
+	})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/shop/buy",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("buy post: %v", err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		playerResp
+		BuyResult buyResultT `json:"buy_result"`
+	}
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return out.BuyResult, out.playerResp, resp.StatusCode
 }
 
 func postBbs(t *testing.T, base string, playerID, houseID int64, kind, body, idemKey string) (playerResp, int) {

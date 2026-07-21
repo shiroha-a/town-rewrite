@@ -32,10 +32,11 @@ type BuildingState struct {
 // HouseContent is one configured in-house content slot (コンテンツ枠)。訪問者には
 // 設定された枠のコンテンツだけが枠順に表示される(一番上の枠が入室時の初期表示)。
 type HouseContent struct {
-	Slot  int    `json:"slot"`
-	Kind  string `json:"kind"` // 'bbs'=通常掲示板 / 'shop'=お店 / 'nushi'=家主板 / 'url'=独自URL
-	Title string `json:"title"`
-	URL   string `json:"url"` // kind='url' の埋め込みURL
+	Slot    int    `json:"slot"`
+	Kind    string `json:"kind"` // 'bbs'=通常掲示板 / 'shop'=お店 / 'nushi'=家主板 / 'url'=独自URL
+	Title   string `json:"title"`
+	URL     string `json:"url"`     // kind='url' の埋め込みURL
+	Comment string `json:"comment"` // タイトル下コメント(リード文)
 }
 
 // HouseCell is a house on the map (any owner), used for grid rendering and
@@ -147,7 +148,7 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 // house id and ordered by slot.
 func (s *Service) loadHouseContents(ctx context.Context) (map[int64][]HouseContent, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT house_id, slot, kind, title, url FROM house_contents ORDER BY house_id, slot`)
+		`SELECT house_id, slot, kind, title, url, comment FROM house_contents ORDER BY house_id, slot`)
 	if err != nil {
 		return nil, fmt.Errorf("list house contents: %w", err)
 	}
@@ -158,7 +159,7 @@ func (s *Service) loadHouseContents(ctx context.Context) (map[int64][]HouseConte
 			houseID int64
 			c       HouseContent
 		)
-		if err := rows.Scan(&houseID, &c.Slot, &c.Kind, &c.Title, &c.URL); err != nil {
+		if err := rows.Scan(&houseID, &c.Slot, &c.Kind, &c.Title, &c.URL, &c.Comment); err != nil {
 			return nil, fmt.Errorf("scan house content: %w", err)
 		}
 		out[houseID] = append(out[houseID], c)
@@ -364,6 +365,16 @@ type HouseShopItem struct {
 	Category string `json:"category"`
 	Price    int64  `json:"price"` // 店頭価格(個別価格 or 仕入れ値×掛け率)
 	Stock    int    `json:"stock"`
+	// 商品詳細(レガシー店表示の全カラム相当)。
+	Money          int64          `json:"money"`           // 使用時のお金増減
+	Params         map[string]int `json:"params"`          // 使用時の上昇パラメータ
+	CalorieG       int            `json:"calorie_g"`       // カロリー(g換算)
+	Durability     int            `json:"durability"`      // 耐久
+	DurabilityUnit string         `json:"durability_unit"` // 'use'(回)/'day'(日)
+	IntervalMin    int            `json:"interval_min"`    // 使用間隔(分)
+	BodyCost       int            `json:"body_cost"`       // 身体消費
+	NouCost        int            `json:"nou_cost"`        // 頭脳消費
+	Owned          int            `json:"owned"`           // 閲覧者の所持残数(未所持は0)
 }
 
 // HouseShopView is a house shop as seen by a visitor (店表示 フェーズ4c).
@@ -434,6 +445,29 @@ func (s *Service) HouseShop(ctx context.Context, viewerID, houseID int64) (*Hous
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate shop stock: %w", err)
+	}
+	rows.Close()
+	// 商品詳細(効果/カロリー/耐久/間隔/消費)と閲覧者の所持残数を付与する
+	// (レガシー店表示の全カラム+所持中表示)。
+	for i := range view.Items {
+		it := &view.Items[i]
+		var (
+			effJSON []byte
+			owned   *int
+		)
+		if err := s.pool.QueryRow(ctx,
+			`SELECT ci.effect, ci.calorie_g, GREATEST(ci.durability, 1), ci.durability_unit,
+			        ci.use_interval_min, ci.body_cost, ci.nou_cost,
+			        (SELECT remaining_uses FROM player_items WHERE player_id = $2 AND item_id = ci.id)
+			 FROM content_items ci WHERE ci.id = $1`, it.ItemID, viewerID).
+			Scan(&effJSON, &it.CalorieG, &it.Durability, &it.DurabilityUnit,
+				&it.IntervalMin, &it.BodyCost, &it.NouCost, &owned); err != nil {
+			return nil, fmt.Errorf("item detail: %w", err)
+		}
+		it.Money, it.Params = effectSummary(effJSON)
+		if owned != nil {
+			it.Owned = *owned
+		}
 	}
 	return view, nil
 }

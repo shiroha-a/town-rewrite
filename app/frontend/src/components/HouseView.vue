@@ -12,6 +12,7 @@ import {
 } from '../api';
 import Toast from './Toast.vue';
 import { useToast } from '../toast';
+import { PARAM_LABEL } from '../params';
 
 // 家訪問(レガシー original_house.cgi houmon)。タブ切替型:
 // 公開コンテンツ枠ごとにボタンが並び、1画面に1コンテンツを表示する。
@@ -25,6 +26,7 @@ const message = ref('');
 const { toast, showToast, closeToast } = useToast();
 
 const house = ref<HouseCell | null>(null);
+const allHouses = ref<HouseCell[]>([]);
 const townList = ref<Town[]>([]);
 const townName = (no: number) => townList.value.find((t) => t.no === no)?.name ?? '';
 const rowLabel = (row: number) => String.fromCharCode(65 + row);
@@ -51,6 +53,7 @@ onMounted(async () => {
   try {
     const [houses, towns] = await Promise.all([api.houses(props.player.id), api.towns()]);
     townList.value = towns;
+    allHouses.value = houses;
     house.value = houses.find((h) => h.id === props.houseId) ?? null;
     if (!house.value) {
       message.value = 'その家は見つかりませんでした。';
@@ -110,6 +113,25 @@ async function doSaisen() {
 const shop = ref<HouseShopView | null>(null);
 const buyQty = ref<Record<number, number>>({});
 const qtyChoices = [1, 2, 3, 4];
+// 支払い方法: 現金 or クレジット(クレジットカード所持で普通口座払い)。
+const payMethod = ref<'cash' | 'credit'>('cash');
+const CREDIT_CARDS = ['クレジットカード', 'ゴールドクレジットカード', 'スペシャルクレジットカード'];
+const hasCreditCard = computed(() =>
+  props.player.items.some((it) => CREDIT_CARDS.includes(it.name) && it.remaining_uses > 0),
+);
+// ご近所割引: 自分の家(最初の家)がこの店の街にあれば単価10%引き(表示用の目安)。
+const neighborDiscount = computed(
+  () => allHouses.value.some((h) => h.own && h.town === house.value?.town) && !house.value?.own,
+);
+// 商品の使用効果を「国+5 体+3 +500円」形式で要約する。
+function effectText(it: HouseShopItem): string {
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(it.params)) {
+    if (v !== 0) parts.push(`${PARAM_LABEL[k] ?? k}${v > 0 ? '+' : ''}${v}`);
+  }
+  if (it.money !== 0) parts.push(`${it.money > 0 ? '+' : ''}${yen(it.money)}円`);
+  return parts.join(' ') || '－';
+}
 async function loadShop() {
   shop.value = null;
   try {
@@ -123,10 +145,13 @@ async function doBuy(it: HouseShopItem) {
   const qty = buyQty.value[it.item_id] || 1;
   busy.value = true;
   try {
-    const after = await api.buyFromHouseShop(props.player.id, house.value.id, it.item_id, qty);
+    const after = await api.buyFromHouseShop(props.player.id, house.value.id, it.item_id, qty, payMethod.value);
     emit('update', after);
     shop.value = await api.houseShop(props.player.id, house.value.id);
-    showToast({ variant: 'item', title: '買いました', lines: [`${it.name} を${qty}個 買いました`], icon: 'item' });
+    const br = after.buy_result;
+    const lines = [`${it.name} を${qty}個（${br.method === 'credit' ? 'クレジット・普通口座' : '現金'} ${yen(br.paid)}円）`];
+    if (br.cashback > 0) lines.push(`ご近所キャッシュバック ${yen(br.cashback)}円引き`);
+    showToast({ variant: 'item', title: '買いました', lines, icon: 'item' });
   } catch (e) {
     showToast({
       variant: 'error',
@@ -263,6 +288,7 @@ async function doDeleteBbs(post: BbsPost) {
       <!-- 表示中のコンテンツ(1画面1コンテンツ) -->
       <div v-if="current" class="panel-white content-panel">
         <div class="vs-title">{{ tabLabel(current) }}</div>
+        <div v-if="current.comment" class="content-lead">{{ current.comment }}</div>
 
         <!-- 通常掲示板 -->
         <template v-if="current.kind === 'bbs'">
@@ -318,36 +344,56 @@ async function doDeleteBbs(post: BbsPost) {
         <template v-else-if="current.kind === 'shop'">
           <template v-if="shop && shop.has_shop">
             <div class="shop-sub">{{ shop.title || 'お店' }}（{{ shop.syubetu }}）</div>
-            <div v-if="shop.own" class="visit-note">あなたの店です。仕入れ・設定は建設会社から行えます。</div>
+            <div v-if="shop.own" class="visit-note">あなたの店です。仕入れ・設定は「家の設定」から行えます。</div>
             <div v-else-if="shop.items.length === 0" class="orosi-empty">売り切れです。</div>
-            <div v-else class="orosi-scroll">
-              <table class="orosi-table">
-                <thead>
-                  <tr>
-                    <th class="l">品名</th>
-                    <th>価格</th>
-                    <th>在庫</th>
-                    <th>数量</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="it in shop.items" :key="it.item_id">
-                    <td class="l">{{ it.name }}</td>
-                    <td class="price">{{ yen(it.price) }}円</td>
-                    <td>{{ it.stock }}</td>
-                    <td>
-                      <select v-model.number="buyQty[it.item_id]" class="qty-sel">
-                        <option v-for="q in qtyChoices" :key="q" :value="q">{{ q }}</option>
-                      </select>
-                    </td>
-                    <td>
-                      <button class="btn mini" :disabled="busy" @click="doBuy(it)">買う</button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+            <template v-else>
+              <div class="pay-row">
+                <span class="pay-label">支払い方法</span>
+                <select v-model="payMethod" class="qty-sel">
+                  <option value="cash">現金</option>
+                  <option value="credit" :disabled="!hasCreditCard">クレジット（普通口座）{{ hasCreditCard ? '' : '※カード未所持' }}</option>
+                </select>
+                <span v-if="neighborDiscount" class="neighbor-note">ご近所割引: この街の住人は単価10%引き</span>
+              </div>
+              <div class="orosi-scroll">
+                <table class="orosi-table">
+                  <thead>
+                    <tr>
+                      <th class="l">品名</th>
+                      <th class="l">効果</th>
+                      <th>ｶﾛﾘｰ</th>
+                      <th>耐久</th>
+                      <th>間隔</th>
+                      <th>消費(身/頭)</th>
+                      <th>価格</th>
+                      <th>在庫</th>
+                      <th>数量</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="it in shop.items" :key="it.item_id" :class="{ owned: it.owned > 0 }">
+                      <td class="l">{{ it.name }}<span v-if="it.owned > 0" class="owned-count">({{ it.owned }})</span></td>
+                      <td class="l fx">{{ effectText(it) }}</td>
+                      <td>{{ it.calorie_g || '－' }}</td>
+                      <td>{{ it.durability }}{{ it.durability_unit === 'day' ? '日' : '回' }}</td>
+                      <td>{{ it.interval_min ? it.interval_min + '分' : '－' }}</td>
+                      <td>{{ it.body_cost || 0 }}/{{ it.nou_cost || 0 }}</td>
+                      <td class="price">{{ yen(it.price) }}円</td>
+                      <td>{{ it.stock }}</td>
+                      <td>
+                        <select v-model.number="buyQty[it.item_id]" class="qty-sel">
+                          <option v-for="q in qtyChoices" :key="q" :value="q">{{ q }}</option>
+                        </select>
+                      </td>
+                      <td>
+                        <button class="btn mini" :disabled="busy" @click="doBuy(it)">買う</button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
           </template>
           <div v-else class="orosi-empty">お店は準備中です。</div>
         </template>
@@ -482,6 +528,44 @@ async function doDeleteBbs(post: BbsPost) {
   font-size: 12px;
   color: #667;
   margin-bottom: 4px;
+}
+.content-lead {
+  font-size: 12px;
+  color: #557;
+  white-space: pre-line;
+  margin-bottom: 6px;
+}
+.pay-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.pay-label {
+  font-size: 12px;
+  font-weight: bold;
+  color: #445;
+}
+.neighbor-note {
+  font-size: 11px;
+  color: #2a7a2a;
+  font-weight: bold;
+}
+.orosi-table tr.owned td {
+  background: #f2fbe8;
+}
+.owned-count {
+  color: #2a7a2a;
+  font-weight: bold;
+  font-size: 11px;
+  margin-left: 2px;
+}
+.orosi-table td.fx {
+  color: #367;
+  font-size: 11px;
+  white-space: normal;
+  min-width: 90px;
 }
 .orosi-empty {
   font-size: 12px;

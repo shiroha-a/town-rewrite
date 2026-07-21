@@ -153,10 +153,11 @@ func (s *Server) houseComment(w http.ResponseWriter, r *http.Request) {
 type houseContentsReq struct {
 	HouseID  int64 `json:"house_id"`
 	Contents []struct {
-		Slot  int    `json:"slot"`
-		Kind  string `json:"kind"`
-		Title string `json:"title"`
-		URL   string `json:"url"`
+		Slot    int    `json:"slot"`
+		Kind    string `json:"kind"`
+		Title   string `json:"title"`
+		URL     string `json:"url"`
+		Comment string `json:"comment"`
 	} `json:"contents"`
 	IdempotencyKey string `json:"idempotency_key"`
 }
@@ -179,7 +180,7 @@ func (s *Server) houseContents(w http.ResponseWriter, r *http.Request) {
 	}
 	contents := make([]action.HouseContentSlot, 0, len(req.Contents))
 	for _, c := range req.Contents {
-		contents = append(contents, action.HouseContentSlot{Slot: c.Slot, Kind: c.Kind, Title: c.Title, URL: c.URL})
+		contents = append(contents, action.HouseContentSlot{Slot: c.Slot, Kind: c.Kind, Title: c.Title, URL: c.URL, Comment: c.Comment})
 	}
 	p, err := s.actions.DoSetHouseContents(r.Context(), id, req.HouseID, contents, req.IdempotencyKey)
 	writeFacilityResult(w, p, err)
@@ -310,7 +311,21 @@ type buyHouseShopReq struct {
 	HouseID        int64  `json:"house_id"`
 	ItemID         int64  `json:"item_id"`
 	Qty            int    `json:"qty"`
+	PayMethod      string `json:"pay_method"` // "cash"(既定)/"credit"
 	IdempotencyKey string `json:"idempotency_key"`
+}
+
+type buyResultResp struct {
+	Total    int64  `json:"total"`
+	Cashback int64  `json:"cashback"`
+	Paid     int64  `json:"paid"`
+	Method   string `json:"method"`
+}
+
+// buyResp is the player state plus the purchase summary (cashback etc.).
+type buyResp struct {
+	playerResp
+	BuyResult buyResultResp `json:"buy_result"`
 }
 
 // buyFromHouseShop buys an item from a house shop (訪問販売).
@@ -329,8 +344,20 @@ func (s *Server) buyFromHouseShop(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "house_id and item_id are required")
 		return
 	}
-	p, err := s.actions.DoBuyFromHouseShop(r.Context(), id, req.HouseID, req.ItemID, req.Qty, req.IdempotencyKey)
-	writeFacilityResult(w, p, err)
+	p, result, err := s.actions.DoBuyFromHouseShop(r.Context(), id, req.HouseID, req.ItemID, req.Qty, req.PayMethod, req.IdempotencyKey)
+	if err != nil {
+		writeFacilityResult(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, buyResp{
+		playerResp: toResp(p),
+		BuyResult: buyResultResp{
+			Total:    result.Total,
+			Cashback: result.Cashback,
+			Paid:     result.Paid,
+			Method:   result.Method,
+		},
+	})
 }
 
 // houseBbs returns a house's bulletin-board posts (誰でも閲覧可).

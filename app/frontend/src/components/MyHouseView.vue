@@ -57,7 +57,7 @@ const CONTENT_KINDS = [
   { value: 'url', label: '独自URL' },
   { value: 'nushi', label: '家主のみ書ける掲示板' },
 ];
-const contentDraft = ref<{ kind: string; title: string; url: string }[]>([]);
+const contentDraft = ref<{ kind: string; title: string; url: string; comment: string }[]>([]);
 // --- 店設定 ---
 const shopDraft = ref<{ title: string; syubetu: string; markup: number }>({
   title: '',
@@ -69,10 +69,10 @@ function syncDrafts() {
   const h = house.value;
   if (!h) return;
   commentDraft.value = h.setumei ?? '';
-  const rows: { kind: string; title: string; url: string }[] = [];
+  const rows: { kind: string; title: string; url: string; comment: string }[] = [];
   for (let s = 0; s < h.slots; s++) {
     const c = h.contents.find((x) => x.slot === s);
-    rows.push({ kind: c?.kind ?? '', title: c?.title ?? '', url: c?.url ?? '' });
+    rows.push({ kind: c?.kind ?? '', title: c?.title ?? '', url: c?.url ?? '', comment: c?.comment ?? '' });
   }
   contentDraft.value = rows;
   shopDraft.value = {
@@ -127,7 +127,7 @@ async function saveContents() {
   const h = house.value;
   if (!h) return;
   await run(async () => {
-    const contents = contentDraft.value.map((r, s) => ({ slot: s, kind: r.kind, title: r.title, url: r.url }));
+    const contents = contentDraft.value.map((r, s) => ({ slot: s, kind: r.kind, title: r.title, url: r.url, comment: r.comment }));
     const after = await api.setHouseContents(props.player.id, h.id, contents);
     emit('update', after);
     await refresh();
@@ -393,6 +393,7 @@ async function doSell() {
             <option v-for="k in CONTENT_KINDS" :key="k.value" :value="k.value">{{ k.label }}</option>
           </select>
           <label v-if="row.kind" class="fld">タイトル<input v-model="row.title" maxlength="20" class="inp" /></label>
+          <input v-if="row.kind" v-model="row.comment" maxlength="100" class="inp lead" placeholder="タイトル下コメント(省略可)" />
           <input v-if="row.kind === 'url'" v-model="row.url" class="inp url" placeholder="https://…(埋め込むURL)" />
         </div>
         <button class="btn mini primary-btn" :disabled="busy" @click="saveContents">決定</button>
@@ -545,6 +546,9 @@ async function doSell() {
 }
 .inp.url {
   min-width: 220px;
+}
+.inp.lead {
+  min-width: 200px;
 }
 .inp-num {
   width: 60px;

@@ -417,21 +417,41 @@ func (s *Service) DoShiire(ctx context.Context, playerID, houseID, itemID int64,
 // maxBuyQty is the legacy per-purchase quantity limit (item_kosuuseigen).
 const maxBuyQty = 4
 
-func (s *Service) DoBuyFromHouseShop(ctx context.Context, buyerID, houseID, itemID int64, qty int, idempotencyKey string) (*player.Player, error) {
+// creditCardNames are the items that enable credit (bank) payment at shops
+// (レガシーのクレジット系アイテム)。
+var creditCardNames = []string{"クレジットカード", "ゴールドクレジットカード", "スペシャルクレジットカード"}
+
+// HouseBuyResult summarizes a shop purchase for the result toast.
+type HouseBuyResult struct {
+	Total    int64  // 割引前の合計(店頭価格×個数)
+	Cashback int64  // ご近所キャッシュバック(単価10%×個数)
+	Paid     int64  // 実際に支払った額
+	Method   string // "cash"/"credit"
+}
+
+func (s *Service) DoBuyFromHouseShop(ctx context.Context, buyerID, houseID, itemID int64, qty int, payMethod, idempotencyKey string) (*player.Player, *HouseBuyResult, error) {
 	if qty <= 0 {
 		qty = 1
 	}
 	if qty > maxBuyQty {
-		return nil, &ConditionError{Message: fmt.Sprintf("一度に買えるのは%d個までです。", maxBuyQty)}
+		return nil, nil, &ConditionError{Message: fmt.Sprintf("一度に買えるのは%d個までです。", maxBuyQty)}
 	}
-	return s.runAction(ctx, buyerID, "house_shop_buy", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+	if payMethod == "" {
+		payMethod = "cash"
+	}
+	if payMethod != "cash" && payMethod != "credit" {
+		return nil, nil, &ConditionError{Message: "支払い方法が正しくありません。"}
+	}
+	result := &HouseBuyResult{Method: payMethod}
+	p, err := s.runAction(ctx, buyerID, "house_shop_buy", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
 		var (
-			ownerID int64
-			markup  float64
+			ownerID  int64
+			markup   float64
+			shopTown int
 		)
 		err := tx.QueryRow(ctx,
-			`SELECT h.owner_id, hs.markup FROM house_shops hs JOIN player_houses h ON h.id = hs.house_id
-			 WHERE hs.house_id = $1`, houseID).Scan(&ownerID, &markup)
+			`SELECT h.owner_id, hs.markup, h.town FROM house_shops hs JOIN player_houses h ON h.id = hs.house_id
+			 WHERE hs.house_id = $1`, houseID).Scan(&ownerID, &markup, &shopTown)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return &ConditionError{Message: "その家に店がありません。"}
 		}
@@ -471,7 +491,44 @@ func (s *Service) DoBuyFromHouseShop(ctx context.Context, buyerID, houseID, item
 			price = int64(float64(buyPrice) * markup)
 		}
 		cost := price * int64(qty)
-		if state.Money < cost {
+		// ご近所キャッシュバック(レガシー buy_syouhin): 買い手の居住街(最初に建てた家の街)
+		// が店の街と同じなら、単価の10%×個数を割引。店主の売上も同額減る。
+		var cashback int64
+		var residenceTown *int
+		if err := tx.QueryRow(ctx,
+			`SELECT town FROM player_houses WHERE owner_id = $1 ORDER BY built_at, id LIMIT 1`,
+			buyerID).Scan(&residenceTown); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("residence town: %w", err)
+		}
+		if residenceTown != nil && *residenceTown == shopTown {
+			cashback = (price / 10) * int64(qty)
+		}
+		paid := cost - cashback
+		// 支払い方法: 現金 or クレジット(クレジットカード所持で普通口座から)。
+		buyerAccount := ledger.PlayerAccount(buyerID)
+		if payMethod == "credit" {
+			var hasCard bool
+			if err := tx.QueryRow(ctx,
+				`SELECT EXISTS(
+				   SELECT 1 FROM player_items pi JOIN content_items ci ON ci.id = pi.item_id
+				   WHERE pi.player_id = $1 AND pi.remaining_uses > 0 AND ci.name = ANY($2))`,
+				buyerID, creditCardNames).Scan(&hasCard); err != nil {
+				return fmt.Errorf("check credit card: %w", err)
+			}
+			if !hasCard {
+				return &ConditionError{Message: "クレジットカードを持っていません。"}
+			}
+			var savings int64
+			if err := tx.QueryRow(ctx,
+				`SELECT COALESCE(SUM(delta), 0) FROM ledger_entry WHERE account = $1`,
+				ledger.SavingsAccount(buyerID)).Scan(&savings); err != nil {
+				return fmt.Errorf("read savings: %w", err)
+			}
+			if savings < paid {
+				return &ConditionError{Message: "普通口座の残高が足りません。"}
+			}
+			buyerAccount = ledger.SavingsAccount(buyerID)
+		} else if state.Money < paid {
 			return &ConditionError{Message: "お金が足りません。"}
 		}
 		var durability, maxSets int
@@ -490,13 +547,18 @@ func (s *Service) DoBuyFromHouseShop(ctx context.Context, buyerID, houseID, item
 		if maxSets > 0 && current+add > maxSets*durability {
 			return &ConditionError{Message: fmt.Sprintf("これ以上は持てません(最大%dセット)。", maxSets)}
 		}
-		// 代金は店主の普通口座へ。
-		if err := s.ledger.PostTx(ctx, tx, "house_shop_buy", "", []ledger.Entry{
-			{Account: ledger.PlayerAccount(buyerID), Delta: -cost},
-			{Account: ledger.SavingsAccount(ownerID), Delta: cost},
-		}); err != nil {
-			return fmt.Errorf("pay: %w", err)
+		// 代金(キャッシュバック控除後)は店主の普通口座へ。
+		if paid > 0 {
+			if err := s.ledger.PostTx(ctx, tx, "house_shop_buy", "", []ledger.Entry{
+				{Account: buyerAccount, Delta: -paid},
+				{Account: ledger.SavingsAccount(ownerID), Delta: paid},
+			}); err != nil {
+				return fmt.Errorf("pay: %w", err)
+			}
 		}
+		result.Total = cost
+		result.Cashback = cashback
+		result.Paid = paid
 		if _, err := tx.Exec(ctx,
 			`UPDATE house_shop_stock SET stock = stock - $3 WHERE house_id = $1 AND item_id = $2`,
 			houseID, itemID, qty); err != nil {
@@ -511,6 +573,10 @@ func (s *Service) DoBuyFromHouseShop(ctx context.Context, buyerID, houseID, item
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return p, result, nil
 }
 
 // maxBbsBodyLen caps a bulletin-board post body length.
@@ -572,10 +638,11 @@ func (s *Service) DoPostBbs(ctx context.Context, playerID, houseID int64, kind, 
 
 // HouseContentSlot is one requested content slot assignment (コンテンツ枠設定)。
 type HouseContentSlot struct {
-	Slot  int
-	Kind  string // ""=非公開 / "bbs" / "shop" / "nushi" / "url"
-	Title string
-	URL   string // kind="url" の埋め込みURL(http/httpsのみ)
+	Slot    int
+	Kind    string // ""=非公開 / "bbs" / "shop" / "nushi" / "url"
+	Title   string
+	URL     string // kind="url" の埋め込みURL(http/httpsのみ)
+	Comment string // タイトル下コメント(リード文)
 }
 
 const maxContentTitleLen = 20
@@ -589,6 +656,9 @@ func (s *Service) DoSetHouseContents(ctx context.Context, playerID, houseID int6
 		}
 		if utf8.RuneCountInString(c.Title) > maxContentTitleLen {
 			return nil, &ConditionError{Message: fmt.Sprintf("タイトルは%d文字以内で入力してください。", maxContentTitleLen)}
+		}
+		if utf8.RuneCountInString(c.Comment) > 100 {
+			return nil, &ConditionError{Message: "コメントは100文字以内で入力してください。"}
 		}
 		// 独自URLはhttp/httpsのみ許可(javascript:等の混入防止)。
 		if c.Kind == "url" {
@@ -632,8 +702,8 @@ func (s *Service) DoSetHouseContents(ctx context.Context, playerID, houseID int6
 				continue
 			}
 			if _, err := tx.Exec(ctx,
-				`INSERT INTO house_contents (house_id, slot, kind, title, url) VALUES ($1, $2, $3, $4, $5)`,
-				houseID, c.Slot, c.Kind, strings.TrimSpace(c.Title), strings.TrimSpace(c.URL)); err != nil {
+				`INSERT INTO house_contents (house_id, slot, kind, title, url, comment) VALUES ($1, $2, $3, $4, $5, $6)`,
+				houseID, c.Slot, c.Kind, strings.TrimSpace(c.Title), strings.TrimSpace(c.URL), strings.TrimSpace(c.Comment)); err != nil {
 				return fmt.Errorf("insert content: %w", err)
 			}
 		}

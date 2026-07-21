@@ -419,6 +419,15 @@ export interface MoveResult {
 }
 export type MoveResp = Player & { move_result: MoveResult };
 
+// 家の店の購入結果(ご近所キャッシュバック等)。
+export interface BuyResult {
+  total: number;
+  cashback: number;
+  paid: number;
+  method: string; // 'cash'/'credit'
+}
+export type BuyResp = Player & { buy_result: BuyResult };
+
 // ワープ料金(円)。バックエンド action.WarpFee と一致させること。
 export const WARP_FEE = 100000;
 
@@ -638,6 +647,7 @@ export interface HouseContent {
   kind: string; // 'bbs'=通常掲示板 / 'shop'=お店 / 'nushi'=家主板 / 'url'=独自URL
   title: string;
   url: string; // kind='url' の埋め込みURL
+  comment: string; // タイトル下コメント(リード文)
 }
 export interface HouseCell {
   id: number;
@@ -706,6 +716,15 @@ export interface HouseShopItem {
   category: string;
   price: number;
   stock: number;
+  money: number;
+  params: Record<string, number>;
+  calorie_g: number;
+  durability: number;
+  durability_unit: string; // 'use'(回)/'day'(日)
+  interval_min: number;
+  body_cost: number;
+  nou_cost: number;
+  owned: number; // 自分の所持残数(未所持0)
 }
 export interface HouseShopView {
   has_shop: boolean;
@@ -1047,11 +1066,12 @@ export const api = {
     }),
   houseShop: (id: number, houseId: number) =>
     request<HouseShopView>('GET', `/players/${id}/building/shop?house_id=${houseId}`),
-  buyFromHouseShop: (id: number, houseId: number, itemId: number, qty: number) =>
-    request<Player>('POST', `/players/${id}/building/shop/buy`, {
+  buyFromHouseShop: (id: number, houseId: number, itemId: number, qty: number, payMethod = 'cash') =>
+    request<BuyResp>('POST', `/players/${id}/building/shop/buy`, {
       house_id: houseId,
       item_id: itemId,
       qty,
+      pay_method: payMethod,
       idempotency_key: newIdempotencyKey(),
     }),
   houseBbs: (id: number, houseId: number) =>
