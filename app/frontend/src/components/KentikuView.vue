@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { api, type Player, type BuildingState, type TownFacility } from '../api';
+import { api, assetUrl, type Player, type BuildingState, type TownFacility, type TownAsset } from '../api';
 import Toast from './Toast.vue';
 import { useToast } from '../toast';
 
@@ -12,6 +12,7 @@ const emit = defineEmits<{ update: [player: Player]; back: [] }>();
 const yen = (n: number) => n.toLocaleString('ja-JP');
 const state = ref<BuildingState | null>(null);
 const facilities = ref<TownFacility[]>([]); // 全街の施設(選択中の街ぶんを描画)
+const assets = ref<TownAsset[]>([]); // 背景アセット(装飾レイヤー)
 const message = ref('');
 const busy = ref(false);
 const { toast, showToast, closeToast } = useToast();
@@ -42,6 +43,12 @@ onMounted(async () => {
     facilities.value = f;
   } catch (e) {
     message.value = e instanceof Error ? e.message : String(e);
+  }
+  // 背景アセット(装飾レイヤー)。取れなくてもグリッドは描画する。
+  try {
+    assets.value = await api.townAssets();
+  } catch {
+    assets.value = [];
   }
 });
 
@@ -96,7 +103,16 @@ function cellImg(row: number, col: number): string | null {
   if (f) return `/img/${f.img}.gif`;
   const h = houseAt(row, col);
   if (h) return `/img/${h.exterior}.gif`;
+  // 空地は街マップと同じ空き地アイコンで示す。
+  if (plotAt(row, col)) return '/img/akiti.gif';
   return null;
+}
+// セルの背景アセット(選択中の街)。施設・家・空き地アイコンの下に敷く。
+function assetImgAt(row: number, col: number): string | null {
+  const a = assets.value.find(
+    (x) => x.town === selectedTown.value && x.row === row && x.col === col,
+  );
+  return a ? assetUrl(a.img) : null;
 }
 function cellTitle(row: number, col: number): string {
   const f = facilityAt(row, col);
@@ -214,7 +230,8 @@ async function build() {
               :title="cellTitle(row, col)"
               @click="clickCell(row, col)"
             >
-              <img v-if="cellImg(row, col)" :src="cellImg(row, col)!" :alt="cellTitle(row, col)" />
+              <img v-if="assetImgAt(row, col)" class="cell-bg" :src="assetImgAt(row, col)!" alt="" />
+              <img v-if="cellImg(row, col)" class="cell-fg" :src="cellImg(row, col)!" :alt="cellTitle(row, col)" />
             </div>
           </template>
         </div>
@@ -369,6 +386,20 @@ async function build() {
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  position: relative;
+}
+/* 背景アセット(装飾レイヤー): セルいっぱいに敷き、施設・空き地アイコンの下に置く。 */
+.cell .cell-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+.cell .cell-fg {
+  position: relative;
+  z-index: 1;
 }
 .cell.empty {
   background: #d6f0c0;
@@ -377,6 +408,10 @@ async function build() {
 }
 .cell.empty:hover {
   background: #bfe6a0;
+}
+/* 空き地アイコンはうっすら表示(街マップと同じ見え方。選択ハイライトを透かす)。 */
+.cell.empty .cell-fg {
+  opacity: 0.6;
 }
 .cell.facility {
   background: #dfe6ee;
