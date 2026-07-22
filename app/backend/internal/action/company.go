@@ -120,9 +120,15 @@ type StaffEduResult struct {
 // (レガシーdo_unei): 社員は与えた値の1/10だけ上がり、上がった1ポイントにつき
 // 20000円の養育費(現金/クレジット→普通口座)。社員ごとに1時間間隔。
 func (s *Service) DoStaffEducate(ctx context.Context, playerID, houseID, staffID int64, paramKey string, amount int, payMethod, idempotencyKey string) (*player.Player, *StaffEduResult, error) {
-	paramName, ok := companyParamKeys[paramKey]
-	if !ok {
-		return nil, nil, &ConditionError{Message: "能力の指定が正しくありません。"}
+	// 食材購入(株式会社のみ): パラメータを消費せずお金だけで会社の食料原料を買う。
+	isSyoku := paramKey == "syoku"
+	paramName := "食材購入"
+	if !isSyoku {
+		var ok bool
+		paramName, ok = companyParamKeys[paramKey]
+		if !ok {
+			return nil, nil, &ConditionError{Message: "能力の指定が正しくありません。"}
+		}
 	}
 	if amount < 1 || amount > 1000 {
 		return nil, nil, &ConditionError{Message: "値に誤りがあります。"}
@@ -160,16 +166,22 @@ func (s *Service) DoStaffEducate(ctx context.Context, playerID, houseID, staffID
 		}
 		gained := amount / companyEduEfficiency
 		fee := int64(gained) * companyEduFeePerPoint
-		// 教育者自身のパラメータを消費(負になる教育は不可)。
-		tag, err := tx.Exec(ctx,
-			fmt.Sprintf(`UPDATE player_status SET %s = %s - $2 WHERE player_id = $1 AND %s >= $2`,
-				paramKey, paramKey, paramKey),
-			playerID, amount)
-		if err != nil {
-			return fmt.Errorf("spend param: %w", err)
-		}
-		if tag.RowsAffected() == 0 {
-			return &ConditionError{Message: "パラメータが足りません。教育する側のパラメータが必要です。"}
+		if isSyoku {
+			if tuika != 2 {
+				return &ConditionError{Message: "食材購入は株式会社だけができます。"}
+			}
+		} else {
+			// 教育者自身のパラメータを消費(負になる教育は不可)。
+			tag, err := tx.Exec(ctx,
+				fmt.Sprintf(`UPDATE player_status SET %s = %s - $2 WHERE player_id = $1 AND %s >= $2`,
+					paramKey, paramKey, paramKey),
+				playerID, amount)
+			if err != nil {
+				return fmt.Errorf("spend param: %w", err)
+			}
+			if tag.RowsAffected() == 0 {
+				return &ConditionError{Message: "パラメータが足りません。教育する側のパラメータが必要です。"}
+			}
 		}
 		// 養育費の支払い。
 		if fee > 0 {
@@ -206,14 +218,30 @@ func (s *Service) DoStaffEducate(ctx context.Context, playerID, houseID, staffID
 		if err := tx.QueryRow(ctx, `SELECT display_name FROM players WHERE id = $1`, playerID).Scan(&eduName); err != nil {
 			return fmt.Errorf("load name: %w", err)
 		}
-		log := fmt.Sprintf("社員教育で%sパラメータを%dあげました（%s） by %s",
-			paramName, gained, time.Now().Format("2006/01/02 15:04"), eduName)
-		if _, err := tx.Exec(ctx,
-			`UPDATE company_staff SET params = jsonb_set(params, ARRAY[$2],
-			   to_jsonb(COALESCE((params->>$2)::int, 0) + $3), true),
-			   edu_log = $4, last_edu_at = now()
-			 WHERE id = $1`, staffID, paramKey, gained, log); err != nil {
-			return fmt.Errorf("update staff: %w", err)
+		if isSyoku {
+			// 食料原料 += 0.1×上昇分(レガシー: $unei_syoku += 0.1*$konoagatta_suuti)。
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO company_materials (house_id, syoku) VALUES ($1, $2 * 0.1)
+				 ON CONFLICT (house_id) DO UPDATE SET syoku = company_materials.syoku + $2 * 0.1`,
+				houseID, gained); err != nil {
+				return fmt.Errorf("add syoku: %w", err)
+			}
+			log := fmt.Sprintf("食材を%.1fキロカロリー購入しました（%s） by %s",
+				float64(gained)*0.1, time.Now().Format("2006/01/02 15:04"), eduName)
+			if _, err := tx.Exec(ctx,
+				`UPDATE company_staff SET edu_log = $2, last_edu_at = now() WHERE id = $1`, staffID, log); err != nil {
+				return fmt.Errorf("update staff: %w", err)
+			}
+		} else {
+			log := fmt.Sprintf("社員教育で%sパラメータを%dあげました（%s） by %s",
+				paramName, gained, time.Now().Format("2006/01/02 15:04"), eduName)
+			if _, err := tx.Exec(ctx,
+				`UPDATE company_staff SET params = jsonb_set(params, ARRAY[$2],
+				   to_jsonb(COALESCE((params->>$2)::int, 0) + $3), true),
+				   edu_log = $4, last_edu_at = now()
+				 WHERE id = $1`, staffID, paramKey, gained, log); err != nil {
+				return fmt.Errorf("update staff: %w", err)
+			}
 		}
 		result.Gained = gained
 		result.Fee = fee

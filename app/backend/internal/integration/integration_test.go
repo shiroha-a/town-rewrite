@@ -3233,6 +3233,176 @@ func TestCompanyUnei(t *testing.T) {
 	}
 }
 
+// TestCompanyKaisha covers 株式会社(tuika=2): 会社BBSと入退会フロー、役員による
+// 社員教育と上限拡張、食材購入、製造(原料上限・1日1回・店頭陳列)、収益の役員分配。
+func TestCompanyKaisha(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	owner := register(t, srv.URL, "misskey.example", "kaishaowner")
+	member := register(t, srv.URL, "misskey.example", "kaishamember")
+	creditSavings(t, pool, owner.ID, 200_000_000)
+	creditCash(t, pool, owner.ID, 5_000_000)
+	creditCash(t, pool, member.ID, 1_000_000)
+	seedPlots(t, pool, [][3]int{{4, 0, 1}, {4, 0, 2}})
+	if _, err := pool.Exec(ctx, `UPDATE player_status SET kokugo=10000, suugaku=10000, rika=10000,
+		syakai=10000, eigo=10000, ongaku=10000, bijutsu=10000, looks=10000, tairyoku=10000,
+		kenkou=10000, speed=10000, power=10000, wanryoku=10000, kyakuryoku=10000, love=10000,
+		omoshirosa=10000 WHERE player_id=$1`, owner.ID); err != nil {
+		t.Fatalf("set params: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE player_status SET suugaku=500 WHERE player_id=$1`, member.ID); err != nil {
+		t.Fatalf("set member params: %v", err)
+	}
+	if _, c := buildHouse(t, srv.URL, owner.ID, 4, 0, 1, "house1", 3, "k1"); c != http.StatusOK {
+		t.Fatalf("build 1st: %d", c)
+	}
+	if _, c := buildHouseTuika(t, srv.URL, owner.ID, 4, 0, 2, "house1", 0, 2, "k2"); c != http.StatusOK {
+		t.Fatalf("build kaisha: %d", c)
+	}
+	var houseID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM player_houses WHERE owner_id=$1 AND tuika=2`, owner.ID).Scan(&houseID); err != nil {
+		t.Fatalf("house id: %v", err)
+	}
+	post := func(who int64, path string, body map[string]any) int {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		resp, err := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(who, 10)+path,
+			"application/json", bytes.NewReader(b))
+		if err != nil {
+			t.Fatalf("post %s: %v", path, err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// 部外者はメンバー板に書けない。オープン板に入会希望を投稿できる。
+	if c := post(member.ID, "/building/company/bbs", map[string]any{
+		"house_id": houseID, "board": "member", "body": "だめ", "idempotency_key": "b0"}); c != http.StatusUnprocessableEntity {
+		t.Errorf("outsider member post: %d, want 422", c)
+	}
+	if c := post(member.ID, "/building/company/bbs", map[string]any{
+		"house_id": houseID, "board": "open", "body": "入りたいです", "want_join": true,
+		"idempotency_key": "b1"}); c != http.StatusOK {
+		t.Fatalf("join request: %d", c)
+	}
+	var joinPostID int64
+	pool.QueryRow(ctx, `SELECT id FROM company_bbs WHERE house_id=$1 AND status='in'`, houseID).Scan(&joinPostID)
+	// 非オーナーは許可できない。オーナーが許可すると役員になる。
+	if c := post(member.ID, "/building/company/approve", map[string]any{
+		"house_id": houseID, "post_id": joinPostID, "idempotency_key": "a1"}); c != http.StatusUnprocessableEntity {
+		t.Errorf("member approve: %d, want 422", c)
+	}
+	if c := post(owner.ID, "/building/company/approve", map[string]any{
+		"house_id": houseID, "post_id": joinPostID, "idempotency_key": "a2"}); c != http.StatusOK {
+		t.Fatalf("approve join: %d", c)
+	}
+	var isOfficer bool
+	pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM company_officers WHERE house_id=$1 AND player_id=$2)`,
+		houseID, member.ID).Scan(&isOfficer)
+	if !isOfficer {
+		t.Fatal("member not officer after approve")
+	}
+
+	// 役員が増えたので社員上限は3×(役員1+オーナー1)=6。
+	for i := 0; i < 6; i++ {
+		if c := post(owner.ID, "/building/company/staff", map[string]any{
+			"house_id": houseID, "idempotency_key": fmt.Sprintf("ks%d", i)}); c != http.StatusOK {
+			t.Fatalf("staff add %d: %d", i, c)
+		}
+	}
+	if c := post(owner.ID, "/building/company/staff", map[string]any{
+		"house_id": houseID, "idempotency_key": "ks6"}); c != http.StatusUnprocessableEntity {
+		t.Errorf("7th staff: %d, want 422", c)
+	}
+
+	// 役員(member)も社員教育できる。数学100 → 社員+10。
+	var staffID int64
+	pool.QueryRow(ctx, `SELECT id FROM company_staff WHERE house_id=$1 AND idx=1`, houseID).Scan(&staffID)
+	if c := post(member.ID, "/building/company/educate", map[string]any{
+		"house_id": houseID, "staff_id": staffID, "param": "suugaku", "amount": 100,
+		"idempotency_key": "ke1"}); c != http.StatusOK {
+		t.Fatalf("officer educate: %d", c)
+	}
+	// 食材購入(株式会社のみ、パラメータ消費なし): 100 → +1.0kcal。
+	var staffID2 int64
+	pool.QueryRow(ctx, `SELECT id FROM company_staff WHERE house_id=$1 AND idx=2`, houseID).Scan(&staffID2)
+	if c := post(owner.ID, "/building/company/educate", map[string]any{
+		"house_id": houseID, "staff_id": staffID2, "param": "syoku", "amount": 100,
+		"idempotency_key": "ke2"}); c != http.StatusOK {
+		t.Fatalf("syoku buy: %d", c)
+	}
+	var syoku float64
+	pool.QueryRow(ctx, `SELECT syoku::float8 FROM company_materials WHERE house_id=$1`, houseID).Scan(&syoku)
+	if syoku != 1.0 {
+		t.Errorf("syoku = %v, want 1.0", syoku)
+	}
+
+	// 製造: 店が必要。開店してから、数学up=5(原料max=10/10=1? → 社員のsuugaku=10なので原料1)
+	// 原料max=1のため設定値は1まで。
+	if _, c := openShop(t, srv.URL, owner.ID, func() int64 {
+		var h1 int64
+		pool.QueryRow(ctx, `SELECT id FROM player_houses WHERE owner_id=$1 AND tuika=0`, owner.ID).Scan(&h1)
+		return h1
+	}(), "会社の店", "書籍", 2.0, "ko1"); c != http.StatusOK {
+		t.Fatalf("open shop: %d", c)
+	}
+	// コンテンツ枠にshopが無くても店開店APIが通る前提(既存仕様)。原料超過は拒否。
+	if c := post(owner.ID, "/building/company/seizou", map[string]any{
+		"house_id": houseID, "input": map[string]any{
+			"name": "テスト商品", "params": map[string]any{"suugaku": 5}, "zaiko": 1, "taikyuu": 1, "price": 10000},
+		"idempotency_key": "sz1"}); c != http.StatusUnprocessableEntity {
+		t.Errorf("seizou over material: %d, want 422", c)
+	}
+	if c := post(owner.ID, "/building/company/seizou", map[string]any{
+		"house_id": houseID, "input": map[string]any{
+			"name": "テスト商品", "params": map[string]any{"suugaku": 1}, "zaiko": 1, "taikyuu": 1, "price": 10000},
+		"idempotency_key": "sz2"}); c != http.StatusOK {
+		t.Fatalf("seizou: %d", c)
+	}
+	// 1日1回。
+	if c := post(owner.ID, "/building/company/seizou", map[string]any{
+		"house_id": houseID, "input": map[string]any{
+			"name": "テスト商品", "params": map[string]any{"suugaku": 1}, "zaiko": 1, "taikyuu": 1, "price": 10000},
+		"idempotency_key": "sz3"}); c != http.StatusUnprocessableEntity {
+		t.Errorf("seizou twice: %d, want 422", c)
+	}
+	// 商品が店頭に並ぶ(facility='company'で問屋の品揃えからは除外)。
+	var prodCnt int
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM house_shop_stock ss JOIN content_items ci ON ci.id=ss.item_id
+		WHERE ci.facility='company' AND ci.name LIKE 'テスト商品%'`).Scan(&prodCnt)
+	if prodCnt != 1 {
+		t.Errorf("product on shelf = %d, want 1", prodCnt)
+	}
+
+	// 収益分配: オーナーと役員の両方に同額が入る。
+	ownerSav, memberSav := int64(0), int64(0)
+	pool.QueryRow(ctx, `SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account=$1`,
+		fmt.Sprintf("savings:%d", owner.ID)).Scan(&ownerSav)
+	pool.QueryRow(ctx, `SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account=$1`,
+		fmt.Sprintf("savings:%d", member.ID)).Scan(&memberSav)
+	led := ledger.New(pool)
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		_, err := worker.PayCompanyIncome(ctx, tx, led)
+		return err
+	}); err != nil {
+		t.Fatalf("pay income: %v", err)
+	}
+	var ownerSav2, memberSav2 int64
+	pool.QueryRow(ctx, `SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account=$1`,
+		fmt.Sprintf("savings:%d", owner.ID)).Scan(&ownerSav2)
+	pool.QueryRow(ctx, `SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account=$1`,
+		fmt.Sprintf("savings:%d", member.ID)).Scan(&memberSav2)
+	ownerGain := ownerSav2 - ownerSav
+	memberGain := memberSav2 - memberSav
+	if ownerGain <= 0 || ownerGain != memberGain {
+		t.Errorf("income owner=%d member=%d, want equal positive", ownerGain, memberGain)
+	}
+
+	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
+		t.Errorf("ledger zero-sum broken: %d", sum)
+	}
+}
+
 // TestYamiShop covers the 持ち物販売店(闇市): listing from inventory (販売/預ける),
 // visitor purchase (売上→家主普通口座), owner buyback (500円手数料), and item
 // return on house sale.

@@ -814,20 +814,53 @@ export interface CompanyStaff {
   edu_log: string;
   can_edu_at: string; // 次に教育できる時刻(空=今すぐ可)
 }
+export interface CompanyOfficer {
+  player_id: number;
+  name: string;
+}
+// 会社BBSの記事。statusは入退会ワークフロー(in/out/m_ryoukai/taikai)。
+export interface CompanyBbsPost {
+  id: number;
+  no: number;
+  author_id: number;
+  author_name: string;
+  body: string;
+  status: string;
+  created_at: string;
+}
+// 製造フォーム(株式会社オーナーのみ): 原料max(社員パラ最大値/10)と食料。
+export interface CompanyMaterials {
+  maxima: Record<string, number>;
+  syoku: number;
+  staff_count: number;
+  made_today: boolean;
+  has_shop: boolean;
+  shop_syubetu: string;
+}
 export interface CompanyView {
   is_company: boolean;
   kind: number; // 1=運営 2=株式会社
   owner_name: string;
   own: boolean;
   officer: boolean;
-  officers: string[];
+  officers: CompanyOfficer[];
   staff_max: number;
   total_income: number;
   staff: CompanyStaff[];
+  bbs_open: CompanyBbsPost[];
+  bbs_member: CompanyBbsPost[];
+  materials: CompanyMaterials | null;
   edu_efficiency: number;
   edu_fee_point: number;
   edu_interval_min: number;
 }
+export interface SeizouResult {
+  name: string;
+  zaiko: number;
+  taikyuu: number;
+  price: number;
+}
+export type SeizouResp = Player & { seizou_result: SeizouResult };
 export interface StaffEduResult {
   param_name: string;
   gained: number;
@@ -1225,6 +1258,52 @@ export const api = {
       param,
       amount,
       pay_method: payMethod,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  companyBbsPost: (id: number, houseId: number, board: string, body: string, wantJoin = false, wantLeave = false) =>
+    request<Player>('POST', `/players/${id}/building/company/bbs`, {
+      house_id: houseId,
+      board,
+      body,
+      want_join: wantJoin,
+      want_leave: wantLeave,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  companyApprove: (id: number, houseId: number, postId: number) =>
+    request<Player>('POST', `/players/${id}/building/company/approve`, {
+      house_id: houseId,
+      post_id: postId,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  companyKick: (id: number, houseId: number, officerId: number) =>
+    request<Player>('POST', `/players/${id}/building/company/kick`, {
+      house_id: houseId,
+      officer_id: officerId,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  companyBbsDelete: (id: number, houseId: number, board: string, no: number) =>
+    request<Player>('POST', `/players/${id}/building/company/bbs/delete`, {
+      house_id: houseId,
+      board,
+      no,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  companySeizou: (
+    id: number,
+    houseId: number,
+    input: {
+      name: string;
+      params: Record<string, number>;
+      cal: number;
+      kankaku: number;
+      zaiko: number;
+      taikyuu: number;
+      price: number;
+    },
+  ) =>
+    request<SeizouResp>('POST', `/players/${id}/building/company/seizou`, {
+      house_id: houseId,
+      input,
       idempotency_key: newIdempotencyKey(),
     }),
   houseShopStock: (id: number, houseId: number) =>

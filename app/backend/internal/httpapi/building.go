@@ -539,6 +539,147 @@ func (s *Server) companyEducate(w http.ResponseWriter, r *http.Request) {
 	}{toResp(p), result})
 }
 
+type companyBbsReq struct {
+	HouseID        int64  `json:"house_id"`
+	Board          string `json:"board"` // open / member
+	Body           string `json:"body"`
+	WantJoin       bool   `json:"want_join"`  // オープン板: 入会希望
+	WantLeave      bool   `json:"want_leave"` // メンバー板: 退会希望
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// companyBbsPost writes to the 会社BBS (入会/退会希望付き投稿にも使う).
+func (s *Server) companyBbsPost(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req companyBbsReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
+		return
+	}
+	p, err := s.actions.DoCompanyBbsPost(r.Context(), id, req.HouseID, req.Board, req.Body, req.WantJoin, req.WantLeave, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
+type companyApproveReq struct {
+	HouseID        int64  `json:"house_id"`
+	PostID         int64  `json:"post_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// companyApprove approves a pending 入会/退会 request (オーナーのみ).
+func (s *Server) companyApprove(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req companyApproveReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 || req.PostID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id and post_id are required")
+		return
+	}
+	p, err := s.actions.DoCompanyApprove(r.Context(), id, req.HouseID, req.PostID, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
+type companyKickReq struct {
+	HouseID        int64  `json:"house_id"`
+	OfficerID      int64  `json:"officer_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// companyKick removes an officer (オーナーの退会指定).
+func (s *Server) companyKick(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req companyKickReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 || req.OfficerID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id and officer_id are required")
+		return
+	}
+	p, err := s.actions.DoCompanyKick(r.Context(), id, req.HouseID, req.OfficerID, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
+type companyBbsDeleteReq struct {
+	HouseID        int64  `json:"house_id"`
+	Board          string `json:"board"`
+	No             int    `json:"no"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// companyBbsDelete deletes a 会社BBS post by number (オーナーのみ).
+func (s *Server) companyBbsDelete(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req companyBbsDeleteReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 || req.No <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id and no are required")
+		return
+	}
+	p, err := s.actions.DoCompanyBbsDelete(r.Context(), id, req.HouseID, req.Board, req.No, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
+type companySeizouReq struct {
+	HouseID        int64              `json:"house_id"`
+	Input          action.SeizouInput `json:"input"`
+	IdempotencyKey string             `json:"idempotency_key"`
+}
+
+// companySeizou manufactures an original product (オーナーのみ・1日1回).
+func (s *Server) companySeizou(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req companySeizouReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
+		return
+	}
+	p, result, err := s.actions.DoSeizou(r.Context(), id, req.HouseID, req.Input, req.IdempotencyKey)
+	if err != nil {
+		writeFacilityResult(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		playerResp
+		SeizouResult *action.SeizouResult `json:"seizou_result"`
+	}{toResp(p), result})
+}
+
 // houseBbs returns a house's bulletin-board posts (誰でも閲覧可).
 func (s *Server) houseBbs(w http.ResponseWriter, r *http.Request) {
 	houseID, err := strconv.ParseInt(r.URL.Query().Get("house_id"), 10, 64)
