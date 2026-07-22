@@ -803,6 +803,37 @@ export interface YamiBuyResult {
   own: boolean;
 }
 export type YamiBuyResp = Player & { yami_result: YamiBuyResult };
+// 運営/株式会社の社員(職と仕送り額は社員パラメータから導出)。
+export interface CompanyStaff {
+  id: number;
+  idx: number;
+  params: Record<string, number>;
+  job: string;
+  sougou: number;
+  income: number;
+  edu_log: string;
+  can_edu_at: string; // 次に教育できる時刻(空=今すぐ可)
+}
+export interface CompanyView {
+  is_company: boolean;
+  kind: number; // 1=運営 2=株式会社
+  owner_name: string;
+  own: boolean;
+  officer: boolean;
+  officers: string[];
+  staff_max: number;
+  total_income: number;
+  staff: CompanyStaff[];
+  edu_efficiency: number;
+  edu_fee_point: number;
+  edu_interval_min: number;
+}
+export interface StaffEduResult {
+  param_name: string;
+  gained: number;
+  fee: number;
+}
+export type EducateResp = Player & { edu_result: StaffEduResult };
 export interface ShopStockItem {
   item_id: number;
   name: string;
@@ -1177,6 +1208,22 @@ export const api = {
     request<YamiBuyResp>('POST', `/players/${id}/building/yami/buy`, {
       house_id: houseId,
       listing_id: listingId,
+      pay_method: payMethod,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  companyView: (id: number, houseId: number) =>
+    request<CompanyView>('GET', `/players/${id}/building/company?house_id=${houseId}`),
+  companyStaffAdd: (id: number, houseId: number) =>
+    request<Player>('POST', `/players/${id}/building/company/staff`, {
+      house_id: houseId,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  companyEducate: (id: number, houseId: number, staffId: number, param: string, amount: number, payMethod = 'cash') =>
+    request<EducateResp>('POST', `/players/${id}/building/company/educate`, {
+      house_id: houseId,
+      staff_id: staffId,
+      param,
+      amount,
       pay_method: payMethod,
       idempotency_key: newIdempotencyKey(),
     }),

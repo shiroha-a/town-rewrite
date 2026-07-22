@@ -458,6 +458,87 @@ func (s *Server) yamiBuy(w http.ResponseWriter, r *http.Request) {
 	}{toResp(p), result})
 }
 
+// companyView returns the 運営/株式会社 screen state of a house.
+func (s *Server) companyView(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	houseID, err := strconv.ParseInt(r.URL.Query().Get("house_id"), 10, 64)
+	if err != nil || houseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
+		return
+	}
+	view, err := s.content.Company(r.Context(), id, houseID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+type companyStaffReq struct {
+	HouseID        int64  `json:"house_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// companyStaffAdd adds an employee to the player's 運営/株式会社.
+func (s *Server) companyStaffAdd(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req companyStaffReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
+		return
+	}
+	p, err := s.actions.DoStaffAdd(r.Context(), id, req.HouseID, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
+type companyEducateReq struct {
+	HouseID        int64  `json:"house_id"`
+	StaffID        int64  `json:"staff_id"`
+	Param          string `json:"param"`  // player_statusの列名(kokugo..omoshirosa)
+	Amount         int    `json:"amount"` // 消費する自分のパラメータ量(1..1000)
+	PayMethod      string `json:"pay_method"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// companyEducate performs 社員教育 (自分のパラメータを社員へ移転).
+func (s *Server) companyEducate(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req companyEducateReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 || req.StaffID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id and staff_id are required")
+		return
+	}
+	p, result, err := s.actions.DoStaffEducate(r.Context(), id, req.HouseID, req.StaffID, req.Param, req.Amount, req.PayMethod, req.IdempotencyKey)
+	if err != nil {
+		writeFacilityResult(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		playerResp
+		EduResult *action.StaffEduResult `json:"edu_result"`
+	}{toResp(p), result})
+}
+
 // houseBbs returns a house's bulletin-board posts (誰でも閲覧可).
 func (s *Server) houseBbs(w http.ResponseWriter, r *http.Request) {
 	houseID, err := strconv.ParseInt(r.URL.Query().Get("house_id"), 10, 64)

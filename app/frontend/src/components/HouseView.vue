@@ -12,6 +12,7 @@ import {
 } from '../api';
 import Toast from './Toast.vue';
 import YamiShop from './YamiShop.vue';
+import CompanyPanel from './CompanyPanel.vue';
 import { useToast } from '../toast';
 
 // 家訪問(レガシー original_house.cgi houmon)。レガシーのレイアウトを再現:
@@ -60,10 +61,6 @@ const pageBg = computed(() => {
       return '#ffcc66';
   }
 });
-
-// 追加種別(2軒目以降)の家。0以外はコンテンツ枠ではなく固定機能の画面になる。
-const TUIKA_NAMES: Record<number, string> = { 1: '運営', 2: '株式会社', 3: '持ち物販売店' };
-const tuikaName = computed(() => TUIKA_NAMES[house.value?.tuika ?? 0] ?? '');
 
 onMounted(async () => {
   try {
@@ -357,12 +354,14 @@ async function doDeleteBbs(kind: string, opts: { articleNo?: number; threadNo?: 
         </span>
       </div>
 
-      <!-- 追加種別の家: 持ち物販売店=闇市。運営/株式会社はT3/T4で実装。 -->
+      <!-- 追加種別の家: 持ち物販売店=闇市 / 運営・株式会社=社員教育。 -->
       <YamiShop v-if="house.tuika === 3" :player="player" :house-id="house.id" @update="emit('update', $event)" />
-      <div v-else-if="house.tuika !== 0" class="tuika-wrap">
-        <div class="tuika-title">{{ tuikaName }}</div>
-        <div class="tuika-body">この{{ tuikaName }}の画面は準備中です。</div>
-      </div>
+      <CompanyPanel
+        v-else-if="house.tuika === 1 || house.tuika === 2"
+        :player="player"
+        :house-id="house.id"
+        @update="emit('update', $event)"
+      />
 
       <!-- 通常掲示板(レガシーbbs1: #ffffcc・青点線枠・スレッド形式) -->
       <template v-if="current && current.kind === 'bbs'">
@@ -708,24 +707,6 @@ async function doDeleteBbs(kind: string, opts: { articleNo?: number; threadNo?: 
 .ie-deru {
   text-align: center;
   margin: 24px 0 12px;
-}
-/* 追加種別(運営/株式会社/闇市)の画面 */
-.tuika-wrap {
-  max-width: 820px;
-  margin: 10px auto 0;
-  background: #fff;
-  border: 1px solid #666;
-  padding: 14px;
-  text-align: center;
-}
-.tuika-title {
-  font-size: 18px;
-  color: #ff6600;
-}
-.tuika-body {
-  font-size: 12px;
-  color: #666;
-  margin-top: 8px;
 }
 .pager {
   display: flex;

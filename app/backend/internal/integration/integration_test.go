@@ -3117,6 +3117,122 @@ func TestBuildHouseTuika(t *testing.T) {
 	}
 }
 
+// TestCompanyUnei covers 運営(tuika=1): 社員追加(上限5)、社員教育(パラ移転1/10・
+// 養育費2万/pt・1時間間隔・非オーナー拒否)、職判定と日次収入(worker)。
+func TestCompanyUnei(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	owner := register(t, srv.URL, "misskey.example", "uneiowner")
+	other := register(t, srv.URL, "misskey.example", "uneiother")
+	creditSavings(t, pool, owner.ID, 20_000_000)
+	creditCash(t, pool, owner.ID, 1_000_000)
+	seedPlots(t, pool, [][3]int{{4, 0, 1}, {4, 0, 2}})
+	if _, c := buildHouse(t, srv.URL, owner.ID, 4, 0, 1, "house1", 3, "u1"); c != http.StatusOK {
+		t.Fatalf("build 1st: %d", c)
+	}
+	if _, c := buildHouseTuika(t, srv.URL, owner.ID, 4, 0, 2, "house1", 0, 1, "u2"); c != http.StatusOK {
+		t.Fatalf("build unei: %d", c)
+	}
+	var houseID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM player_houses WHERE owner_id=$1 AND tuika=1`, owner.ID).Scan(&houseID); err != nil {
+		t.Fatalf("house id: %v", err)
+	}
+	post := func(who int64, path string, body map[string]any) int {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		resp, err := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(who, 10)+path,
+			"application/json", bytes.NewReader(b))
+		if err != nil {
+			t.Fatalf("post %s: %v", path, err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// 社員追加は5人まで。非オーナーは追加できない。
+	for i := 0; i < 5; i++ {
+		if c := post(owner.ID, "/building/company/staff", map[string]any{
+			"house_id": houseID, "idempotency_key": fmt.Sprintf("sa%d", i)}); c != http.StatusOK {
+			t.Fatalf("staff add %d: %d", i, c)
+		}
+	}
+	if c := post(owner.ID, "/building/company/staff", map[string]any{
+		"house_id": houseID, "idempotency_key": "sa5"}); c != http.StatusUnprocessableEntity {
+		t.Errorf("6th staff: %d, want 422", c)
+	}
+	if c := post(other.ID, "/building/company/staff", map[string]any{
+		"house_id": houseID, "idempotency_key": "sa6"}); c != http.StatusUnprocessableEntity {
+		t.Errorf("other staff add: %d, want 422", c)
+	}
+
+	// 社員教育: 国語500持ちのオーナーが100を与える → 社員+10、養育費20万円(現金)。
+	if _, err := pool.Exec(ctx, `UPDATE player_status SET kokugo=500 WHERE player_id=$1`, owner.ID); err != nil {
+		t.Fatalf("set kokugo: %v", err)
+	}
+	var staffID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM company_staff WHERE house_id=$1 AND idx=1`, houseID).Scan(&staffID); err != nil {
+		t.Fatalf("staff id: %v", err)
+	}
+	if c := post(owner.ID, "/building/company/educate", map[string]any{
+		"house_id": houseID, "staff_id": staffID, "param": "kokugo", "amount": 100,
+		"idempotency_key": "e1"}); c != http.StatusOK {
+		t.Fatalf("educate: %d", c)
+	}
+	var ownerKokugo int
+	pool.QueryRow(ctx, `SELECT kokugo FROM player_status WHERE player_id=$1`, owner.ID).Scan(&ownerKokugo)
+	if ownerKokugo != 400 {
+		t.Errorf("owner kokugo = %d, want 400", ownerKokugo)
+	}
+	var staffKokugo int
+	pool.QueryRow(ctx, `SELECT (params->>'kokugo')::int FROM company_staff WHERE id=$1`, staffID).Scan(&staffKokugo)
+	if staffKokugo != 10 {
+		t.Errorf("staff kokugo = %d, want 10", staffKokugo)
+	}
+	var feeSum int64
+	pool.QueryRow(ctx, `SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account='system:company_edu'`).Scan(&feeSum)
+	if feeSum != 200_000 {
+		t.Errorf("edu fee = %d, want 200000", feeSum)
+	}
+	// 同じ社員は1時間待たないと教育できない。
+	if c := post(owner.ID, "/building/company/educate", map[string]any{
+		"house_id": houseID, "staff_id": staffID, "param": "kokugo", "amount": 10,
+		"idempotency_key": "e2"}); c != http.StatusUnprocessableEntity {
+		t.Errorf("educate again: %d, want 422", c)
+	}
+	// 非オーナー(運営)は教育できない。
+	if c := post(other.ID, "/building/company/educate", map[string]any{
+		"house_id": houseID, "staff_id": staffID, "param": "kokugo", "amount": 10,
+		"idempotency_key": "e3"}); c != http.StatusUnprocessableEntity {
+		t.Errorf("other educate: %d, want 422", c)
+	}
+
+	// 日次収入: kokugo10の社員はアルバイト(給与1000)に就ける。
+	// 収入 = (1000×10 + (10×235/20)×10)/4 = (10000+1170)/4 = 2792円。
+	// 残り4人は無資格でも給与0職として (0+0)/4=0…ではなくアルバイト(無条件)が
+	// 就けるため同額の基礎収入が入る点に注意して合計を検証する。
+	savBefore := int64(0)
+	pool.QueryRow(ctx, `SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account=$1`,
+		fmt.Sprintf("savings:%d", owner.ID)).Scan(&savBefore)
+	led := ledger.New(pool)
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		_, err := worker.PayCompanyIncome(ctx, tx, led)
+		return err
+	}); err != nil {
+		t.Fatalf("pay income: %v", err)
+	}
+	var savAfter int64
+	pool.QueryRow(ctx, `SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account=$1`,
+		fmt.Sprintf("savings:%d", owner.ID)).Scan(&savAfter)
+	// 教育済み社員2792 + 無資格(アルバイト1000×10/4=2500)×4 = 12792円。
+	if savAfter-savBefore != 2792+2500*4 {
+		t.Errorf("income = %d, want %d", savAfter-savBefore, 2792+2500*4)
+	}
+
+	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
+		t.Errorf("ledger zero-sum broken: %d", sum)
+	}
+}
+
 // TestYamiShop covers the 持ち物販売店(闇市): listing from inventory (販売/預ける),
 // visitor purchase (売上→家主普通口座), owner buyback (500円手数料), and item
 // return on house sale.
