@@ -185,6 +185,17 @@ func (s *Service) DoSellHouse(ctx context.Context, playerID, houseID int64, idem
 		if isAdmin {
 			refund = 0 // 管理者は返金なし
 		}
+		// 持ち物販売店(闇市)の売り場・倉庫の品は持ち主の持ち物へ戻す
+		// (レガシーは運営ログを残す=消滅させない)。
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO player_items (player_id, item_id, quantity, remaining_uses)
+			 SELECT $1, item_id, COUNT(*), SUM(uses) FROM yami_items WHERE house_id = $2 GROUP BY item_id
+			 ON CONFLICT (player_id, item_id) DO UPDATE SET
+			   quantity = player_items.quantity + EXCLUDED.quantity,
+			   remaining_uses = player_items.remaining_uses + EXCLUDED.remaining_uses, updated_at = now()`,
+			playerID, houseID); err != nil {
+			return fmt.Errorf("return yami items: %w", err)
+		}
 		if _, err := tx.Exec(ctx, `DELETE FROM player_houses WHERE id = $1`, houseID); err != nil {
 			return fmt.Errorf("delete house: %w", err)
 		}
@@ -482,6 +493,19 @@ func (s *Service) DoShiire(ctx context.Context, playerID, houseID, itemID int64,
 // maxBuyQty is the legacy per-purchase quantity limit (item_kosuuseigen).
 const maxBuyQty = 4
 
+// hasCreditCard reports whether the player holds a usable credit card item.
+func hasCreditCard(ctx context.Context, tx pgx.Tx, playerID int64) (bool, error) {
+	var hasCard bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS(
+		   SELECT 1 FROM player_items pi JOIN content_items ci ON ci.id = pi.item_id
+		   WHERE pi.player_id = $1 AND pi.remaining_uses > 0 AND ci.name = ANY($2))`,
+		playerID, creditCardNames).Scan(&hasCard); err != nil {
+		return false, fmt.Errorf("check credit card: %w", err)
+	}
+	return hasCard, nil
+}
+
 // creditCardNames are the items that enable credit (bank) payment at shops
 // (レガシーのクレジット系アイテム)。
 var creditCardNames = []string{"クレジットカード", "ゴールドクレジットカード", "スペシャルクレジットカード"}
@@ -572,13 +596,9 @@ func (s *Service) DoBuyFromHouseShop(ctx context.Context, buyerID, houseID, item
 		// 支払い方法: 現金 or クレジット(クレジットカード所持で普通口座から)。
 		buyerAccount := ledger.PlayerAccount(buyerID)
 		if payMethod == "credit" {
-			var hasCard bool
-			if err := tx.QueryRow(ctx,
-				`SELECT EXISTS(
-				   SELECT 1 FROM player_items pi JOIN content_items ci ON ci.id = pi.item_id
-				   WHERE pi.player_id = $1 AND pi.remaining_uses > 0 AND ci.name = ANY($2))`,
-				buyerID, creditCardNames).Scan(&hasCard); err != nil {
-				return fmt.Errorf("check credit card: %w", err)
+			hasCard, err := hasCreditCard(ctx, tx, buyerID)
+			if err != nil {
+				return err
 			}
 			if !hasCard {
 				return &ConditionError{Message: "クレジットカードを持っていません。"}

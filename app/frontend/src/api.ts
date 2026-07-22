@@ -763,6 +763,46 @@ export interface BbsPostResult {
   bonus: boolean;
 }
 export type PostBbsResp = Player & { bbs_result: BbsPostResult };
+// 持ち物販売店(闇市)の1品(1行=1品、単品スナップショット)。
+export interface YamiItem {
+  listing_id: number;
+  item_id: number;
+  name: string;
+  category: string;
+  price: number;
+  uses: number; // この1品の残り耐久
+  zokusei: number; // 1=倉庫品(家主のみ表示)
+  money: number;
+  params: Record<string, number>;
+  calorie_g: number;
+  durability_unit: string;
+  interval_min: number;
+  body_cost: number;
+  nou_cost: number;
+}
+export interface YamiView {
+  is_yami: boolean;
+  owner_name: string;
+  own: boolean;
+  max_items: number;
+  items: YamiItem[];
+}
+export interface YamiInventoryItem {
+  item_id: number;
+  name: string;
+  category: string;
+  quantity: number;
+  uses: number;
+  durability_unit: string;
+  default_price: number;
+}
+export interface YamiBuyResult {
+  name: string;
+  paid: number;
+  method: string;
+  own: boolean;
+}
+export type YamiBuyResp = Player & { yami_result: YamiBuyResult };
 export interface ShopStockItem {
   item_id: number;
   name: string;
@@ -1119,6 +1159,25 @@ export const api = {
       article_no: opts.articleNo ?? 0,
       thread_no: opts.threadNo ?? 0,
       all: opts.all ?? false,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  yamiShop: (id: number, houseId: number) =>
+    request<YamiView>('GET', `/players/${id}/building/yami?house_id=${houseId}`),
+  yamiInventory: (id: number) =>
+    request<YamiInventoryItem[]>('GET', `/players/${id}/building/yami/inventory`),
+  yamiList: (id: number, houseId: number, itemId: number, price: number, warehouse: boolean) =>
+    request<Player>('POST', `/players/${id}/building/yami/list`, {
+      house_id: houseId,
+      item_id: itemId,
+      price,
+      warehouse,
+      idempotency_key: newIdempotencyKey(),
+    }),
+  yamiBuy: (id: number, houseId: number, listingId: number, payMethod = 'cash') =>
+    request<YamiBuyResp>('POST', `/players/${id}/building/yami/buy`, {
+      house_id: houseId,
+      listing_id: listingId,
+      pay_method: payMethod,
       idempotency_key: newIdempotencyKey(),
     }),
   houseShopStock: (id: number, houseId: number) =>

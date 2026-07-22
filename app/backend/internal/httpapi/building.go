@@ -361,6 +361,103 @@ func (s *Server) buyFromHouseShop(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// yamiShop returns the 持ち物販売店(闇市) shelf of a house.
+func (s *Server) yamiShop(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	houseID, err := strconv.ParseInt(r.URL.Query().Get("house_id"), 10, 64)
+	if err != nil || houseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
+		return
+	}
+	view, err := s.content.Yami(r.Context(), id, houseID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// yamiInventory lists the player's own items for listing onto their 闇市.
+func (s *Server) yamiInventory(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	items, err := s.content.YamiInventory(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+type yamiListReq struct {
+	HouseID        int64  `json:"house_id"`
+	ItemID         int64  `json:"item_id"`
+	Price          int64  `json:"price"`     // 0=既定価格(単価×残耐久)
+	Warehouse      bool   `json:"warehouse"` // true=預ける(倉庫)
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// yamiList puts one of the player's items onto their 闇市 shelf (販売/預ける).
+func (s *Server) yamiList(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req yamiListReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 || req.ItemID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id and item_id are required")
+		return
+	}
+	p, err := s.actions.DoYamiList(r.Context(), id, req.HouseID, req.ItemID, req.Price, req.Warehouse, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
+type yamiBuyReq struct {
+	HouseID        int64  `json:"house_id"`
+	ListingID      int64  `json:"listing_id"`
+	PayMethod      string `json:"pay_method"` // cash / credit
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// yamiBuy buys one listing from a 闇市 (家主は500円で回収).
+func (s *Server) yamiBuy(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req yamiBuyReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 || req.ListingID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id and listing_id are required")
+		return
+	}
+	p, result, err := s.actions.DoYamiBuy(r.Context(), id, req.HouseID, req.ListingID, req.PayMethod, req.IdempotencyKey)
+	if err != nil {
+		writeFacilityResult(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		playerResp
+		YamiResult *action.YamiBuyResult `json:"yami_result"`
+	}{toResp(p), result})
+}
+
 // houseBbs returns a house's bulletin-board posts (誰でも閲覧可).
 func (s *Server) houseBbs(w http.ResponseWriter, r *http.Request) {
 	houseID, err := strconv.ParseInt(r.URL.Query().Get("house_id"), 10, 64)

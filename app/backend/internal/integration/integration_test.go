@@ -3117,6 +3117,146 @@ func TestBuildHouseTuika(t *testing.T) {
 	}
 }
 
+// TestYamiShop covers the 持ち物販売店(闇市): listing from inventory (販売/預ける),
+// visitor purchase (売上→家主普通口座), owner buyback (500円手数料), and item
+// return on house sale.
+func TestYamiShop(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	owner := register(t, srv.URL, "misskey.example", "yamiowner")
+	visitor := register(t, srv.URL, "misskey.example", "yamivisitor")
+	creditSavings(t, pool, owner.ID, 200_000_000)
+	seedPlots(t, pool, [][3]int{{4, 0, 1}, {4, 0, 2}})
+	if _, err := pool.Exec(ctx, `UPDATE player_status SET kokugo=10000, suugaku=10000, rika=10000,
+		syakai=10000, eigo=10000, ongaku=10000, bijutsu=10000, looks=10000, tairyoku=10000,
+		kenkou=10000, speed=10000, power=10000, wanryoku=10000, kyakuryoku=10000, love=10000,
+		omoshirosa=10000 WHERE player_id=$1`, owner.ID); err != nil {
+		t.Fatalf("set params: %v", err)
+	}
+	if _, c := buildHouse(t, srv.URL, owner.ID, 4, 0, 1, "house1", 3, "y1"); c != http.StatusOK {
+		t.Fatalf("build 1st: %d", c)
+	}
+	if _, c := buildHouseTuika(t, srv.URL, owner.ID, 4, 0, 2, "house1", 0, 3, "y2"); c != http.StatusOK {
+		t.Fatalf("build yami: %d", c)
+	}
+	var houseID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM player_houses WHERE owner_id=$1 AND tuika=3`, owner.ID).Scan(&houseID); err != nil {
+		t.Fatalf("house id: %v", err)
+	}
+	// 出品用アイテム: 耐久>0の商品を2個持たせる。
+	var itemID int64
+	var durability int
+	var masterPrice int64
+	if err := pool.QueryRow(ctx,
+		`SELECT id, GREATEST(durability,1), price FROM content_items
+		 WHERE enabled AND durability > 0 AND (max_sets = 0 OR max_sets >= 2) ORDER BY id LIMIT 1`).
+		Scan(&itemID, &durability, &masterPrice); err != nil {
+		t.Fatalf("pick item: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO player_items (player_id, item_id, quantity, remaining_uses) VALUES ($1, $2, 2, $3)`,
+		owner.ID, itemID, durability*2); err != nil {
+		t.Fatalf("grant items: %v", err)
+	}
+
+	post := func(path string, body map[string]any) int {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		resp, err := http.Post(srv.URL+path, "application/json", bytes.NewReader(b))
+		if err != nil {
+			t.Fatalf("post %s: %v", path, err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	ownerPath := "/api/v1/players/" + strconv.FormatInt(owner.ID, 10)
+	visitorPath := "/api/v1/players/" + strconv.FormatInt(visitor.ID, 10)
+
+	// 1個目を1000円で販売、2個目を倉庫に預ける。
+	if c := post(ownerPath+"/building/yami/list", map[string]any{
+		"house_id": houseID, "item_id": itemID, "price": 1000, "idempotency_key": "yl1"}); c != http.StatusOK {
+		t.Fatalf("list sale: %d", c)
+	}
+	if c := post(ownerPath+"/building/yami/list", map[string]any{
+		"house_id": houseID, "item_id": itemID, "warehouse": true, "idempotency_key": "yl2"}); c != http.StatusOK {
+		t.Fatalf("list warehouse: %d", c)
+	}
+	var invCnt int
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM player_items WHERE player_id=$1 AND item_id=$2`, owner.ID, itemID).Scan(&invCnt)
+	if invCnt != 0 {
+		t.Errorf("owner inventory rows = %d, want 0", invCnt)
+	}
+	var saleID, whID int64
+	pool.QueryRow(ctx, `SELECT id FROM yami_items WHERE house_id=$1 AND zokusei=0`, houseID).Scan(&saleID)
+	pool.QueryRow(ctx, `SELECT id FROM yami_items WHERE house_id=$1 AND zokusei=1`, houseID).Scan(&whID)
+	if saleID == 0 || whID == 0 {
+		t.Fatalf("listings not created: sale=%d wh=%d", saleID, whID)
+	}
+
+	// 訪問者は販売品を買える(現金1000円→家主の普通口座)。
+	ownerSavBefore := int64(0)
+	pool.QueryRow(ctx, `SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account=$1`,
+		fmt.Sprintf("savings:%d", owner.ID)).Scan(&ownerSavBefore)
+	if c := post(visitorPath+"/building/yami/buy", map[string]any{
+		"house_id": houseID, "listing_id": saleID, "idempotency_key": "yb1"}); c != http.StatusOK {
+		t.Fatalf("visitor buy: %d", c)
+	}
+	var ownerSavAfter int64
+	pool.QueryRow(ctx, `SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account=$1`,
+		fmt.Sprintf("savings:%d", owner.ID)).Scan(&ownerSavAfter)
+	if ownerSavAfter-ownerSavBefore != 1000 {
+		t.Errorf("owner savings delta = %d, want 1000", ownerSavAfter-ownerSavBefore)
+	}
+	var vQty int
+	pool.QueryRow(ctx, `SELECT quantity FROM player_items WHERE player_id=$1 AND item_id=$2`, visitor.ID, itemID).Scan(&vQty)
+	if vQty != 1 {
+		t.Errorf("visitor qty = %d, want 1", vQty)
+	}
+	// 倉庫品は訪問者から買えない。
+	if c := post(visitorPath+"/building/yami/buy", map[string]any{
+		"house_id": houseID, "listing_id": whID, "idempotency_key": "yb2"}); c != http.StatusUnprocessableEntity {
+		t.Errorf("visitor buy warehouse: %d, want 422", c)
+	}
+	// 家主は倉庫品を500円で回収できる(売上なし)。
+	if c := post(ownerPath+"/building/yami/buy", map[string]any{
+		"house_id": houseID, "listing_id": whID, "idempotency_key": "yb3"}); c != http.StatusOK {
+		t.Fatalf("owner buyback: %d", c)
+	}
+	var feeSum int64
+	pool.QueryRow(ctx, `SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account='system:yami_fee'`).Scan(&feeSum)
+	if feeSum != 500 {
+		t.Errorf("yami fee = %d, want 500", feeSum)
+	}
+	var oQty int
+	pool.QueryRow(ctx, `SELECT quantity FROM player_items WHERE player_id=$1 AND item_id=$2`, owner.ID, itemID).Scan(&oQty)
+	if oQty != 1 {
+		t.Errorf("owner qty after buyback = %d, want 1", oQty)
+	}
+
+	// 売却時は残りの出品が持ち物へ戻る。
+	if c := post(ownerPath+"/building/yami/list", map[string]any{
+		"house_id": houseID, "item_id": itemID, "price": 2000, "idempotency_key": "yl3"}); c != http.StatusOK {
+		t.Fatalf("relist: %d", c)
+	}
+	if _, c := sellHouse(t, srv.URL, owner.ID, houseID, "ys1"); c != http.StatusOK {
+		t.Fatalf("sell: %d", c)
+	}
+	pool.QueryRow(ctx, `SELECT COALESCE(quantity,0) FROM player_items WHERE player_id=$1 AND item_id=$2`, owner.ID, itemID).Scan(&oQty)
+	if oQty != 1 {
+		t.Errorf("owner qty after sell = %d, want 1", oQty)
+	}
+	var leftover int
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM yami_items WHERE house_id=$1`, houseID).Scan(&leftover)
+	if leftover != 0 {
+		t.Errorf("leftover listings = %d, want 0", leftover)
+	}
+
+	led := ledger.New(pool)
+	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
+		t.Errorf("ledger zero-sum broken: %d", sum)
+	}
+}
+
 // TestBuildHouseHiddenTown covers the hidden-town build rules: building into a
 // hidden town from outside is rejected, but a player currently in the hidden
 // town may build there (街マップの空き地クリック導線).

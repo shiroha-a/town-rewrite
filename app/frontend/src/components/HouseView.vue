@@ -11,6 +11,7 @@ import {
   type BbsPost,
 } from '../api';
 import Toast from './Toast.vue';
+import YamiShop from './YamiShop.vue';
 import { useToast } from '../toast';
 
 // 家訪問(レガシー original_house.cgi houmon)。レガシーのレイアウトを再現:
@@ -356,8 +357,9 @@ async function doDeleteBbs(kind: string, opts: { articleNo?: number; threadNo?: 
         </span>
       </div>
 
-      <!-- 追加種別の家(運営/株式会社/持ち物販売店)。専用画面はT2〜T4で実装。 -->
-      <div v-if="house.tuika !== 0" class="tuika-wrap">
+      <!-- 追加種別の家: 持ち物販売店=闇市。運営/株式会社はT3/T4で実装。 -->
+      <YamiShop v-if="house.tuika === 3" :player="player" :house-id="house.id" @update="emit('update', $event)" />
+      <div v-else-if="house.tuika !== 0" class="tuika-wrap">
         <div class="tuika-title">{{ tuikaName }}</div>
         <div class="tuika-body">この{{ tuikaName }}の画面は準備中です。</div>
       </div>
