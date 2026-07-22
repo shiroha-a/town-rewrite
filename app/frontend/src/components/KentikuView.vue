@@ -7,7 +7,11 @@ import { useToast } from '../toast';
 
 // 建設会社(建築系フェーズ2a): 5つの街の空地に家を建てる。建築費は普通口座から
 // 引き落とす。1軒目は(地価+外装)×内装倍率、2軒目以降は地価+外装×2。1人4軒まで。
-const props = defineProps<{ player: Player }>();
+// initialTargetは街マップの空き地クリックから渡される建築マス(隠し町も可)。
+const props = defineProps<{
+  player: Player;
+  initialTarget?: { town: number; row: number; col: number } | null;
+}>();
 const emit = defineEmits<{ update: [player: Player]; back: [] }>();
 
 const yen = (n: number) => n.toLocaleString('ja-JP');
@@ -23,8 +27,16 @@ const selectedCell = ref<{ row: number; col: number } | null>(null);
 const selectedExterior = ref('');
 const selectedInterior = ref(3); // 既定はD(最安)
 
-// 建築対象の街: 隠し町は選べない。
+// 建築対象の街: 隠し町はタブから選べない。ただし空き地クリック(initialTarget)で
+// 開いた隠し町はそのまま表示・建築できる(今いる街に限りサーバーが許可する)。
 const buildableTowns = computed(() => state.value?.towns.filter((t) => !t.hidden) ?? []);
+// タブ表示用: 通常街+初期ターゲットで開いた隠し町(選択中のみ)。
+const tabTowns = computed(() => {
+  const towns = [...buildableTowns.value];
+  const sel = state.value?.towns.find((t) => t.no === selectedTown.value);
+  if (sel && sel.hidden) towns.push(sel);
+  return towns;
+});
 
 async function refresh() {
   state.value = await api.building(props.player.id);
@@ -32,7 +44,11 @@ async function refresh() {
     selectedExterior.value = state.value.exteriors[0].key;
   }
   // 選択中の街が隠し町(または消滅)なら先頭の通常街へ戻す。
-  if (!buildableTowns.value.some((t) => t.no === selectedTown.value)) {
+  // 空き地クリックで開いた隠し町(initialTarget)は維持する。
+  if (
+    !buildableTowns.value.some((t) => t.no === selectedTown.value) &&
+    selectedTown.value !== props.initialTarget?.town
+  ) {
     selectedTown.value = buildableTowns.value[0]?.no ?? 0;
     selectedCell.value = null;
   }
@@ -44,6 +60,12 @@ onMounted(async () => {
     facilities.value = f;
   } catch (e) {
     message.value = e instanceof Error ? e.message : String(e);
+  }
+  // 街マップの空き地クリックから来た場合はそのマスを選択済みにする。
+  const target = props.initialTarget;
+  if (target && state.value?.towns.some((t) => t.no === target.town)) {
+    selectedTown.value = target.town;
+    selectedCell.value = { row: target.row, col: target.col };
   }
   // 背景アセット(装飾レイヤー)。取れなくてもグリッドは描画する。
   try {
@@ -206,10 +228,10 @@ async function build() {
     <div v-if="message" class="message error" data-test="message">{{ message }}</div>
 
     <template v-if="state">
-      <!-- 街タブ(隠し町は建築対象外) -->
+      <!-- 街タブ(隠し町は空き地クリックで開いた場合のみ表示) -->
       <div class="town-tabs">
         <button
-          v-for="t in buildableTowns"
+          v-for="t in tabTowns"
           :key="t.no"
           class="tab"
           :class="{ active: selectedTown === t.no }"

@@ -60,9 +60,12 @@ function onLogout() {
 }
 // 家訪問(view='house')で開く家のID。街の家クリックからnavigate経由で渡される。
 const houseId = ref<number | null>(null);
-function navigate(v: string, param?: number) {
+// 建設会社(view='kentiku')の初期建築ターゲット。街マップの空き地クリックから渡される。
+const kentikuTarget = ref<{ town: number; row: number; col: number } | null>(null);
+function navigate(v: string, param?: number | { town: number; row: number; col: number }) {
   view.value = v;
   houseId.value = v === 'house' && typeof param === 'number' ? param : null;
+  kentikuTarget.value = v === 'kentiku' && typeof param === 'object' ? param : null;
 }
 function back() {
   view.value = 'town';
@@ -119,7 +122,7 @@ const facilityTitles: Record<string, string> = {
     <JobChangeView v-else-if="view === 'jobchange'" :player="player" @update="onUpdate" @back="back" />
     <SyokudouView v-else-if="view === 'syokudou'" :player="player" @update="onUpdate" @back="back" />
     <HanbaiView v-else-if="view === 'hanbai'" :player="player" @update="onUpdate" @back="back" />
-    <KentikuView v-else-if="view === 'kentiku'" :player="player" @update="onUpdate" @back="back" />
+    <KentikuView v-else-if="view === 'kentiku'" :player="player" :initial-target="kentikuTarget" @update="onUpdate" @back="back" />
     <HouseView v-else-if="view === 'house' && houseId" :player="player" :house-id="houseId" @update="onUpdate" @back="back" />
     <MyHouseView v-else-if="view === 'myhouse'" :player="player" @update="onUpdate" @back="back" />
     <FacilityMenuView

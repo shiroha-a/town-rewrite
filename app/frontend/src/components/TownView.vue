@@ -6,7 +6,11 @@ import CommandIcon from './CommandIcon.vue';
 import PowerBar from './PowerBar.vue';
 
 const props = defineProps<{ player: Player }>();
-const emit = defineEmits<{ navigate: [view: string, param?: number]; reload: []; logout: [] }>();
+const emit = defineEmits<{
+  navigate: [view: string, param?: number | { town: number; row: number; col: number }];
+  reload: [];
+  logout: [];
+}>();
 
 const yen = (n: number) => n.toLocaleString('ja-JP');
 
@@ -246,6 +250,12 @@ function nav(view: string) {
 function clickHouse(h: HouseCell) {
   if (moving.value) return;
   emit('navigate', 'house', h.id);
+}
+
+// 空き地をクリック → 建設会社をそのマス選択済みで開く(隠し町でも今いる街なら建築可)。
+function clickAkichi(col: number, row: number) {
+  if (moving.value) return;
+  emit('navigate', 'kentiku', { town: displayTown.value, row, col });
 }
 
 // 家のツールチップ。家主が設定したマウスオーバーコメント(setumei)を改行して表示する。
@@ -564,14 +574,15 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
                 :src="assetUrl(assetAt(c, ri)!.img)"
                 alt=""
               />
-              <!-- 空き地(家が建っていないakichiマス)。うっすら表示。 -->
-              <img
+              <!-- 空き地(家が建っていないakichiマス)。クリックでそのマスに建築。 -->
+              <button
                 v-if="akichiAt(c, ri) && !houseAt(c, ri) && !facilityAt(c, ri)"
-                class="cell-akichi"
-                src="/img/akiti.gif"
-                :title="`${r}${c}（空き地）`"
-                alt="空き地"
-              />
+                class="facility akichi-btn"
+                :title="`${r}${c}（空き地）クリックで建築`"
+                @click="clickAkichi(c, ri)"
+              >
+                <img class="akichi-img" src="/img/akiti.gif" alt="空き地" />
+              </button>
               <!-- 家。クリックでその家のコンテンツ(訪問パネル)を開く。 -->
               <button
                 v-else-if="houseAt(c, ri)"

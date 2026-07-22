@@ -2996,16 +2996,6 @@ func TestBuildHouse(t *testing.T) {
 		t.Errorf("non-plot: status=%d, want 422", c)
 	}
 
-	// 隠し町には建てられない(空地があっても拒否)。
-	{
-		ts := building.DefaultTowns()
-		ts[4].Hidden = true
-		building.SetTowns(ts)
-		if _, c := buildHouse(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, "bh"); c != http.StatusUnprocessableEntity {
-			t.Errorf("hidden town: status=%d, want 422", c)
-		}
-		building.SetTowns(building.DefaultTowns())
-	}
 
 	// 1軒目: 謎の街(4) の A1 に house1 + D内装。費用=(250+150)×1×10000=4,000,000。
 	got, code := buildHouse(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, "b1")
@@ -3059,6 +3049,33 @@ func TestBuildHouse(t *testing.T) {
 	led := ledger.New(pool)
 	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
 		t.Errorf("ledger zero-sum broken: %d", sum)
+	}
+}
+
+// TestBuildHouseHiddenTown covers the hidden-town build rules: building into a
+// hidden town from outside is rejected, but a player currently in the hidden
+// town may build there (街マップの空き地クリック導線).
+func TestBuildHouseHiddenTown(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	p := register(t, srv.URL, "misskey.example", "hiddenbuilder")
+	creditSavings(t, pool, p.ID, 30_000_000)
+	seedPlots(t, pool, [][3]int{{4, 0, 1}})
+	ts := building.DefaultTowns()
+	ts[4].Hidden = true
+	building.SetTowns(ts)
+	defer building.SetTowns(building.DefaultTowns())
+
+	// 隠し町の外からは建てられない。
+	if _, c := buildHouse(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, "hb1"); c != http.StatusUnprocessableEntity {
+		t.Errorf("hidden from outside: status=%d, want 422", c)
+	}
+	// 隠し町に現在いる場合は建てられる。
+	if _, err := pool.Exec(ctx, `UPDATE players SET current_town=4 WHERE id=$1`, p.ID); err != nil {
+		t.Fatalf("move player: %v", err)
+	}
+	if _, c := buildHouse(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, "hb2"); c != http.StatusOK {
+		t.Errorf("hidden inside: status=%d, want 200", c)
 	}
 }
 

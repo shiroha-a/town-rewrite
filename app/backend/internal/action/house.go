@@ -27,9 +27,16 @@ func (s *Service) DoBuildHouse(ctx context.Context, playerID int64, town, row, c
 		if town < 0 || town >= building.TownCount() || col < 1 || col > townmap.Cols || row < 0 || row >= townmap.Rows {
 			return &ConditionError{Message: "建築場所の指定が正しくありません。"}
 		}
-		// 隠し町には家を建てられない。
+		// 隠し町は建設会社の対象外だが、その街に現在いる場合だけは建てられる
+		// (街マップの空き地クリック導線。隠し町へは徒歩/バスでしか入れない)。
 		if building.IsHidden(town) {
-			return &ConditionError{Message: "その街には家を建てられません。"}
+			var cur int
+			if err := tx.QueryRow(ctx, `SELECT current_town FROM players WHERE id = $1`, playerID).Scan(&cur); err != nil {
+				return fmt.Errorf("read current town: %w", err)
+			}
+			if cur != town {
+				return &ConditionError{Message: "その街には家を建てられません。"}
+			}
 		}
 		// 所有軒数(上限)。建てる前の軒数で1軒目/2軒目以降の費用式を分ける。
 		var count int
