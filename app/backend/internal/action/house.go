@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -23,8 +24,19 @@ import (
 // the legacy cost formula (1軒目=地価+外装+内装, 2軒目以降=地価+外装×2).
 func (s *Service) DoBuildHouse(ctx context.Context, playerID int64, town, row, col int, exterior string, interiorRank int, idempotencyKey string) (*player.Player, error) {
 	return s.runAction(ctx, playerID, "build_house", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
-		if town < 0 || col < 1 || col > townmap.Cols || row < 0 || row >= townmap.Rows {
+		if town < 0 || town >= building.TownCount() || col < 1 || col > townmap.Cols || row < 0 || row >= townmap.Rows {
 			return &ConditionError{Message: "建築場所の指定が正しくありません。"}
+		}
+		// 隠し町は建設会社の対象外だが、その街に現在いる場合だけは建てられる
+		// (街マップの空き地クリック導線。隠し町へは徒歩/バスでしか入れない)。
+		if building.IsHidden(town) {
+			var cur int
+			if err := tx.QueryRow(ctx, `SELECT current_town FROM players WHERE id = $1`, playerID).Scan(&cur); err != nil {
+				return fmt.Errorf("read current town: %w", err)
+			}
+			if cur != town {
+				return &ConditionError{Message: "その街には家を建てられません。"}
+			}
 		}
 		// 所有軒数(上限)。建てる前の軒数で1軒目/2軒目以降の費用式を分ける。
 		var count int
@@ -220,9 +232,8 @@ func (s *Service) DoSaisen(ctx context.Context, playerID, houseID, amount int64,
 		if err != nil {
 			return fmt.Errorf("load house owner: %w", err)
 		}
-		if ownerID == playerID {
-			return &ConditionError{Message: "自分の家にはさい銭できません。"}
-		}
+		// レガシー(saisensuru)は自分の家へのさい銭も許す(現金→自分の普通口座)。
+		// 日次上限(相手別2万/受取10万)は自分の家にも適用される。
 		if state.Money < amount {
 			return &ConditionError{Message: "所持金が足りません。"}
 		}
@@ -414,18 +425,44 @@ func (s *Service) DoShiire(ctx context.Context, playerID, houseID, itemID int64,
 // The shelf price is the per-item price if set, otherwise 仕入れ値×掛け率. Payment
 // goes to the owner's bank savings and the item transfers to the buyer. A player
 // cannot buy from their own shop.
-func (s *Service) DoBuyFromHouseShop(ctx context.Context, buyerID, houseID, itemID int64, qty int, idempotencyKey string) (*player.Player, error) {
+// maxBuyQty is the legacy per-purchase quantity limit (item_kosuuseigen).
+const maxBuyQty = 4
+
+// creditCardNames are the items that enable credit (bank) payment at shops
+// (レガシーのクレジット系アイテム)。
+var creditCardNames = []string{"クレジットカード", "ゴールドクレジットカード", "スペシャルクレジットカード"}
+
+// HouseBuyResult summarizes a shop purchase for the result toast.
+type HouseBuyResult struct {
+	Total    int64  // 割引前の合計(店頭価格×個数)
+	Cashback int64  // ご近所キャッシュバック(単価10%×個数)
+	Paid     int64  // 実際に支払った額
+	Method   string // "cash"/"credit"
+}
+
+func (s *Service) DoBuyFromHouseShop(ctx context.Context, buyerID, houseID, itemID int64, qty int, payMethod, idempotencyKey string) (*player.Player, *HouseBuyResult, error) {
 	if qty <= 0 {
 		qty = 1
 	}
-	return s.runAction(ctx, buyerID, "house_shop_buy", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
+	if qty > maxBuyQty {
+		return nil, nil, &ConditionError{Message: fmt.Sprintf("一度に買えるのは%d個までです。", maxBuyQty)}
+	}
+	if payMethod == "" {
+		payMethod = "cash"
+	}
+	if payMethod != "cash" && payMethod != "credit" {
+		return nil, nil, &ConditionError{Message: "支払い方法が正しくありません。"}
+	}
+	result := &HouseBuyResult{Method: payMethod}
+	p, err := s.runAction(ctx, buyerID, "house_shop_buy", idempotencyKey, func(ctx context.Context, tx pgx.Tx, state effects.State) error {
 		var (
-			ownerID int64
-			markup  float64
+			ownerID  int64
+			markup   float64
+			shopTown int
 		)
 		err := tx.QueryRow(ctx,
-			`SELECT h.owner_id, hs.markup FROM house_shops hs JOIN player_houses h ON h.id = hs.house_id
-			 WHERE hs.house_id = $1`, houseID).Scan(&ownerID, &markup)
+			`SELECT h.owner_id, hs.markup, h.town FROM house_shops hs JOIN player_houses h ON h.id = hs.house_id
+			 WHERE hs.house_id = $1`, houseID).Scan(&ownerID, &markup, &shopTown)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return &ConditionError{Message: "その家に店がありません。"}
 		}
@@ -434,6 +471,12 @@ func (s *Service) DoBuyFromHouseShop(ctx context.Context, buyerID, houseID, item
 		}
 		if ownerID == buyerID {
 			return &ConditionError{Message: "自分の店では買えません。"}
+		}
+		// コンテンツ枠に「お店」が設定されていない家では買えない(店が非公開)。
+		if ok, err := hasHouseContent(ctx, tx, houseID, "shop"); err != nil {
+			return err
+		} else if !ok {
+			return &ConditionError{Message: "この家の店は公開されていません。"}
 		}
 		var (
 			buyPrice  int64
@@ -459,7 +502,44 @@ func (s *Service) DoBuyFromHouseShop(ctx context.Context, buyerID, houseID, item
 			price = int64(float64(buyPrice) * markup)
 		}
 		cost := price * int64(qty)
-		if state.Money < cost {
+		// ご近所キャッシュバック(レガシー buy_syouhin): 買い手の居住街(最初に建てた家の街)
+		// が店の街と同じなら、単価の10%×個数を割引。店主の売上も同額減る。
+		var cashback int64
+		var residenceTown *int
+		if err := tx.QueryRow(ctx,
+			`SELECT town FROM player_houses WHERE owner_id = $1 ORDER BY built_at, id LIMIT 1`,
+			buyerID).Scan(&residenceTown); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("residence town: %w", err)
+		}
+		if residenceTown != nil && *residenceTown == shopTown {
+			cashback = (price / 10) * int64(qty)
+		}
+		paid := cost - cashback
+		// 支払い方法: 現金 or クレジット(クレジットカード所持で普通口座から)。
+		buyerAccount := ledger.PlayerAccount(buyerID)
+		if payMethod == "credit" {
+			var hasCard bool
+			if err := tx.QueryRow(ctx,
+				`SELECT EXISTS(
+				   SELECT 1 FROM player_items pi JOIN content_items ci ON ci.id = pi.item_id
+				   WHERE pi.player_id = $1 AND pi.remaining_uses > 0 AND ci.name = ANY($2))`,
+				buyerID, creditCardNames).Scan(&hasCard); err != nil {
+				return fmt.Errorf("check credit card: %w", err)
+			}
+			if !hasCard {
+				return &ConditionError{Message: "クレジットカードを持っていません。"}
+			}
+			var savings int64
+			if err := tx.QueryRow(ctx,
+				`SELECT COALESCE(SUM(delta), 0) FROM ledger_entry WHERE account = $1`,
+				ledger.SavingsAccount(buyerID)).Scan(&savings); err != nil {
+				return fmt.Errorf("read savings: %w", err)
+			}
+			if savings < paid {
+				return &ConditionError{Message: "普通口座の残高が足りません。"}
+			}
+			buyerAccount = ledger.SavingsAccount(buyerID)
+		} else if state.Money < paid {
 			return &ConditionError{Message: "お金が足りません。"}
 		}
 		var durability, maxSets int
@@ -478,13 +558,18 @@ func (s *Service) DoBuyFromHouseShop(ctx context.Context, buyerID, houseID, item
 		if maxSets > 0 && current+add > maxSets*durability {
 			return &ConditionError{Message: fmt.Sprintf("これ以上は持てません(最大%dセット)。", maxSets)}
 		}
-		// 代金は店主の普通口座へ。
-		if err := s.ledger.PostTx(ctx, tx, "house_shop_buy", "", []ledger.Entry{
-			{Account: ledger.PlayerAccount(buyerID), Delta: -cost},
-			{Account: ledger.SavingsAccount(ownerID), Delta: cost},
-		}); err != nil {
-			return fmt.Errorf("pay: %w", err)
+		// 代金(キャッシュバック控除後)は店主の普通口座へ。
+		if paid > 0 {
+			if err := s.ledger.PostTx(ctx, tx, "house_shop_buy", "", []ledger.Entry{
+				{Account: buyerAccount, Delta: -paid},
+				{Account: ledger.SavingsAccount(ownerID), Delta: paid},
+			}); err != nil {
+				return fmt.Errorf("pay: %w", err)
+			}
 		}
+		result.Total = cost
+		result.Cashback = cashback
+		result.Paid = paid
 		if _, err := tx.Exec(ctx,
 			`UPDATE house_shop_stock SET stock = stock - $3 WHERE house_id = $1 AND item_id = $2`,
 			houseID, itemID, qty); err != nil {
@@ -499,25 +584,70 @@ func (s *Service) DoBuyFromHouseShop(ctx context.Context, buyerID, houseID, item
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return p, result, nil
 }
 
-// maxBbsBodyLen caps a bulletin-board post body length.
-const maxBbsBodyLen = 500
+// maxBbsBodyWeight caps a normal-board post body (レガシー: 全角100字半角200字。
+// ASCII=1、それ以外=2の重み付き長で数える)。
+const maxBbsBodyWeight = 200
 
-// DoPostBbs posts a message to a house's bulletin board (フェーズ3b). kind is
-// "normal" (anyone) or "nushi" (家主板, owner only).
-func (s *Service) DoPostBbs(ctx context.Context, playerID, houseID int64, kind, body, idempotencyKey string) (*player.Player, error) {
-	body = strings.TrimSpace(body)
-	if body == "" {
-		return nil, &ConditionError{Message: "本文を入力してください。"}
+// maxNormalBbsPosts caps stored normal-board posts per house (レガシー
+// $bbs_kizi_max相当。超過時は最古の記事から削除される)。
+const maxNormalBbsPosts = 200
+
+// maxNushiBbsPosts caps stored 家主板 articles per house (レガシーgentei_registは
+// 最新50件まで保持する)。
+const maxNushiBbsPosts = 50
+
+// bbsWeightedLen returns the legacy Shift_JIS-style length: ASCII counts 1,
+// everything else counts 2.
+func bbsWeightedLen(s string) int {
+	n := 0
+	for _, r := range s {
+		if r <= 0x7f {
+			n++
+		} else {
+			n += 2
+		}
 	}
-	if utf8.RuneCountInString(body) > maxBbsBodyLen {
-		return nil, &ConditionError{Message: fmt.Sprintf("本文は%d文字以内で入力してください。", maxBbsBodyLen)}
+	return n
+}
+
+// BbsPostResult carries the money reward granted for a normal-board post.
+type BbsPostResult struct {
+	Reward int64 `json:"reward"`
+	Bonus  bool  `json:"bonus"`
+}
+
+// DoPostBbs posts a message to a house's bulletin board (レガシーbbs_regist/
+// gentei_regist). kind is "normal" (anyone, threaded, rewards money) or "nushi"
+// (家主板, owner only, posted from 家の設定). parentNo(>0) replies to the normal
+// board thread NO.parentNo and floats the thread to the top.
+func (s *Service) DoPostBbs(ctx context.Context, playerID, houseID int64, kind, title, body string, parentNo int, idempotencyKey string) (*player.Player, *BbsPostResult, error) {
+	body = strings.TrimSpace(body)
+	title = strings.TrimSpace(title)
+	if body == "" {
+		return nil, nil, &ConditionError{Message: "コメントが入力されていません"}
+	}
+	if kind == "normal" && bbsWeightedLen(body) > maxBbsBodyWeight {
+		// レガシーbbs_registのエラーメッセージそのまま(挨拶と共通の文言)。
+		return nil, nil, &ConditionError{Message: "挨拶は全角100字半角200字以内です"}
+	}
+	if kind == "nushi" && utf8.RuneCountInString(body) > 500 {
+		return nil, nil, &ConditionError{Message: "本文は500文字以内で入力してください。"}
+	}
+	// 記事タイトル(家主板のブログ風記事用)。
+	if utf8.RuneCountInString(title) > 40 {
+		return nil, nil, &ConditionError{Message: "記事タイトルは40文字以内で入力してください。"}
 	}
 	if kind != "normal" && kind != "nushi" {
-		return nil, &ConditionError{Message: "掲示板の種類が正しくありません。"}
+		return nil, nil, &ConditionError{Message: "掲示板の種類が正しくありません。"}
 	}
-	return s.runAction(ctx, playerID, "house_bbs_post", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+	result := &BbsPostResult{}
+	p, err := s.runAction(ctx, playerID, "house_bbs_post", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
 		var ownerID int64
 		err := tx.QueryRow(ctx, `SELECT owner_id FROM player_houses WHERE id = $1`, houseID).Scan(&ownerID)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -529,44 +659,287 @@ func (s *Service) DoPostBbs(ctx context.Context, playerID, houseID int64, kind, 
 		if kind == "nushi" && ownerID != playerID {
 			return &ConditionError{Message: "家主板には家主しか書き込めません。"}
 		}
-		var name string
-		if err := tx.QueryRow(ctx, `SELECT display_name FROM players WHERE id = $1`, playerID).Scan(&name); err != nil {
+		// コンテンツ枠に設定されていない掲示板には書き込めない。
+		// (掲示板のkind 'normal' はコンテンツ枠では 'bbs')
+		contentKind := kind
+		if kind == "normal" {
+			contentKind = "bbs"
+		}
+		if ok, err := hasHouseContent(ctx, tx, houseID, contentKind); err != nil {
+			return err
+		} else if !ok {
+			return &ConditionError{Message: "この家にはその掲示板がありません。"}
+		}
+		// 二重投稿チェック(直近の記事と同一人物・同一本文)。
+		var lastAuthor int64
+		var lastBody string
+		err = tx.QueryRow(ctx,
+			`SELECT COALESCE(author_id, 0), body FROM house_bbs WHERE house_id = $1 AND kind = $2 ORDER BY id DESC LIMIT 1`,
+			houseID, kind).Scan(&lastAuthor, &lastBody)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("load last post: %w", err)
+		}
+		if err == nil && lastAuthor == playerID && lastBody == body {
+			return &ConditionError{Message: "二重投稿です"}
+		}
+		var name, job string
+		if err := tx.QueryRow(ctx,
+			`SELECT p.display_name, COALESCE(ps.job, '') FROM players p
+			 LEFT JOIN player_status ps ON ps.player_id = p.id WHERE p.id = $1`,
+			playerID).Scan(&name, &job); err != nil {
 			return fmt.Errorf("load name: %w", err)
 		}
+		var threadNo, parentRef *int
+		if kind == "normal" {
+			if parentNo > 0 {
+				// レス: 親スレッドの存在確認。
+				var ok bool
+				if err := tx.QueryRow(ctx,
+					`SELECT EXISTS(SELECT 1 FROM house_bbs WHERE house_id = $1 AND kind = 'normal' AND thread_no = $2)`,
+					houseID, parentNo).Scan(&ok); err != nil {
+					return fmt.Errorf("check parent: %w", err)
+				}
+				if !ok {
+					return &ConditionError{Message: "該当する記事no.が見つかりません。"}
+				}
+				parentRef = &parentNo
+			} else {
+				// 新規スレッド: 家ごとの通し番号(NO.x)を採番。
+				var next int
+				if err := tx.QueryRow(ctx,
+					`SELECT COALESCE(MAX(thread_no), 0) + 1 FROM house_bbs WHERE house_id = $1 AND kind = 'normal'`,
+					houseID).Scan(&next); err != nil {
+					return fmt.Errorf("next thread no: %w", err)
+				}
+				threadNo = &next
+			}
+		}
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO house_bbs (house_id, kind, author_id, author_name, body) VALUES ($1, $2, $3, $4, $5)`,
-			houseID, kind, playerID, name, body); err != nil {
+			`INSERT INTO house_bbs (house_id, kind, author_id, author_name, author_job, title, body, thread_no, parent_no)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			houseID, kind, playerID, name, job, title, body, threadNo, parentRef); err != nil {
 			return fmt.Errorf("insert bbs: %w", err)
+		}
+		// 保持上限を超えた分は最古の記事から削除(レガシーは末尾行をpop)。
+		maxPosts := maxNormalBbsPosts
+		if kind == "nushi" {
+			maxPosts = maxNushiBbsPosts
+		}
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM house_bbs WHERE house_id = $1 AND kind = $2 AND id NOT IN (
+			   SELECT id FROM house_bbs WHERE house_id = $1 AND kind = $2 ORDER BY id DESC LIMIT $3)`,
+			houseID, kind, maxPosts); err != nil {
+			return fmt.Errorf("trim bbs: %w", err)
+		}
+		// 通常掲示板への投稿はお金がもらえる(レガシー: 1/10でボーナス)。
+		if kind == "normal" {
+			base := rand.Intn(10) + 1
+			if base == 7 {
+				result.Reward = int64(base + rand.Intn(10000) + 5000)
+				result.Bonus = true
+			} else {
+				result.Reward = int64(base + rand.Intn(2000) + 1000)
+			}
+			if err := s.ledger.PostTx(ctx, tx, "bbs_reward", "", []ledger.Entry{
+				{Account: ledger.SystemAccount("bbs_reward"), Delta: -result.Reward},
+				{Account: ledger.PlayerAccount(playerID), Delta: result.Reward},
+			}); err != nil {
+				return fmt.Errorf("bbs reward: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return p, result, nil
+}
+
+// HouseContentSlot is one requested content slot assignment (コンテンツ枠設定)。
+type HouseContentSlot struct {
+	Slot    int
+	Kind    string // ""=非公開 / "bbs" / "shop" / "nushi" / "url"
+	Title   string
+	URL     string // kind="url" の埋め込みURL(http/httpsのみ)
+	Comment string // タイトル下コメント(リード文)
+}
+
+const maxContentTitleLen = 20
+
+// DoSetHouseContents replaces the house's content slots (レガシー my_house_settei)。
+// 内装ランクで決まる枠数までしか設定できない。空kindの枠は非公開(未設定)扱い。
+func (s *Service) DoSetHouseContents(ctx context.Context, playerID, houseID int64, contents []HouseContentSlot, idempotencyKey string) (*player.Player, error) {
+	for _, c := range contents {
+		if !building.IsHouseContentKind(c.Kind) {
+			return nil, &ConditionError{Message: "コンテンツの種類が正しくありません。"}
+		}
+		if utf8.RuneCountInString(c.Title) > maxContentTitleLen {
+			return nil, &ConditionError{Message: fmt.Sprintf("タイトルは%d文字以内で入力してください。", maxContentTitleLen)}
+		}
+		if utf8.RuneCountInString(c.Comment) > 100 {
+			return nil, &ConditionError{Message: "コメントは100文字以内で入力してください。"}
+		}
+		// 独自URLはhttp/httpsのみ許可(javascript:等の混入防止)。
+		if c.Kind == "url" {
+			u := strings.TrimSpace(c.URL)
+			if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+				return nil, &ConditionError{Message: "独自URLはhttp://またはhttps://で始まるURLを入力してください。"}
+			}
+		}
+	}
+	return s.runAction(ctx, playerID, "house_contents", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
+		var ownerID int64
+		var rank int
+		err := tx.QueryRow(ctx, `SELECT owner_id, interior_rank FROM player_houses WHERE id = $1`, houseID).
+			Scan(&ownerID, &rank)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &ConditionError{Message: "その家は存在しません。"}
+		}
+		if err != nil {
+			return fmt.Errorf("load house: %w", err)
+		}
+		if ownerID != playerID {
+			return &ConditionError{Message: "自分の家のコンテンツだけ設定できます。"}
+		}
+		slots := building.SlotsByRank(rank)
+		seen := map[int]bool{}
+		for _, c := range contents {
+			if c.Slot < 0 || c.Slot >= slots {
+				return &ConditionError{Message: fmt.Sprintf("この家のコンテンツ枠は%dつまでです。", slots)}
+			}
+			if seen[c.Slot] {
+				return &ConditionError{Message: "同じ枠を複数回指定できません。"}
+			}
+			seen[c.Slot] = true
+		}
+		// 全置き換え: 一旦消して、公開する枠(kindあり)だけ入れ直す。
+		if _, err := tx.Exec(ctx, `DELETE FROM house_contents WHERE house_id = $1`, houseID); err != nil {
+			return fmt.Errorf("clear contents: %w", err)
+		}
+		for _, c := range contents {
+			if c.Kind == "" {
+				continue
+			}
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO house_contents (house_id, slot, kind, title, url, comment) VALUES ($1, $2, $3, $4, $5, $6)`,
+				houseID, c.Slot, c.Kind, strings.TrimSpace(c.Title), strings.TrimSpace(c.URL), strings.TrimSpace(c.Comment)); err != nil {
+				return fmt.Errorf("insert content: %w", err)
+			}
 		}
 		return nil
 	})
 }
 
-// DoDeleteBbs deletes a bulletin-board post. The house owner or the post's
-// author may delete it.
-func (s *Service) DoDeleteBbs(ctx context.Context, playerID, postID int64, idempotencyKey string) (*player.Player, error) {
+// hasHouseContent reports whether the house has a content slot of the kind.
+func hasHouseContent(ctx context.Context, tx pgx.Tx, houseID int64, kind string) (bool, error) {
+	var ok bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM house_contents WHERE house_id = $1 AND kind = $2)`,
+		houseID, kind).Scan(&ok); err != nil {
+		return false, fmt.Errorf("check house content: %w", err)
+	}
+	return ok, nil
+}
+
+// DoDeleteBbs deletes bulletin-board posts (レガシーbbs_delete/gentei_delete)。
+// 通常掲示板(kind=normal)は家主かゲーム管理者のみが実行でき、articleNo(記事no.=
+// 投稿ID)で1件、threadNo(親記事no.=NO.x)でスレッドごと、all=trueで全記事を削除する。
+// レスが付いた親記事はarticleNo指定では削除できない。家主板(kind=nushi)は
+// articleNoで1件のみ、書いた本人かゲーム管理者が削除できる。
+func (s *Service) DoDeleteBbs(ctx context.Context, playerID, houseID int64, kind string, articleNo, threadNo int64, all bool, idempotencyKey string) (*player.Player, error) {
+	if kind != "normal" && kind != "nushi" {
+		return nil, &ConditionError{Message: "掲示板の種類が正しくありません。"}
+	}
+	if articleNo <= 0 && threadNo <= 0 && !all {
+		return nil, &ConditionError{Message: "記事no.が指定されていません"}
+	}
 	return s.runAction(ctx, playerID, "house_bbs_delete", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
-		var (
-			houseID  int64
-			authorID int64
-		)
-		err := tx.QueryRow(ctx, `SELECT house_id, COALESCE(author_id, 0) FROM house_bbs WHERE id = $1`, postID).
-			Scan(&houseID, &authorID)
+		var ownerID int64
+		err := tx.QueryRow(ctx, `SELECT owner_id FROM player_houses WHERE id = $1`, houseID).Scan(&ownerID)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return &ConditionError{Message: "その投稿はありません。"}
+			return &ConditionError{Message: "その家は存在しません。"}
 		}
 		if err != nil {
-			return fmt.Errorf("load post: %w", err)
+			return fmt.Errorf("load house: %w", err)
 		}
-		var ownerID int64
-		if err := tx.QueryRow(ctx, `SELECT owner_id FROM player_houses WHERE id = $1`, houseID).Scan(&ownerID); err != nil {
-			return fmt.Errorf("load owner: %w", err)
+		var isAdmin bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM player_roles WHERE player_id = $1 AND role = 'admin')`,
+			playerID).Scan(&isAdmin); err != nil {
+			return fmt.Errorf("check admin: %w", err)
 		}
-		if playerID != ownerID && playerID != authorID {
-			return &ConditionError{Message: "その投稿は削除できません。"}
+		if kind == "nushi" {
+			if playerID != ownerID && !isAdmin {
+				return &ConditionError{Message: "家主（配偶者）、ゲーム管理者以外は記事削除できません。"}
+			}
+			if articleNo <= 0 {
+				return &ConditionError{Message: "記事no.が指定されていません"}
+			}
+			var authorID int64
+			err := tx.QueryRow(ctx,
+				`SELECT COALESCE(author_id, 0) FROM house_bbs WHERE id = $1 AND house_id = $2 AND kind = 'nushi'`,
+				articleNo, houseID).Scan(&authorID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return &ConditionError{Message: "該当する記事no.が見つかりません。"}
+			}
+			if err != nil {
+				return fmt.Errorf("load post: %w", err)
+			}
+			if authorID != playerID && !isAdmin {
+				return &ConditionError{Message: "書いた本人以外は記事削除できません。"}
+			}
+			if _, err := tx.Exec(ctx, `DELETE FROM house_bbs WHERE id = $1`, articleNo); err != nil {
+				return fmt.Errorf("delete bbs: %w", err)
+			}
+			return nil
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM house_bbs WHERE id = $1`, postID); err != nil {
-			return fmt.Errorf("delete bbs: %w", err)
+		// 通常掲示板: 家主か管理者のみ(レガシーの画面注記は「管理者のみ」だが
+		// 実装は自分の家なら家主も可)。
+		if playerID != ownerID && !isAdmin {
+			return &ConditionError{Message: "管理者以外は記事削除できません。"}
+		}
+		switch {
+		case all:
+			if _, err := tx.Exec(ctx,
+				`DELETE FROM house_bbs WHERE house_id = $1 AND kind = 'normal'`, houseID); err != nil {
+				return fmt.Errorf("delete all bbs: %w", err)
+			}
+		case articleNo > 0:
+			var postThread *int
+			err := tx.QueryRow(ctx,
+				`SELECT thread_no FROM house_bbs WHERE id = $1 AND house_id = $2 AND kind = 'normal'`,
+				articleNo, houseID).Scan(&postThread)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return &ConditionError{Message: "該当する記事no.が見つかりません。"}
+			}
+			if err != nil {
+				return fmt.Errorf("load post: %w", err)
+			}
+			if postThread != nil {
+				var hasReply bool
+				if err := tx.QueryRow(ctx,
+					`SELECT EXISTS(SELECT 1 FROM house_bbs WHERE house_id = $1 AND kind = 'normal' AND parent_no = $2)`,
+					houseID, *postThread).Scan(&hasReply); err != nil {
+					return fmt.Errorf("check replies: %w", err)
+				}
+				if hasReply {
+					return &ConditionError{Message: "子記事のついた親記事は削除できません。"}
+				}
+			}
+			if _, err := tx.Exec(ctx, `DELETE FROM house_bbs WHERE id = $1`, articleNo); err != nil {
+				return fmt.Errorf("delete bbs: %w", err)
+			}
+		default:
+			// 親記事no.(NO.x)指定: スレッドごと(親+レス)削除。
+			tag, err := tx.Exec(ctx,
+				`DELETE FROM house_bbs WHERE house_id = $1 AND kind = 'normal' AND (thread_no = $2 OR parent_no = $2)`,
+				houseID, threadNo)
+			if err != nil {
+				return fmt.Errorf("delete thread: %w", err)
+			}
+			if tag.RowsAffected() == 0 {
+				return &ConditionError{Message: "該当する記事no.が見つかりません。"}
+			}
 		}
 		return nil
 	})

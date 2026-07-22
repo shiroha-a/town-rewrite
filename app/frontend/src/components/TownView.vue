@@ -6,7 +6,11 @@ import CommandIcon from './CommandIcon.vue';
 import PowerBar from './PowerBar.vue';
 
 const props = defineProps<{ player: Player }>();
-const emit = defineEmits<{ navigate: [view: string]; reload: []; logout: [] }>();
+const emit = defineEmits<{
+  navigate: [view: string, param?: number | { town: number; row: number; col: number }];
+  reload: [];
+  logout: [];
+}>();
 
 const yen = (n: number) => n.toLocaleString('ja-JP');
 
@@ -242,6 +246,23 @@ function nav(view: string) {
   emit('navigate', view);
 }
 
+// 家をクリック → その家のコンテンツ(家訪問画面)を開く。
+function clickHouse(h: HouseCell) {
+  if (moving.value) return;
+  emit('navigate', 'house', h.id);
+}
+
+// 空き地をクリック → 建設会社をそのマス選択済みで開く(隠し町でも今いる街なら建築可)。
+function clickAkichi(col: number, row: number) {
+  if (moving.value) return;
+  emit('navigate', 'kentiku', { town: displayTown.value, row, col });
+}
+
+// 家のツールチップ。家主が設定したマウスオーバーコメント(setumei)を改行して表示する。
+function houseTitle(h: HouseCell): string {
+  return h.setumei ? `${h.owner_name}さんの家\n「${h.setumei}」` : `${h.owner_name}さんの家`;
+}
+
 // ワープ(高額・即時)。トップ画面の持ち物欄の下のプルダウンで行き先を選び移動する。
 const warpFee = WARP_FEE;
 // ワープ候補: 現在地と隠し町(hidden)を除く。
@@ -302,9 +323,9 @@ const commands = computed(() => {
     { key: 'doukyo', img: 'doukyo', alt: 'キャラ作成' },
     { key: 'aisatu', img: 'aisatu', alt: 'あいさつ' },
   );
-  // 家を持っていれば「家の設定」(建設会社の自分の家一覧へ)を出す。
+  // 家を持っていれば「家の設定」(my_house_settei相当の専用画面)を出す。
   if (hasOwnHouse.value) {
-    list.push({ key: 'kentiku', img: 'myhome', alt: '家の設定' });
+    list.push({ key: 'myhouse', img: 'myhome', alt: '家の設定' });
   }
   list.push({ key: 'off', img: 'off', alt: 'ログアウト' });
   return list;
@@ -553,20 +574,21 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
                 :src="assetUrl(assetAt(c, ri)!.img)"
                 alt=""
               />
-              <!-- 空き地(家が建っていないakichiマス)。うっすら表示。 -->
-              <img
+              <!-- 空き地(家が建っていないakichiマス)。クリックでそのマスに建築。 -->
+              <button
                 v-if="akichiAt(c, ri) && !houseAt(c, ri) && !facilityAt(c, ri)"
-                class="cell-akichi"
-                src="/img/akiti.gif"
-                :title="`${r}${c}（空き地）`"
-                alt="空き地"
-              />
-              <!-- 家。クリックで建設会社(訪問)へ。 -->
+                class="facility akichi-btn"
+                :title="`${r}${c}（空き地）クリックで建築`"
+                @click="clickAkichi(c, ri)"
+              >
+                <img class="akichi-img" src="/img/akiti.gif" alt="空き地" />
+              </button>
+              <!-- 家。クリックでその家のコンテンツ(訪問パネル)を開く。 -->
               <button
                 v-else-if="houseAt(c, ri)"
                 class="facility house-cell"
-                :title="`${houseAt(c, ri)!.owner_name}さんの家`"
-                @click="nav('kentiku')"
+                :title="houseTitle(houseAt(c, ri)!)"
+                @click="clickHouse(houseAt(c, ri)!)"
               >
                 <img :src="`/img/${houseAt(c, ri)!.exterior}.gif`" :alt="`${houseAt(c, ri)!.owner_name}さんの家`" />
               </button>

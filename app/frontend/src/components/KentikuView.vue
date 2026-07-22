@@ -1,31 +1,23 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import {
-  api,
-  type Player,
-  type BuildingState,
-  type TownFacility,
-  type MyHouse,
-  type HouseCell,
-  type OrosiState,
-  type OrosiItem,
-  type HouseShopView,
-  type HouseShopItem,
-  type BbsPost,
-  type ShopStockView,
-  type ShopStockItem,
-} from '../api';
+import { api, assetUrl, type Player, type BuildingState, type TownFacility, type TownAsset } from '../api';
 import Toast from './Toast.vue';
+import ExteriorPicker from './ExteriorPicker.vue';
 import { useToast } from '../toast';
 
 // 建設会社(建築系フェーズ2a): 5つの街の空地に家を建てる。建築費は普通口座から
-// 引き落とす。1軒目は地価+外装+内装、2軒目以降は地価+外装×2。1人4軒まで。
-const props = defineProps<{ player: Player }>();
+// 引き落とす。1軒目は(地価+外装)×内装倍率、2軒目以降は地価+外装×2。1人4軒まで。
+// initialTargetは街マップの空き地クリックから渡される建築マス(隠し町も可)。
+const props = defineProps<{
+  player: Player;
+  initialTarget?: { town: number; row: number; col: number } | null;
+}>();
 const emit = defineEmits<{ update: [player: Player]; back: [] }>();
 
 const yen = (n: number) => n.toLocaleString('ja-JP');
 const state = ref<BuildingState | null>(null);
 const facilities = ref<TownFacility[]>([]); // 全街の施設(選択中の街ぶんを描画)
+const assets = ref<TownAsset[]>([]); // 背景アセット(装飾レイヤー)
 const message = ref('');
 const busy = ref(false);
 const { toast, showToast, closeToast } = useToast();
@@ -35,12 +27,31 @@ const selectedCell = ref<{ row: number; col: number } | null>(null);
 const selectedExterior = ref('');
 const selectedInterior = ref(3); // 既定はD(最安)
 
+// 建築対象の街: 隠し町はタブから選べない。ただし空き地クリック(initialTarget)で
+// 開いた隠し町はそのまま表示・建築できる(今いる街に限りサーバーが許可する)。
+const buildableTowns = computed(() => state.value?.towns.filter((t) => !t.hidden) ?? []);
+// タブ表示用: 通常街+初期ターゲットで開いた隠し町(選択中のみ)。
+const tabTowns = computed(() => {
+  const towns = [...buildableTowns.value];
+  const sel = state.value?.towns.find((t) => t.no === selectedTown.value);
+  if (sel && sel.hidden) towns.push(sel);
+  return towns;
+});
+
 async function refresh() {
   state.value = await api.building(props.player.id);
   if (!selectedExterior.value && state.value.exteriors.length > 0) {
     selectedExterior.value = state.value.exteriors[0].key;
   }
-  syncDrafts();
+  // 選択中の街が隠し町(または消滅)なら先頭の通常街へ戻す。
+  // 空き地クリックで開いた隠し町(initialTarget)は維持する。
+  if (
+    !buildableTowns.value.some((t) => t.no === selectedTown.value) &&
+    selectedTown.value !== props.initialTarget?.town
+  ) {
+    selectedTown.value = buildableTowns.value[0]?.no ?? 0;
+    selectedCell.value = null;
+  }
 }
 
 onMounted(async () => {
@@ -49,6 +60,18 @@ onMounted(async () => {
     facilities.value = f;
   } catch (e) {
     message.value = e instanceof Error ? e.message : String(e);
+  }
+  // 街マップの空き地クリックから来た場合はそのマスを選択済みにする。
+  const target = props.initialTarget;
+  if (target && state.value?.towns.some((t) => t.no === target.town)) {
+    selectedTown.value = target.town;
+    selectedCell.value = { row: target.row, col: target.col };
+  }
+  // 背景アセット(装飾レイヤー)。取れなくてもグリッドは描画する。
+  try {
+    assets.value = await api.townAssets();
+  } catch {
+    assets.value = [];
   }
 });
 
@@ -103,26 +126,29 @@ function cellImg(row: number, col: number): string | null {
   if (f) return `/img/${f.img}.gif`;
   const h = houseAt(row, col);
   if (h) return `/img/${h.exterior}.gif`;
+  // 空地は街マップと同じ空き地アイコンで示す。
+  if (plotAt(row, col)) return '/img/akiti.gif';
   return null;
+}
+// セルの背景アセット(選択中の街)。施設・家・空き地アイコンの下に敷く。
+function assetImgAt(row: number, col: number): string | null {
+  const a = assets.value.find(
+    (x) => x.town === selectedTown.value && x.row === row && x.col === col,
+  );
+  return a ? assetUrl(a.img) : null;
 }
 function cellTitle(row: number, col: number): string {
   const f = facilityAt(row, col);
   if (f) return f.alt;
   const h = houseAt(row, col);
-  if (h) return `${h.owner_name}さんの家`;
+  if (h) return h.setumei ? `${h.owner_name}さんの家\n「${h.setumei}」` : `${h.owner_name}さんの家`;
   if (plotAt(row, col)) return `${rowLabel(row)}${col}（空地）`;
   return `${rowLabel(row)}${col}`;
 }
 function clickCell(row: number, col: number) {
-  const h = houseAt(row, col);
-  if (h) {
-    // 家 → 訪問パネルを開く
-    visitingHouse.value = h;
-    saisenAmount.value = 100;
-    loadVisitShop(h);
-    loadVisitBbs(h);
-    return;
-  }
+  // 建築画面のグリッドは建てる場所を選ぶためのもの。家はクリックしても
+  // 何もしない(訪問は街マップの家クリックから)。tooltipで家主名だけ分かる。
+  if (houseAt(row, col)) return;
   // 空地に指定されたマス(施設・家なし)だけ建築選択できる。
   if (!plotAt(row, col) || facilityAt(row, col)) return;
   selectedCell.value = { row, col };
@@ -143,7 +169,7 @@ const cost = computed(() => {
   if (isFirstHouse.value) {
     const inte = s.interiors.find((i) => i.rank === selectedInterior.value);
     if (!inte) return 0;
-    man = town.land_price + ext.price + inte.price;
+    man = (town.land_price + ext.price) * inte.multiplier;
   } else {
     man = town.land_price + ext.price * 2;
   }
@@ -184,395 +210,6 @@ async function build() {
   }
 }
 
-// 建て替え・売却(フェーズ2c)
-const rebuildingId = ref<number | null>(null);
-const rebuildExterior = ref('');
-const rebuildInterior = ref(0);
-// 建て替え費用(外装+内装)×10000。地価は既払いのため含めない。
-const rebuildCost = computed(() => {
-  const ext = state.value?.exteriors.find((e) => e.key === rebuildExterior.value);
-  const inte = state.value?.interiors.find((i) => i.rank === rebuildInterior.value);
-  if (!ext || !inte) return 0;
-  return (ext.price + inte.price) * 10000;
-});
-// 売却の返金額(地価×10000)。
-function sellRefund(town: number): number {
-  const t = state.value?.towns.find((x) => x.no === town);
-  return t ? t.land_price * 10000 : 0;
-}
-function startRebuild(h: MyHouse) {
-  rebuildingId.value = h.id;
-  rebuildExterior.value = h.exterior;
-  rebuildInterior.value = h.interior_rank;
-}
-function cancelRebuild() {
-  rebuildingId.value = null;
-}
-async function doRebuild(h: MyHouse) {
-  busy.value = true;
-  const c = rebuildCost.value;
-  try {
-    const after = await api.rebuildHouse(props.player.id, h.id, rebuildExterior.value, rebuildInterior.value);
-    emit('update', after);
-    await refresh();
-    rebuildingId.value = null;
-    showToast({
-      variant: 'item',
-      title: '家を建て替えた',
-      lines: [`建て替え費用 ${yen(c)}円を現金で支払いました`],
-      icon: 'item',
-    });
-  } catch (e) {
-    showToast({
-      variant: 'error',
-      title: '建て替えできませんでした',
-      lines: [e instanceof Error ? e.message : String(e)],
-      icon: 'item',
-    });
-  } finally {
-    busy.value = false;
-  }
-}
-async function doSell(h: MyHouse) {
-  const refund = sellRefund(h.town);
-  const ok = window.confirm(
-    `${townName(h.town)}／${rowLabel(h.row)}${h.col}の家を売却しますか？\n地価分 ${yen(refund)}円が現金で戻ります(外装・内装費は戻りません)。`,
-  );
-  if (!ok) return;
-  busy.value = true;
-  try {
-    const after = await api.sellHouse(props.player.id, h.id);
-    emit('update', after);
-    await refresh();
-    if (rebuildingId.value === h.id) rebuildingId.value = null;
-    showToast({
-      variant: 'item',
-      title: '家を売却した',
-      lines: [`地価分 ${yen(refund)}円が現金で戻りました`],
-      icon: 'item',
-    });
-  } catch (e) {
-    showToast({
-      variant: 'error',
-      title: '売却できませんでした',
-      lines: [e instanceof Error ? e.message : String(e)],
-      icon: 'item',
-    });
-  } finally {
-    busy.value = false;
-  }
-}
-
-// 訪問・さい銭・家コメント設定(フェーズ3a)
-const visitingHouse = ref<HouseCell | null>(null);
-const saisenChoices = [100, 500, 1000, 2000, 5000, 10000];
-const saisenAmount = ref(100);
-const commentDrafts = ref<Record<number, string>>({});
-
-function syncDrafts() {
-  const d: Record<number, string> = {};
-  for (const h of state.value?.my_houses ?? []) d[h.id] = h.setumei ?? '';
-  commentDrafts.value = d;
-}
-async function doSaisen() {
-  if (!visitingHouse.value) return;
-  busy.value = true;
-  const amt = saisenAmount.value;
-  const owner = visitingHouse.value.owner_name;
-  const houseId = visitingHouse.value.id;
-  try {
-    const after = await api.saisen(props.player.id, houseId, amt);
-    emit('update', after);
-    await refresh();
-    visitingHouse.value = null;
-    showToast({
-      variant: 'item',
-      title: 'さい銭しました',
-      lines: [`${owner}さんに ${yen(amt)}円 をさい銭しました`],
-      icon: 'item',
-    });
-  } catch (e) {
-    showToast({
-      variant: 'error',
-      title: 'さい銭できませんでした',
-      lines: [e instanceof Error ? e.message : String(e)],
-      icon: 'item',
-    });
-  } finally {
-    busy.value = false;
-  }
-}
-async function saveComment(h: MyHouse) {
-  busy.value = true;
-  try {
-    const after = await api.setHouseComment(props.player.id, h.id, commentDrafts.value[h.id] ?? '');
-    emit('update', after);
-    await refresh();
-    showToast({
-      variant: 'item',
-      title: 'コメントを保存しました',
-      lines: [`${townName(h.town)}／${rowLabel(h.row)}${h.col} のコメントを更新しました`],
-      icon: 'item',
-    });
-  } catch (e) {
-    showToast({
-      variant: 'error',
-      title: '保存できませんでした',
-      lines: [e instanceof Error ? e.message : String(e)],
-      icon: 'item',
-    });
-  } finally {
-    busy.value = false;
-  }
-}
-
-// 家の店 設定(フェーズ4a)
-const shopEditId = ref<number | null>(null);
-const shopDraft = ref<{ title: string; syubetu: string; markup: number }>({
-  title: '',
-  syubetu: '',
-  markup: 2,
-});
-function startShop(h: MyHouse) {
-  shopEditId.value = h.id;
-  shopDraft.value = {
-    title: h.shop_title || '',
-    syubetu: h.shop_kind || state.value?.shop_kinds[0] || '',
-    markup: h.shop_markup || 2,
-  };
-}
-async function saveShop(h: MyHouse) {
-  busy.value = true;
-  try {
-    const after = await api.openHouseShop(
-      props.player.id,
-      h.id,
-      shopDraft.value.title,
-      shopDraft.value.syubetu,
-      shopDraft.value.markup,
-    );
-    emit('update', after);
-    await refresh();
-    shopEditId.value = null;
-    showToast({
-      variant: 'item',
-      title: '店を設定しました',
-      lines: [`${shopDraft.value.syubetu}の店を開きました（掛け率${shopDraft.value.markup}倍）`],
-      icon: 'item',
-    });
-  } catch (e) {
-    showToast({
-      variant: 'error',
-      title: '店を設定できませんでした',
-      lines: [e instanceof Error ? e.message : String(e)],
-      icon: 'item',
-    });
-  } finally {
-    busy.value = false;
-  }
-}
-
-// 卸問屋で仕入れ(フェーズ4b)
-const orosiState = ref<OrosiState | null>(null);
-const orosiHouseId = ref<number | null>(null);
-const shiireQty = ref<Record<number, number>>({});
-
-async function startOrosi(h: MyHouse) {
-  try {
-    orosiState.value = await api.orosi(props.player.id, h.id);
-    orosiHouseId.value = h.id;
-  } catch (e) {
-    showToast({
-      variant: 'error',
-      title: '卸問屋を開けませんでした',
-      lines: [e instanceof Error ? e.message : String(e)],
-      icon: 'item',
-    });
-  }
-}
-function closeOrosi() {
-  orosiState.value = null;
-  orosiHouseId.value = null;
-}
-async function doShiire(it: OrosiItem) {
-  if (!orosiHouseId.value) return;
-  const qty = shiireQty.value[it.item_id] || 1;
-  busy.value = true;
-  try {
-    const after = await api.shiire(props.player.id, orosiHouseId.value, it.item_id, qty);
-    emit('update', after);
-    orosiState.value = await api.orosi(props.player.id, orosiHouseId.value);
-    await refresh();
-    showToast({
-      variant: 'item',
-      title: '仕入れました',
-      lines: [`${it.name} を${qty}個 仕入れました`],
-      icon: 'item',
-    });
-  } catch (e) {
-    showToast({
-      variant: 'error',
-      title: '仕入れできませんでした',
-      lines: [e instanceof Error ? e.message : String(e)],
-      icon: 'item',
-    });
-  } finally {
-    busy.value = false;
-  }
-}
-
-// 訪問先の店・購入(フェーズ4c)
-const visitShop = ref<HouseShopView | null>(null);
-const buyQty = ref<Record<number, number>>({});
-
-async function loadVisitShop(h: HouseCell) {
-  visitShop.value = null;
-  try {
-    visitShop.value = await api.houseShop(props.player.id, h.id);
-  } catch {
-    visitShop.value = null;
-  }
-}
-function closeVisit() {
-  visitingHouse.value = null;
-  visitShop.value = null;
-  visitBbs.value = [];
-}
-async function doBuyFromShop(it: HouseShopItem) {
-  if (!visitingHouse.value) return;
-  const qty = buyQty.value[it.item_id] || 1;
-  busy.value = true;
-  try {
-    const after = await api.buyFromHouseShop(props.player.id, visitingHouse.value.id, it.item_id, qty);
-    emit('update', after);
-    visitShop.value = await api.houseShop(props.player.id, visitingHouse.value.id);
-    showToast({
-      variant: 'item',
-      title: '買いました',
-      lines: [`${it.name} を${qty}個 買いました`],
-      icon: 'item',
-    });
-  } catch (e) {
-    showToast({
-      variant: 'error',
-      title: '購入できませんでした',
-      lines: [e instanceof Error ? e.message : String(e)],
-      icon: 'item',
-    });
-  } finally {
-    busy.value = false;
-  }
-}
-
-// 家の掲示板(フェーズ3b)
-const visitBbs = ref<BbsPost[]>([]);
-const bbsBody = ref('');
-const nushiBody = ref('');
-const normalPosts = computed(() => visitBbs.value.filter((p) => p.kind === 'normal'));
-const nushiPosts = computed(() => visitBbs.value.filter((p) => p.kind === 'nushi'));
-function canDeletePost(post: BbsPost): boolean {
-  return (visitingHouse.value?.own ?? false) || post.author_id === props.player.id;
-}
-async function loadVisitBbs(h: HouseCell) {
-  visitBbs.value = [];
-  try {
-    visitBbs.value = await api.houseBbs(props.player.id, h.id);
-  } catch {
-    visitBbs.value = [];
-  }
-}
-async function doPostBbs(kind: string) {
-  if (!visitingHouse.value) return;
-  const body = kind === 'nushi' ? nushiBody.value : bbsBody.value;
-  if (!body.trim()) return;
-  busy.value = true;
-  try {
-    const after = await api.postBbs(props.player.id, visitingHouse.value.id, kind, body);
-    emit('update', after);
-    if (kind === 'nushi') nushiBody.value = '';
-    else bbsBody.value = '';
-    visitBbs.value = await api.houseBbs(props.player.id, visitingHouse.value.id);
-    showToast({ variant: 'item', title: '書き込みました', lines: [], icon: 'item' });
-  } catch (e) {
-    showToast({
-      variant: 'error',
-      title: '書き込めませんでした',
-      lines: [e instanceof Error ? e.message : String(e)],
-      icon: 'item',
-    });
-  } finally {
-    busy.value = false;
-  }
-}
-async function doDeleteBbs(post: BbsPost) {
-  if (!visitingHouse.value) return;
-  busy.value = true;
-  try {
-    const after = await api.deleteBbs(props.player.id, post.id);
-    emit('update', after);
-    visitBbs.value = await api.houseBbs(props.player.id, visitingHouse.value.id);
-  } catch (e) {
-    showToast({
-      variant: 'error',
-      title: '削除できませんでした',
-      lines: [e instanceof Error ? e.message : String(e)],
-      icon: 'item',
-    });
-  } finally {
-    busy.value = false;
-  }
-}
-
-// 個別価格設定(フェーズ4c仕上げ)
-const priceStock = ref<ShopStockView | null>(null);
-const priceHouseId = ref<number | null>(null);
-const priceDraft = ref<Record<number, number>>({});
-
-async function startPrice(h: MyHouse) {
-  try {
-    priceStock.value = await api.houseShopStock(props.player.id, h.id);
-    priceHouseId.value = h.id;
-    const d: Record<number, number> = {};
-    for (const it of priceStock.value.items) d[it.item_id] = it.shelf;
-    priceDraft.value = d;
-  } catch (e) {
-    showToast({
-      variant: 'error',
-      title: '価格設定を開けませんでした',
-      lines: [e instanceof Error ? e.message : String(e)],
-      icon: 'item',
-    });
-  }
-}
-function closePrice() {
-  priceStock.value = null;
-  priceHouseId.value = null;
-}
-async function savePrice(it: ShopStockItem) {
-  if (!priceHouseId.value) return;
-  const price = priceDraft.value[it.item_id] ?? it.shelf;
-  busy.value = true;
-  try {
-    const after = await api.setHouseShopPrice(props.player.id, priceHouseId.value, it.item_id, price);
-    emit('update', after);
-    priceStock.value = await api.houseShopStock(props.player.id, priceHouseId.value);
-    showToast({
-      variant: 'item',
-      title: '価格を設定しました',
-      lines: [`${it.name} を${yen(price)}円に設定しました`],
-      icon: 'item',
-    });
-  } catch (e) {
-    showToast({
-      variant: 'error',
-      title: '設定できませんでした',
-      lines: [e instanceof Error ? e.message : String(e)],
-      icon: 'item',
-    });
-  } finally {
-    busy.value = false;
-  }
-}
 </script>
 
 <template>
@@ -583,7 +220,7 @@ async function savePrice(it: ShopStockItem) {
     <div class="kentiku-header">
       <div class="lead">
         建設会社です。街の空地に家を建てられます。<br />
-        1軒目は「地価＋外装＋内装」、2軒目以降は「地価＋外装×2」の建築費が<b>普通口座</b>から引き落とされます（1人{{ state?.mochiie_max ?? 4 }}軒まで）。
+        1軒目は「（地価＋外装）×内装ランク倍率」、2軒目以降は「地価＋外装×2」の建築費が<b>普通口座</b>から引き落とされます（1人{{ state?.mochiie_max ?? 4 }}軒まで）。
       </div>
       <div class="title">建設会社</div>
     </div>
@@ -591,10 +228,10 @@ async function savePrice(it: ShopStockItem) {
     <div v-if="message" class="message error" data-test="message">{{ message }}</div>
 
     <template v-if="state">
-      <!-- 街タブ -->
+      <!-- 街タブ(隠し町は空き地クリックで開いた場合のみ表示) -->
       <div class="town-tabs">
         <button
-          v-for="t in state.towns"
+          v-for="t in tabTowns"
           :key="t.no"
           class="tab"
           :class="{ active: selectedTown === t.no }"
@@ -616,103 +253,10 @@ async function savePrice(it: ShopStockItem) {
               :title="cellTitle(row, col)"
               @click="clickCell(row, col)"
             >
-              <img v-if="cellImg(row, col)" :src="cellImg(row, col)!" :alt="cellTitle(row, col)" />
+              <img v-if="assetImgAt(row, col)" class="cell-bg" :src="assetImgAt(row, col)!" alt="" />
+              <img v-if="cellImg(row, col)" class="cell-fg" :src="cellImg(row, col)!" :alt="cellTitle(row, col)" />
             </div>
           </template>
-        </div>
-      </div>
-
-      <!-- 訪問パネル(家アイコンをクリック) -->
-      <div v-if="visitingHouse" class="visit-panel panel-white">
-        <div class="visit-head">
-          <img :src="`/img/${visitingHouse.exterior}.gif`" :alt="visitingHouse.exterior" />
-          <div class="visit-info">
-            <div class="visit-owner">{{ visitingHouse.owner_name }}さんの家</div>
-            <div class="visit-loc">
-              {{ townName(visitingHouse.town) }}／{{ rowLabel(visitingHouse.row) }}{{ visitingHouse.col }}
-            </div>
-          </div>
-          <button class="btn mini" @click="closeVisit">閉じる</button>
-        </div>
-        <div v-if="visitingHouse.setumei" class="visit-comment">「{{ visitingHouse.setumei }}」</div>
-        <div v-if="visitingHouse.own" class="visit-note">
-          これはあなたの家です。コメントは下の「自分の家」欄で設定できます。
-        </div>
-        <div v-else class="saisen-box">
-          <span class="saisen-label">さい銭箱</span>
-          <select v-model.number="saisenAmount">
-            <option v-for="a in saisenChoices" :key="a" :value="a">{{ yen(a) }}円</option>
-          </select>
-          <button class="btn saisen-btn" :disabled="busy" @click="doSaisen">さい銭する</button>
-        </div>
-
-        <!-- 家の店(訪問販売) -->
-        <div v-if="visitShop && visitShop.has_shop" class="visit-shop">
-          <div class="vs-title">{{ visitShop.title || 'お店' }}（{{ visitShop.syubetu }}）</div>
-          <div v-if="visitShop.own" class="visit-note">
-            あなたの店です。仕入れ・設定は「自分の家」欄から行えます。
-          </div>
-          <div v-else-if="visitShop.items.length === 0" class="orosi-empty">売り切れです。</div>
-          <div v-else class="orosi-scroll">
-            <table class="orosi-table">
-              <thead>
-                <tr>
-                  <th class="l">品名</th>
-                  <th>価格</th>
-                  <th>在庫</th>
-                  <th>数量</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="it in visitShop.items" :key="it.item_id">
-                  <td class="l">{{ it.name }}</td>
-                  <td class="price">{{ yen(it.price) }}円</td>
-                  <td>{{ it.stock }}</td>
-                  <td>
-                    <input
-                      v-model.number="buyQty[it.item_id]"
-                      type="number"
-                      min="1"
-                      :max="it.stock"
-                      class="qty-input"
-                    />
-                  </td>
-                  <td>
-                    <button class="btn mini" :disabled="busy" @click="doBuyFromShop(it)">買う</button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- 掲示板 -->
-        <div class="visit-bbs">
-          <div class="vs-title">通常掲示板</div>
-          <div class="bbs-form">
-            <input v-model="bbsBody" maxlength="500" placeholder="コメントを書く" class="bbs-input" />
-            <button class="btn mini" :disabled="busy" @click="doPostBbs('normal')">書き込む</button>
-          </div>
-          <ul class="bbs-list">
-            <li v-if="normalPosts.length === 0" class="bbs-empty">まだ書き込みはありません。</li>
-            <li v-for="p in normalPosts" :key="p.id">
-              <span class="bbs-author">{{ p.author_name }}</span>：{{ p.body }}
-              <button v-if="canDeletePost(p)" class="bbs-del" :disabled="busy" @click="doDeleteBbs(p)">×</button>
-            </li>
-          </ul>
-          <div class="vs-title">家主板</div>
-          <div v-if="visitingHouse.own" class="bbs-form">
-            <input v-model="nushiBody" maxlength="500" placeholder="家主板に書く" class="bbs-input" />
-            <button class="btn mini" :disabled="busy" @click="doPostBbs('nushi')">書き込む</button>
-          </div>
-          <ul class="bbs-list">
-            <li v-if="nushiPosts.length === 0" class="bbs-empty">まだ書き込みはありません。</li>
-            <li v-for="p in nushiPosts" :key="p.id">
-              <span class="bbs-author">{{ p.author_name }}</span>：{{ p.body }}
-              <button v-if="canDeletePost(p)" class="bbs-del" :disabled="busy" @click="doDeleteBbs(p)">×</button>
-            </li>
-          </ul>
         </div>
       </div>
 
@@ -722,20 +266,15 @@ async function savePrice(it: ShopStockItem) {
           <span class="lbl">建築位置</span>
           <span class="val">{{ townName(selectedTown) }}／{{ rowLabel(selectedCell.row) }}{{ selectedCell.col }}</span>
         </div>
-        <div class="row">
+        <div class="row ext-row">
           <span class="lbl">外装</span>
-          <select v-model="selectedExterior" class="sel">
-            <option v-for="e in state.exteriors" :key="e.key" :value="e.key">
-              {{ e.key }}（{{ e.price }}万）
-            </option>
-          </select>
-          <img class="preview" :src="`/img/${selectedExterior}.gif`" :alt="selectedExterior" />
+          <ExteriorPicker v-model="selectedExterior" :exteriors="state.exteriors" />
         </div>
         <div v-if="isFirstHouse" class="row">
           <span class="lbl">内装</span>
           <select v-model.number="selectedInterior" class="sel">
             <option v-for="i in state.interiors" :key="i.rank" :value="i.rank">
-              {{ i.name }}（{{ i.price }}万・枠{{ i.slots }}）
+              {{ i.name }}（費用×{{ i.multiplier }}・枠{{ i.slots }}）
             </option>
           </select>
         </div>
@@ -755,7 +294,7 @@ async function savePrice(it: ShopStockItem) {
         <template v-else>グリッドの空地（緑）をクリックして建築する場所を選んでください。</template>
       </div>
 
-      <!-- 自分の家一覧 -->
+      <!-- 自分の家一覧(読み取り専用。設定はコマンドバーの「家の設定」から) -->
       <div class="my-houses panel-white">
         <div class="mh-head">自分の家（{{ state.house_count }}／{{ state.mochiie_max }}軒）</div>
         <div v-if="state.my_houses.length === 0" class="mh-empty">まだ家を持っていません。</div>
@@ -764,178 +303,11 @@ async function savePrice(it: ShopStockItem) {
             <div class="mh-row">
               <img :src="`/img/${h.exterior}.gif`" :alt="h.exterior" />
               <span class="mh-loc">{{ townName(h.town) }}／{{ rowLabel(h.row) }}{{ h.col }}</span>
-              <span class="mh-ext">{{ h.exterior }}</span>
-              <span class="mh-spacer"></span>
-              <button class="btn mini" :disabled="busy" @click="startRebuild(h)">建て替え</button>
-              <button class="btn mini danger" :disabled="busy" @click="doSell(h)">売却</button>
-            </div>
-            <div v-if="rebuildingId === h.id" class="mh-rebuild">
-              <label class="mh-field">外装
-                <select v-model="rebuildExterior">
-                  <option v-for="e in state.exteriors" :key="e.key" :value="e.key">
-                    {{ e.key }}（{{ e.price }}万）
-                  </option>
-                </select>
-              </label>
-              <label class="mh-field">内装
-                <select v-model.number="rebuildInterior">
-                  <option v-for="i in state.interiors" :key="i.rank" :value="i.rank">
-                    {{ i.name }}（{{ i.price }}万）
-                  </option>
-                </select>
-              </label>
-              <span class="mh-cost">建て替え費用 {{ yen(rebuildCost) }}円（現金）</span>
-              <button class="btn mini build-btn" :disabled="busy" @click="doRebuild(h)">建て替える</button>
-              <button class="btn mini" :disabled="busy" @click="cancelRebuild">やめる</button>
-            </div>
-            <div class="mh-comment">
-              <input
-                v-model="commentDrafts[h.id]"
-                maxlength="40"
-                placeholder="家のコメント(40字・訪問者に表示)"
-                class="mh-cinput"
-              />
-              <button class="btn mini" :disabled="busy" @click="saveComment(h)">コメント保存</button>
-            </div>
-            <div class="mh-shop">
-              <span v-if="h.has_shop" class="shop-badge">
-                店: {{ h.shop_title || '(無題)' }}／{{ h.shop_kind }}／掛け率{{ h.shop_markup }}倍
-              </span>
-              <span v-else class="shop-none">この家に店はありません</span>
-              <button class="btn mini" :disabled="busy" @click="startShop(h)">
-                {{ h.has_shop ? '店設定を変更' : '店を開く' }}
-              </button>
-              <button v-if="h.has_shop" class="btn mini" :disabled="busy" @click="startOrosi(h)">
-                仕入れる
-              </button>
-              <button v-if="h.has_shop" class="btn mini" :disabled="busy" @click="startPrice(h)">
-                価格設定
-              </button>
-            </div>
-            <div v-if="shopEditId === h.id" class="shop-form">
-              <label class="mh-field">店名
-                <input v-model="shopDraft.title" maxlength="50" class="mh-cinput" />
-              </label>
-              <label class="mh-field">種類
-                <select v-model="shopDraft.syubetu">
-                  <option v-for="k in state.shop_kinds" :key="k" :value="k">{{ k }}</option>
-                </select>
-              </label>
-              <label class="mh-field">掛け率
-                <input
-                  v-model.number="shopDraft.markup"
-                  type="number"
-                  step="0.1"
-                  min="0.3"
-                  max="3"
-                  class="markup-input"
-                />倍
-              </label>
-              <button class="btn mini build-btn" :disabled="busy" @click="saveShop(h)">保存</button>
-              <button class="btn mini" :disabled="busy" @click="shopEditId = null">やめる</button>
+              <span class="mh-ext">{{ h.exterior }}・内装{{ ['A','B','C','D'][h.interior_rank] ?? '?' }}ランク</span>
             </div>
           </li>
         </ul>
-      </div>
-
-      <!-- 卸問屋(仕入れ) -->
-      <div v-if="orosiState" class="orosi-panel panel-white">
-        <div class="orosi-head">
-          <span class="orosi-title">卸問屋（{{ orosiState.syubetu }}）</span>
-          <span class="orosi-info">
-            普通口座 {{ yen(orosiState.savings) }}円／在庫種類 {{ orosiState.stock_kinds }}／{{ orosiState.max_kinds }}
-          </span>
-          <button class="btn mini" @click="closeOrosi">閉じる</button>
-        </div>
-        <div v-if="orosiState.items.length === 0" class="orosi-empty">仕入れられる商品がありません。</div>
-        <div v-else class="orosi-scroll">
-          <table class="orosi-table">
-            <thead>
-              <tr>
-                <th class="l">品名</th>
-                <th>種類</th>
-                <th>仕入れ値</th>
-                <th>店在庫</th>
-                <th>数量</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="it in orosiState.items" :key="it.item_id">
-                <td class="l">{{ it.name }}</td>
-                <td>{{ it.category }}</td>
-                <td class="price">{{ yen(it.buy_price) }}円</td>
-                <td :class="{ full: it.in_stock >= orosiState.max_stock }">
-                  {{ it.in_stock }}/{{ orosiState.max_stock }}
-                </td>
-                <td>
-                  <input
-                    v-model.number="shiireQty[it.item_id]"
-                    type="number"
-                    min="1"
-                    :max="orosiState.max_stock"
-                    class="qty-input"
-                  />
-                </td>
-                <td>
-                  <button
-                    class="btn mini"
-                    :disabled="busy || it.in_stock >= orosiState.max_stock"
-                    @click="doShiire(it)"
-                  >
-                    仕入れる
-                  </button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- 個別価格設定 -->
-      <div v-if="priceStock && priceStock.has_shop" class="orosi-panel panel-white">
-        <div class="orosi-head">
-          <span class="orosi-title">価格設定</span>
-          <span class="orosi-info">掛け率{{ priceStock.markup }}倍／0円で掛け率に戻す</span>
-          <button class="btn mini" @click="closePrice">閉じる</button>
-        </div>
-        <div v-if="priceStock.items.length === 0" class="orosi-empty">
-          在庫がありません。まず仕入れてください。
-        </div>
-        <div v-else class="orosi-scroll">
-          <table class="orosi-table">
-            <thead>
-              <tr>
-                <th class="l">品名</th>
-                <th>仕入れ値</th>
-                <th>上限(×3)</th>
-                <th>店頭価格</th>
-                <th>新価格</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="it in priceStock.items" :key="it.item_id">
-                <td class="l">{{ it.name }}</td>
-                <td class="price">{{ yen(it.buy_price) }}円</td>
-                <td>{{ yen(it.max_price) }}円</td>
-                <td class="price">{{ yen(it.shelf) }}円{{ it.sell_price === null ? '(掛率)' : '' }}</td>
-                <td>
-                  <input
-                    v-model.number="priceDraft[it.item_id]"
-                    type="number"
-                    min="0"
-                    :max="it.max_price"
-                    class="qty-input"
-                  />
-                </td>
-                <td>
-                  <button class="btn mini" :disabled="busy" @click="savePrice(it)">設定</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <div class="mh-note">コメント・コンテンツ・店・建て替え・売却は、街のコマンドバー「家の設定」から行えます。</div>
       </div>
     </template>
 
@@ -1032,6 +404,20 @@ async function savePrice(it: ShopStockItem) {
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  position: relative;
+}
+/* 背景アセット(装飾レイヤー): セルいっぱいに敷き、施設・空き地アイコンの下に置く。 */
+.cell .cell-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+.cell .cell-fg {
+  position: relative;
+  z-index: 1;
 }
 .cell.empty {
   background: #d6f0c0;
@@ -1041,13 +427,17 @@ async function savePrice(it: ShopStockItem) {
 .cell.empty:hover {
   background: #bfe6a0;
 }
+/* 空き地アイコンはうっすら表示(街マップと同じ見え方。選択ハイライトを透かす)。 */
+.cell.empty .cell-fg {
+  opacity: 0.6;
+}
 .cell.facility {
   background: #dfe6ee;
   cursor: not-allowed;
 }
 .cell.house {
   background: #fff6e0;
-  cursor: pointer;
+  cursor: default;
 }
 .cell.house.own {
   outline: 2px solid #cc7a00;
@@ -1079,12 +469,11 @@ async function savePrice(it: ShopStockItem) {
   font-size: 13px;
   padding: 2px 4px;
 }
-.build-form .preview {
-  width: 40px;
-  height: 40px;
-  object-fit: contain;
-  border: 1px solid #ccc;
-  background: #fafafa;
+.build-form .ext-row {
+  align-items: flex-start;
+}
+.build-form .ext-row .lbl {
+  padding-top: 6px;
 }
 .build-form .note {
   color: #888;
@@ -1170,6 +559,43 @@ async function savePrice(it: ShopStockItem) {
   flex: 1 1 auto;
   font-size: 12px;
   padding: 2px 4px;
+}
+/* コンテンツ枠エディタ(内装ランクで枠数が決まる)。 */
+.mh-contents {
+  margin-top: 6px;
+  border: 1px dashed #cfd8c0;
+  padding: 6px;
+}
+.mh-contents-head {
+  font-size: 12px;
+  font-weight: bold;
+  color: #4a7a2a;
+  margin-bottom: 4px;
+}
+.mh-content-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.mh-content-row .slot-no {
+  font-size: 11px;
+  color: #667;
+  flex: 0 0 auto;
+}
+.mh-content-row select {
+  font-size: 12px;
+}
+.slot-title {
+  max-width: 180px;
+}
+.slot-url {
+  max-width: 240px;
+}
+.mh-contents-note {
+  font-size: 11px;
+  color: #889;
+  margin-bottom: 4px;
 }
 .mh-shop {
   display: flex;
@@ -1387,6 +813,11 @@ async function savePrice(it: ShopStockItem) {
 .mh-ext {
   color: #888;
   font-size: 11px;
+}
+.mh-note {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #889;
 }
 .message.error {
   background: #ffecec;

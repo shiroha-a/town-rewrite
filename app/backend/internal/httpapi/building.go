@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+
+	"github.com/shiroha-a/town/internal/action"
 )
 
 // building returns the construction-company screen state: the five towns and
@@ -148,6 +150,42 @@ func (s *Server) houseComment(w http.ResponseWriter, r *http.Request) {
 	writeFacilityResult(w, p, err)
 }
 
+type houseContentsReq struct {
+	HouseID  int64 `json:"house_id"`
+	Contents []struct {
+		Slot    int    `json:"slot"`
+		Kind    string `json:"kind"`
+		Title   string `json:"title"`
+		URL     string `json:"url"`
+		Comment string `json:"comment"`
+	} `json:"contents"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// houseContents sets the house's content slots (コンテンツ枠設定)。
+func (s *Server) houseContents(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req houseContentsReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
+		return
+	}
+	contents := make([]action.HouseContentSlot, 0, len(req.Contents))
+	for _, c := range req.Contents {
+		contents = append(contents, action.HouseContentSlot{Slot: c.Slot, Kind: c.Kind, Title: c.Title, URL: c.URL, Comment: c.Comment})
+	}
+	p, err := s.actions.DoSetHouseContents(r.Context(), id, req.HouseID, contents, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
 type saisenReq struct {
 	HouseID        int64  `json:"house_id"`
 	Amount         int64  `json:"amount"`
@@ -273,7 +311,21 @@ type buyHouseShopReq struct {
 	HouseID        int64  `json:"house_id"`
 	ItemID         int64  `json:"item_id"`
 	Qty            int    `json:"qty"`
+	PayMethod      string `json:"pay_method"` // "cash"(既定)/"credit"
 	IdempotencyKey string `json:"idempotency_key"`
+}
+
+type buyResultResp struct {
+	Total    int64  `json:"total"`
+	Cashback int64  `json:"cashback"`
+	Paid     int64  `json:"paid"`
+	Method   string `json:"method"`
+}
+
+// buyResp is the player state plus the purchase summary (cashback etc.).
+type buyResp struct {
+	playerResp
+	BuyResult buyResultResp `json:"buy_result"`
 }
 
 // buyFromHouseShop buys an item from a house shop (訪問販売).
@@ -292,8 +344,20 @@ func (s *Server) buyFromHouseShop(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "house_id and item_id are required")
 		return
 	}
-	p, err := s.actions.DoBuyFromHouseShop(r.Context(), id, req.HouseID, req.ItemID, req.Qty, req.IdempotencyKey)
-	writeFacilityResult(w, p, err)
+	p, result, err := s.actions.DoBuyFromHouseShop(r.Context(), id, req.HouseID, req.ItemID, req.Qty, req.PayMethod, req.IdempotencyKey)
+	if err != nil {
+		writeFacilityResult(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, buyResp{
+		playerResp: toResp(p),
+		BuyResult: buyResultResp{
+			Total:    result.Total,
+			Cashback: result.Cashback,
+			Paid:     result.Paid,
+			Method:   result.Method,
+		},
+	})
 }
 
 // houseBbs returns a house's bulletin-board posts (誰でも閲覧可).
@@ -314,11 +378,14 @@ func (s *Server) houseBbs(w http.ResponseWriter, r *http.Request) {
 type postBbsReq struct {
 	HouseID        int64  `json:"house_id"`
 	Kind           string `json:"kind"`
+	Title          string `json:"title"`     // 家主板の記事タイトル(任意)
+	ParentNo       int    `json:"parent_no"` // 通常掲示板のレス先スレッドNO(0=新規)
 	Body           string `json:"body"`
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
 // postBbs writes a message to a house's bulletin board (掲示板書き込み).
+// On success the response carries the money reward for the post (bbs_result).
 func (s *Server) postBbs(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -334,16 +401,27 @@ func (s *Server) postBbs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "house_id and body are required")
 		return
 	}
-	p, err := s.actions.DoPostBbs(r.Context(), id, req.HouseID, req.Kind, req.Body, req.IdempotencyKey)
-	writeFacilityResult(w, p, err)
+	p, result, err := s.actions.DoPostBbs(r.Context(), id, req.HouseID, req.Kind, req.Title, req.Body, req.ParentNo, req.IdempotencyKey)
+	if err != nil {
+		writeFacilityResult(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		playerResp
+		BbsResult *action.BbsPostResult `json:"bbs_result"`
+	}{toResp(p), result})
 }
 
 type deleteBbsReq struct {
-	PostID         int64  `json:"post_id"`
+	HouseID        int64  `json:"house_id"`
+	Kind           string `json:"kind"`
+	ArticleNo      int64  `json:"article_no"` // 記事no.(投稿ID)
+	ThreadNo       int64  `json:"thread_no"`  // 親記事no.(NO.x、スレッドごと削除)
+	All            bool   `json:"all"`        // 全記事削除
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
-// deleteBbs deletes a bulletin-board post (家主または投稿者).
+// deleteBbs deletes bulletin-board posts (記事no./親記事no./全記事削除).
 func (s *Server) deleteBbs(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -355,11 +433,11 @@ func (s *Server) deleteBbs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if req.PostID <= 0 {
-		writeError(w, http.StatusBadRequest, "post_id is required")
+	if req.HouseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
 		return
 	}
-	p, err := s.actions.DoDeleteBbs(r.Context(), id, req.PostID, req.IdempotencyKey)
+	p, err := s.actions.DoDeleteBbs(r.Context(), id, req.HouseID, req.Kind, req.ArticleNo, req.ThreadNo, req.All, req.IdempotencyKey)
 	writeFacilityResult(w, p, err)
 }
 

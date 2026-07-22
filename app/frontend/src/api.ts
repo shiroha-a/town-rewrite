@@ -419,6 +419,15 @@ export interface MoveResult {
 }
 export type MoveResp = Player & { move_result: MoveResult };
 
+// 家の店の購入結果(ご近所キャッシュバック等)。
+export interface BuyResult {
+  total: number;
+  cashback: number;
+  paid: number;
+  method: string; // 'cash'/'credit'
+}
+export type BuyResp = Player & { buy_result: BuyResult };
+
 // ワープ料金(円)。バックエンド action.WarpFee と一致させること。
 export const WARP_FEE = 100000;
 
@@ -621,6 +630,7 @@ export interface BuildingTown {
   no: number;
   name: string;
   land_price: number;
+  hidden: boolean; // 隠し町(建築対象外)
 }
 export interface BuildingExterior {
   key: string;
@@ -629,8 +639,16 @@ export interface BuildingExterior {
 export interface BuildingInterior {
   rank: number;
   name: string;
-  price: number;
+  multiplier: number; // 費用倍率(D=1..A=4。建築/建て替え費に乗算)
   slots: number;
+}
+// 家のコンテンツ枠。内装ランクで枠数が決まり(A=4..D=1)、設定した枠だけが訪問者に見える。
+export interface HouseContent {
+  slot: number;
+  kind: string; // 'bbs'=通常掲示板 / 'shop'=お店 / 'nushi'=家主板 / 'url'=独自URL
+  title: string;
+  url: string; // kind='url' の埋め込みURL
+  comment: string; // タイトル下コメント(リード文)
 }
 export interface HouseCell {
   id: number;
@@ -641,6 +659,7 @@ export interface HouseCell {
   setumei: string;
   owner_name: string;
   own: boolean;
+  contents: HouseContent[];
 }
 export interface MyHouse {
   id: number;
@@ -650,11 +669,13 @@ export interface MyHouse {
   exterior: string;
   setumei: string;
   interior_rank: number;
+  slots: number;
   built_at: string;
   has_shop: boolean;
   shop_title: string;
   shop_kind: string;
   shop_markup: number;
+  contents: HouseContent[];
 }
 export interface PlotCell {
   town: number;
@@ -696,6 +717,15 @@ export interface HouseShopItem {
   category: string;
   price: number;
   stock: number;
+  money: number;
+  params: Record<string, number>;
+  calorie_g: number;
+  durability: number;
+  durability_unit: string; // 'use'(回)/'day'(日)
+  interval_min: number;
+  body_cost: number;
+  nou_cost: number;
+  owned: number; // 自分の所持残数(未所持0)
 }
 export interface HouseShopView {
   has_shop: boolean;
@@ -710,9 +740,18 @@ export interface BbsPost {
   kind: string;
   author_id: number;
   author_name: string;
+  author_job: string; // 投稿時の職業(（職業）表示用)
+  title: string; // 家主板(nushi)の記事タイトル
   body: string;
+  thread_no: number; // 親記事のNO.x(レスは0)
+  parent_no: number; // レス先スレッドNO(親記事は0)
   created_at: string;
 }
+export interface BbsPostResult {
+  reward: number;
+  bonus: boolean;
+}
+export type PostBbsResp = Player & { bbs_result: BbsPostResult };
 export interface ShopStockItem {
   item_id: number;
   name: string;
@@ -1004,6 +1043,13 @@ export const api = {
       setumei,
       idempotency_key: newIdempotencyKey(),
     }),
+  // 家のコンテンツ枠を設定(全置き換え)。kind空は非公開。
+  setHouseContents: (id: number, houseId: number, contents: HouseContent[]) =>
+    request<Player>('POST', `/players/${id}/building/contents`, {
+      house_id: houseId,
+      contents,
+      idempotency_key: newIdempotencyKey(),
+    }),
   saisen: (id: number, houseId: number, amount: number) =>
     request<Player>('POST', `/players/${id}/building/saisen`, {
       house_id: houseId,
@@ -1029,25 +1075,37 @@ export const api = {
     }),
   houseShop: (id: number, houseId: number) =>
     request<HouseShopView>('GET', `/players/${id}/building/shop?house_id=${houseId}`),
-  buyFromHouseShop: (id: number, houseId: number, itemId: number, qty: number) =>
-    request<Player>('POST', `/players/${id}/building/shop/buy`, {
+  buyFromHouseShop: (id: number, houseId: number, itemId: number, qty: number, payMethod = 'cash') =>
+    request<BuyResp>('POST', `/players/${id}/building/shop/buy`, {
       house_id: houseId,
       item_id: itemId,
       qty,
+      pay_method: payMethod,
       idempotency_key: newIdempotencyKey(),
     }),
   houseBbs: (id: number, houseId: number) =>
     request<BbsPost[]>('GET', `/players/${id}/building/bbs?house_id=${houseId}`),
-  postBbs: (id: number, houseId: number, kind: string, body: string) =>
-    request<Player>('POST', `/players/${id}/building/bbs/post`, {
+  postBbs: (id: number, houseId: number, kind: string, body: string, title = '', parentNo = 0) =>
+    request<PostBbsResp>('POST', `/players/${id}/building/bbs/post`, {
       house_id: houseId,
       kind,
+      title,
       body,
+      parent_no: parentNo,
       idempotency_key: newIdempotencyKey(),
     }),
-  deleteBbs: (id: number, postId: number) =>
+  deleteBbs: (
+    id: number,
+    houseId: number,
+    kind: string,
+    opts: { articleNo?: number; threadNo?: number; all?: boolean },
+  ) =>
     request<Player>('POST', `/players/${id}/building/bbs/delete`, {
-      post_id: postId,
+      house_id: houseId,
+      kind,
+      article_no: opts.articleNo ?? 0,
+      thread_no: opts.threadNo ?? 0,
+      all: opts.all ?? false,
       idempotency_key: newIdempotencyKey(),
     }),
   houseShopStock: (id: number, houseId: number) =>

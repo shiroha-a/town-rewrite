@@ -2996,13 +2996,14 @@ func TestBuildHouse(t *testing.T) {
 		t.Errorf("non-plot: status=%d, want 422", c)
 	}
 
-	// 1軒目: 謎の街(4) の A1 に house1 + D内装。費用=(250+150+100)*10000=5,000,000。
+
+	// 1軒目: 謎の街(4) の A1 に house1 + D内装。費用=(250+150)×1×10000=4,000,000。
 	got, code := buildHouse(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, "b1")
 	if code != http.StatusOK {
 		t.Fatalf("build 1st: status=%d", code)
 	}
-	if got.Savings != 25_000_000 {
-		t.Errorf("savings after 1st = %d, want 25000000", got.Savings)
+	if got.Savings != 26_000_000 {
+		t.Errorf("savings after 1st = %d, want 26000000", got.Savings)
 	}
 	var count int
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM player_houses WHERE owner_id=$1`, p.ID).Scan(&count); err != nil {
@@ -3027,8 +3028,8 @@ func TestBuildHouse(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("build 2nd: status=%d", code)
 	}
-	if got.Savings != 19_500_000 {
-		t.Errorf("savings after 2nd = %d, want 19500000", got.Savings)
+	if got.Savings != 20_500_000 {
+		t.Errorf("savings after 2nd = %d, want 20500000", got.Savings)
 	}
 
 	// 3・4軒目まで建てられる。
@@ -3048,6 +3049,33 @@ func TestBuildHouse(t *testing.T) {
 	led := ledger.New(pool)
 	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
 		t.Errorf("ledger zero-sum broken: %d", sum)
+	}
+}
+
+// TestBuildHouseHiddenTown covers the hidden-town build rules: building into a
+// hidden town from outside is rejected, but a player currently in the hidden
+// town may build there (街マップの空き地クリック導線).
+func TestBuildHouseHiddenTown(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	p := register(t, srv.URL, "misskey.example", "hiddenbuilder")
+	creditSavings(t, pool, p.ID, 30_000_000)
+	seedPlots(t, pool, [][3]int{{4, 0, 1}})
+	ts := building.DefaultTowns()
+	ts[4].Hidden = true
+	building.SetTowns(ts)
+	defer building.SetTowns(building.DefaultTowns())
+
+	// 隠し町の外からは建てられない。
+	if _, c := buildHouse(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, "hb1"); c != http.StatusUnprocessableEntity {
+		t.Errorf("hidden from outside: status=%d, want 422", c)
+	}
+	// 隠し町に現在いる場合は建てられる。
+	if _, err := pool.Exec(ctx, `UPDATE players SET current_town=4 WHERE id=$1`, p.ID); err != nil {
+		t.Fatalf("move player: %v", err)
+	}
+	if _, c := buildHouse(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, "hb2"); c != http.StatusOK {
+		t.Errorf("hidden inside: status=%d, want 200", c)
 	}
 }
 
@@ -3111,10 +3139,10 @@ func TestSellRebuildHouse(t *testing.T) {
 	register(t, srv.URL, "misskey.example", "admin0") // 1人目=admin
 	p := register(t, srv.URL, "misskey.example", "builder2")
 	creditSavings(t, pool, p.ID, 10_000_000)
-	creditCash(t, pool, p.ID, 30_000_000)
+	creditCash(t, pool, p.ID, 40_000_000)
 	seedPlots(t, pool, [][3]int{{4, 0, 1}})
 
-	// 建築(謎の街 A1, house1, D内装)。savings 10M-5M=5M。
+	// 建築(謎の街 A1, house1, D内装)。savings 10M-4M=6M。
 	if _, c := buildHouse(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, "s1"); c != http.StatusOK {
 		t.Fatalf("build: %d", c)
 	}
@@ -3123,14 +3151,14 @@ func TestSellRebuildHouse(t *testing.T) {
 		t.Fatalf("house id: %v", err)
 	}
 
-	// 建て替え(house4, A内装)。費用=(800+1200)*10000=20,000,000を現金から。
+	// 建て替え(house4, A内装)。費用=800×4×10000=32,000,000を現金から。
 	got, c := rebuildHouse(t, srv.URL, p.ID, houseID, "house4", 0, "s2")
 	if c != http.StatusOK {
 		t.Fatalf("rebuild: %d", c)
 	}
-	// 現金 = 初期50万 + 3000万 - 2000万 = 10,500,000
-	if got.Money != 10_500_000 {
-		t.Errorf("cash after rebuild = %d, want 10500000", got.Money)
+	// 現金 = 初期50万 + 4000万 - 3200万 = 8,500,000
+	if got.Money != 8_500_000 {
+		t.Errorf("cash after rebuild = %d, want 8500000", got.Money)
 	}
 	var (
 		ext string
@@ -3148,8 +3176,8 @@ func TestSellRebuildHouse(t *testing.T) {
 	if c != http.StatusOK {
 		t.Fatalf("sell: %d", c)
 	}
-	if got2.Money != 13_000_000 { // 10,500,000 + 2,500,000
-		t.Errorf("cash after sell = %d, want 13000000", got2.Money)
+	if got2.Money != 11_000_000 { // 8,500,000 + 2,500,000
+		t.Errorf("cash after sell = %d, want 11000000", got2.Money)
 	}
 	var cnt int
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM player_houses WHERE owner_id=$1`, p.ID).Scan(&cnt); err != nil {
@@ -3237,9 +3265,9 @@ func TestSaisenAndComment(t *testing.T) {
 		t.Errorf("setumei = %q, want いらっしゃい", setumei)
 	}
 
-	// 自分の家にはさい銭できない。
-	if _, c := saisen(t, srv.URL, owner.ID, houseID, 100, "s0"); c != http.StatusUnprocessableEntity {
-		t.Errorf("self saisen: %d, want 422", c)
+	// 自分の家へのさい銭も可(レガシー同様。現金→自分の普通口座)。
+	if _, c := saisen(t, srv.URL, owner.ID, houseID, 100, "s0"); c != http.StatusOK {
+		t.Errorf("self saisen: %d, want 200", c)
 	}
 
 	// 訪問者がさい銭(5000円): 現金-5000、家主の普通口座+5000。
@@ -3255,8 +3283,8 @@ func TestSaisenAndComment(t *testing.T) {
 		"savings:"+strconv.FormatInt(owner.ID, 10)).Scan(&ownerSavings); err != nil {
 		t.Fatalf("owner savings: %v", err)
 	}
-	if ownerSavings != 5_005_000 { // 建築後5M + 5000
-		t.Errorf("owner savings = %d, want 5005000", ownerSavings)
+	if ownerSavings != 6_005_100 { // 建築後6M + 自分さい銭100 + 5000
+		t.Errorf("owner savings = %d, want 6005100", ownerSavings)
 	}
 
 	// 同一相手への上限(20000円/日)。5000×3をさらに積んで計20000、次の100は拒否。
@@ -3400,8 +3428,8 @@ func TestShiire(t *testing.T) {
 	if c != http.StatusOK {
 		t.Fatalf("shiire: %d", c)
 	}
-	if got.Savings != 20_000_000-5_000_000-price*3 { // 建築後15M - 仕入れ
-		t.Errorf("savings = %d, want %d", got.Savings, 15_000_000-price*3)
+	if got.Savings != 20_000_000-4_000_000-price*3 { // 建築後16M - 仕入れ
+		t.Errorf("savings = %d, want %d", got.Savings, 16_000_000-price*3)
 	}
 	var (
 		stock    int
@@ -3489,6 +3517,20 @@ func TestBuyFromHouseShop(t *testing.T) {
 		t.Fatalf("shiire: %d", c)
 	}
 
+	// コンテンツ枠に「お店」を設定していない家では買えない。
+	if _, c := buyFromShop(t, srv.URL, visitor.ID, houseID, itemID, 1, "buy0"); c != http.StatusUnprocessableEntity {
+		t.Errorf("buy before shop content: %d, want 422", c)
+	}
+	if _, c := setContents(t, srv.URL, owner.ID, houseID,
+		[]map[string]any{{"slot": 0, "kind": "shop"}}, "c1"); c != http.StatusOK {
+		t.Fatalf("set shop content: %d", c)
+	}
+
+	// 一度に買えるのは4個まで(レガシー item_kosuuseigen)。
+	if _, c := buyFromShop(t, srv.URL, visitor.ID, houseID, itemID, 5, "buy5"); c != http.StatusUnprocessableEntity {
+		t.Errorf("buy over qty limit: %d, want 422", c)
+	}
+
 	// 訪問者が2個購入。店頭価格 = 仕入れ値×掛け率2。
 	shelf := price * 2
 	got, c := buyFromShop(t, srv.URL, visitor.ID, houseID, itemID, 2, "buy1")
@@ -3519,17 +3561,62 @@ func TestBuyFromHouseShop(t *testing.T) {
 		"savings:"+strconv.FormatInt(owner.ID, 10)).Scan(&ownerSav); err != nil {
 		t.Fatalf("owner savings: %v", err)
 	}
-	if ownerSav != 15_000_000-price*3+shelf*2 {
-		t.Errorf("owner savings = %d, want %d", ownerSav, 15_000_000-price*3+shelf*2)
+	if ownerSav != 16_000_000-price*3+shelf*2 {
+		t.Errorf("owner savings = %d, want %d", ownerSav, 16_000_000-price*3+shelf*2)
 	}
 
 	// 自分の店では買えない。
 	if _, c := buyFromShop(t, srv.URL, owner.ID, houseID, itemID, 1, "buy2"); c != http.StatusUnprocessableEntity {
 		t.Errorf("self buy: %d, want 422", c)
 	}
-	// 在庫不足(残1に5個)。
-	if _, c := buyFromShop(t, srv.URL, visitor.ID, houseID, itemID, 5, "buy3"); c != http.StatusUnprocessableEntity {
+	// 在庫不足(残1に4個)。
+	if _, c := buyFromShop(t, srv.URL, visitor.ID, houseID, itemID, 4, "buy3"); c != http.StatusUnprocessableEntity {
 		t.Errorf("over stock: %d, want 422", c)
+	}
+
+	// ご近所キャッシュバック: 買い手が店と同じ街(4)に家を建てると単価10%引き。
+	seedPlots(t, pool, [][3]int{{4, 1, 5}})
+	creditSavings(t, pool, visitor.ID, 6_000_000)
+	if _, c := buildHouse(t, srv.URL, visitor.ID, 4, 1, 5, "house1", 3, "vb1"); c != http.StatusOK {
+		t.Fatalf("visitor build: %d", c)
+	}
+	moneyBefore := 1_500_000 - shelf*2
+	cashback := (shelf / 10) * 1
+	br, got2, c := buyFromShopFull(t, srv.URL, visitor.ID, houseID, itemID, 1, "cash", "buy4")
+	if c != http.StatusOK {
+		t.Fatalf("neighbor buy: %d", c)
+	}
+	if br.Cashback != cashback {
+		t.Errorf("cashback = %d, want %d", br.Cashback, cashback)
+	}
+	if got2.Money != moneyBefore-(shelf-cashback) {
+		t.Errorf("neighbor buyer money = %d, want %d", got2.Money, moneyBefore-(shelf-cashback))
+	}
+
+	// クレジット払い: クレジットカード所持で普通口座から支払える。
+	if _, c := shiire(t, srv.URL, owner.ID, houseID, itemID, 2, "s2"); c != http.StatusOK {
+		t.Fatalf("restock: %d", c)
+	}
+	// カード無しはエラー。
+	if _, _, c := buyFromShopFull(t, srv.URL, visitor.ID, houseID, itemID, 1, "credit", "buy5c"); c != http.StatusUnprocessableEntity {
+		t.Errorf("credit without card: %d, want 422", c)
+	}
+	giveItem(t, pool, visitor.ID, "クレジットカード", 1)
+	var savBefore int64
+	if err := pool.QueryRow(ctx,
+		`SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account=$1`,
+		"savings:"+strconv.FormatInt(visitor.ID, 10)).Scan(&savBefore); err != nil {
+		t.Fatalf("visitor savings: %v", err)
+	}
+	br2, got3, c := buyFromShopFull(t, srv.URL, visitor.ID, houseID, itemID, 1, "credit", "buy6")
+	if c != http.StatusOK {
+		t.Fatalf("credit buy: %d", c)
+	}
+	if br2.Method != "credit" {
+		t.Errorf("method = %s, want credit", br2.Method)
+	}
+	if got3.Savings != savBefore-br2.Paid {
+		t.Errorf("savings after credit = %d, want %d", got3.Savings, savBefore-br2.Paid)
 	}
 
 	led := ledger.New(pool)
@@ -3538,10 +3625,48 @@ func TestBuyFromHouseShop(t *testing.T) {
 	}
 }
 
+// buyResultT mirrors the buy_result payload of the shop-buy response.
+type buyResultT struct {
+	Total    int64  `json:"total"`
+	Cashback int64  `json:"cashback"`
+	Paid     int64  `json:"paid"`
+	Method   string `json:"method"`
+}
+
+// buyFromShopFull buys with an explicit pay method and returns the buy_result.
+func buyFromShopFull(t *testing.T, base string, playerID, houseID, itemID int64, qty int, method, idemKey string) (buyResultT, playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"house_id": houseID, "item_id": itemID, "qty": qty, "pay_method": method, "idempotency_key": idemKey,
+	})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/shop/buy",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("buy post: %v", err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		playerResp
+		BuyResult buyResultT `json:"buy_result"`
+	}
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return out.BuyResult, out.playerResp, resp.StatusCode
+}
+
 func postBbs(t *testing.T, base string, playerID, houseID int64, kind, body, idemKey string) (playerResp, int) {
 	t.Helper()
+	return postBbsReply(t, base, playerID, houseID, kind, body, 0, idemKey)
+}
+
+// postBbsReply posts with an explicit parent thread NO (通常掲示板のレス).
+func postBbsReply(t *testing.T, base string, playerID, houseID int64, kind, body string, parentNo int, idemKey string) (playerResp, int) {
+	t.Helper()
 	reqBody, _ := json.Marshal(map[string]any{
-		"house_id": houseID, "kind": kind, "body": body, "idempotency_key": idemKey,
+		"house_id": houseID, "kind": kind, "body": body, "parent_no": parentNo, "idempotency_key": idemKey,
 	})
 	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/bbs/post",
 		"application/json", bytes.NewReader(reqBody))
@@ -3558,9 +3683,18 @@ func postBbs(t *testing.T, base string, playerID, houseID int64, kind, body, ide
 	return p, resp.StatusCode
 }
 
-func deleteBbs(t *testing.T, base string, playerID, postID int64, idemKey string) (playerResp, int) {
+func deleteBbs(t *testing.T, base string, playerID, houseID int64, kind string, articleNo int64, idemKey string) (playerResp, int) {
 	t.Helper()
-	reqBody, _ := json.Marshal(map[string]any{"post_id": postID, "idempotency_key": idemKey})
+	return deleteBbsFull(t, base, playerID, houseID, kind, articleNo, 0, false, idemKey)
+}
+
+// deleteBbsFull covers 親記事no.(スレッドごと)と全記事削除も指定できる版。
+func deleteBbsFull(t *testing.T, base string, playerID, houseID int64, kind string, articleNo, threadNo int64, all bool, idemKey string) (playerResp, int) {
+	t.Helper()
+	reqBody, _ := json.Marshal(map[string]any{
+		"house_id": houseID, "kind": kind, "article_no": articleNo, "thread_no": threadNo,
+		"all": all, "idempotency_key": idemKey,
+	})
 	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/bbs/delete",
 		"application/json", bytes.NewReader(reqBody))
 	if err != nil {
@@ -3576,6 +3710,89 @@ func deleteBbs(t *testing.T, base string, playerID, postID int64, idemKey string
 	return p, resp.StatusCode
 }
 
+// setContents replaces a house's content slots (コンテンツ枠設定).
+func setContents(t *testing.T, base string, playerID, houseID int64, contents []map[string]any, idemKey string) (playerResp, int) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"house_id": houseID, "contents": contents, "idempotency_key": idemKey,
+	})
+	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/contents",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("set contents: %v", err)
+	}
+	defer resp.Body.Close()
+	var p playerResp
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	return p, resp.StatusCode
+}
+
+func TestHouseContents(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	register(t, srv.URL, "misskey.example", "admin0")
+	owner := register(t, srv.URL, "misskey.example", "contentowner")
+	other := register(t, srv.URL, "misskey.example", "contentother")
+	creditSavings(t, pool, owner.ID, 10_000_000)
+	seedPlots(t, pool, [][3]int{{4, 0, 1}})
+	// Dランク(3)=1枠の家。
+	if _, c := buildHouse(t, srv.URL, owner.ID, 4, 0, 1, "house1", 3, "b1"); c != http.StatusOK {
+		t.Fatalf("build: %d", c)
+	}
+	var houseID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM player_houses WHERE owner_id=$1`, owner.ID).Scan(&houseID); err != nil {
+		t.Fatalf("house id: %v", err)
+	}
+
+	// 枠0に掲示板を設定できる。
+	if _, c := setContents(t, srv.URL, owner.ID, houseID,
+		[]map[string]any{{"slot": 0, "kind": "bbs", "title": "みんなの板"}}, "c1"); c != http.StatusOK {
+		t.Fatalf("set slot0: %d", c)
+	}
+	// Dランクは1枠なので枠1は指定できない。
+	if _, c := setContents(t, srv.URL, owner.ID, houseID,
+		[]map[string]any{{"slot": 1, "kind": "bbs"}}, "c2"); c != http.StatusUnprocessableEntity {
+		t.Errorf("slot over limit: %d, want 422", c)
+	}
+	// 不正な種類は拒否。
+	if _, c := setContents(t, srv.URL, owner.ID, houseID,
+		[]map[string]any{{"slot": 0, "kind": "casino"}}, "c3"); c != http.StatusUnprocessableEntity {
+		t.Errorf("bad kind: %d, want 422", c)
+	}
+	// 他人の家は設定できない。
+	if _, c := setContents(t, srv.URL, other.ID, houseID,
+		[]map[string]any{{"slot": 0, "kind": "bbs"}}, "c4"); c != http.StatusUnprocessableEntity {
+		t.Errorf("non-owner: %d, want 422", c)
+	}
+	// 独自URLはhttp/https以外を拒否。
+	if _, c := setContents(t, srv.URL, owner.ID, houseID,
+		[]map[string]any{{"slot": 0, "kind": "url", "url": "javascript:alert(1)"}}, "c5"); c != http.StatusUnprocessableEntity {
+		t.Errorf("bad url scheme: %d, want 422", c)
+	}
+	if _, c := setContents(t, srv.URL, owner.ID, houseID,
+		[]map[string]any{{"slot": 0, "kind": "url", "title": "リンク", "url": "https://example.com/"}}, "c6"); c != http.StatusOK {
+		t.Errorf("good url: %d, want 200", c)
+	}
+	// 最後に掲示板へ戻す(後段の検証用)。
+	if _, c := setContents(t, srv.URL, owner.ID, houseID,
+		[]map[string]any{{"slot": 0, "kind": "bbs", "title": "みんなの板"}}, "c7"); c != http.StatusOK {
+		t.Fatalf("restore bbs: %d", c)
+	}
+	// 設定はbuilding APIのcontentsに反映される(掲示板のみ)。
+	var kind, title string
+	if err := pool.QueryRow(ctx,
+		`SELECT kind, title FROM house_contents WHERE house_id=$1 AND slot=0`, houseID).Scan(&kind, &title); err != nil {
+		t.Fatalf("read content: %v", err)
+	}
+	if kind != "bbs" || title != "みんなの板" {
+		t.Errorf("content = %s/%s, want bbs/みんなの板", kind, title)
+	}
+}
+
 func TestHouseBbs(t *testing.T) {
 	srv, pool := setup(t)
 	ctx := context.Background()
@@ -3584,12 +3801,23 @@ func TestHouseBbs(t *testing.T) {
 	visitor := register(t, srv.URL, "misskey.example", "bbsvisitor")
 	creditSavings(t, pool, owner.ID, 10_000_000)
 	seedPlots(t, pool, [][3]int{{4, 0, 1}})
-	if _, c := buildHouse(t, srv.URL, owner.ID, 4, 0, 1, "house1", 3, "b1"); c != http.StatusOK {
+	// Cランク(2)=2枠(掲示板+家主板を公開するため)。
+	if _, c := buildHouse(t, srv.URL, owner.ID, 4, 0, 1, "house1", 2, "b1"); c != http.StatusOK {
 		t.Fatalf("build: %d", c)
 	}
 	var houseID int64
 	if err := pool.QueryRow(ctx, `SELECT id FROM player_houses WHERE owner_id=$1`, owner.ID).Scan(&houseID); err != nil {
 		t.Fatalf("house id: %v", err)
+	}
+
+	// コンテンツ枠未設定の掲示板には書き込めない(新築時は非公開)。
+	if _, c := postBbs(t, srv.URL, visitor.ID, houseID, "normal", "まだ無い", "p0"); c != http.StatusUnprocessableEntity {
+		t.Errorf("post before contents: %d, want 422", c)
+	}
+	// 枠に掲示板と家主板を設定。
+	if _, c := setContents(t, srv.URL, owner.ID, houseID,
+		[]map[string]any{{"slot": 0, "kind": "bbs"}, {"slot": 1, "kind": "nushi"}}, "c1"); c != http.StatusOK {
+		t.Fatalf("set contents: %d", c)
 	}
 
 	// 訪問者が通常掲示板に投稿。
@@ -3617,18 +3845,135 @@ func TestHouseBbs(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT id FROM house_bbs WHERE author_id=$1`, visitor.ID).Scan(&postID); err != nil {
 		t.Fatalf("post id: %v", err)
 	}
-	// 無関係の第三者は削除できない。
+	// 無関係の第三者は削除できない(家主・管理者のみ)。
 	other := register(t, srv.URL, "misskey.example", "bbsother")
-	if _, c := deleteBbs(t, srv.URL, other.ID, postID, "d1"); c != http.StatusUnprocessableEntity {
+	if _, c := deleteBbs(t, srv.URL, other.ID, houseID, "normal", postID, "d1"); c != http.StatusUnprocessableEntity {
 		t.Errorf("other delete: %d, want 422", c)
 	}
-	// 家主は訪問者の投稿を削除できる。
-	if _, c := deleteBbs(t, srv.URL, owner.ID, postID, "d2"); c != http.StatusOK {
+	// 投稿した本人でも通常掲示板は削除できない(レガシー: 家主・管理者のみ)。
+	if _, c := deleteBbs(t, srv.URL, visitor.ID, houseID, "normal", postID, "d1b"); c != http.StatusUnprocessableEntity {
+		t.Errorf("author delete: %d, want 422", c)
+	}
+	// 家主は記事no.指定で訪問者の投稿を削除できる。
+	if _, c := deleteBbs(t, srv.URL, owner.ID, houseID, "normal", postID, "d2"); c != http.StatusOK {
 		t.Fatalf("owner delete: %d", c)
 	}
 	pool.QueryRow(ctx, `SELECT COUNT(*) FROM house_bbs WHERE house_id=$1 AND kind='normal'`, houseID).Scan(&normalCnt)
 	if normalCnt != 0 {
 		t.Errorf("normal after delete = %d, want 0", normalCnt)
+	}
+}
+
+// TestHouseBbsThreads covers the legacy normal_bbs spec: threaded replies with
+// NO.x numbering, the per-post money reward, 二重投稿 rejection, the weighted
+// length limit, and deletion by 記事no./親記事no./全記事削除.
+func TestHouseBbsThreads(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	register(t, srv.URL, "misskey.example", "thadmin")
+	owner := register(t, srv.URL, "misskey.example", "throwner")
+	visitor := register(t, srv.URL, "misskey.example", "thvisitor")
+	creditSavings(t, pool, owner.ID, 10_000_000)
+	seedPlots(t, pool, [][3]int{{4, 0, 1}})
+	if _, c := buildHouse(t, srv.URL, owner.ID, 4, 0, 1, "house1", 2, "b1"); c != http.StatusOK {
+		t.Fatalf("build: %d", c)
+	}
+	var houseID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM player_houses WHERE owner_id=$1`, owner.ID).Scan(&houseID); err != nil {
+		t.Fatalf("house id: %v", err)
+	}
+	if _, c := setContents(t, srv.URL, owner.ID, houseID,
+		[]map[string]any{{"slot": 0, "kind": "bbs"}, {"slot": 1, "kind": "nushi"}}, "c1"); c != http.StatusOK {
+		t.Fatalf("set contents: %d", c)
+	}
+	cashOf := func(id int64) int64 {
+		var m int64
+		if err := pool.QueryRow(ctx, `SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account = $1`,
+			fmt.Sprintf("player:%d", id)).Scan(&m); err != nil {
+			t.Fatalf("cash of %d: %v", id, err)
+		}
+		return m
+	}
+
+	// 投稿でお金がもらえる(通常1001〜3009円、ボーナス時最大15006円)。
+	before := cashOf(visitor.ID)
+	if _, c := postBbs(t, srv.URL, visitor.ID, houseID, "normal", "スレ1本文", "t1"); c != http.StatusOK {
+		t.Fatalf("post thread1: %d", c)
+	}
+	reward := cashOf(visitor.ID) - before
+	if reward < 1001 || reward > 15006 {
+		t.Errorf("reward = %d, want 1001..15006", reward)
+	}
+	// 二重投稿(同一人物・同一本文)は拒否。
+	if _, c := postBbs(t, srv.URL, visitor.ID, houseID, "normal", "スレ1本文", "t1b"); c != http.StatusUnprocessableEntity {
+		t.Errorf("duplicate post: %d, want 422", c)
+	}
+	// 全角100字超は拒否(重み付き200)。
+	long := ""
+	for i := 0; i < 101; i++ {
+		long += "あ"
+	}
+	if _, c := postBbs(t, srv.URL, visitor.ID, houseID, "normal", long, "t1c"); c != http.StatusUnprocessableEntity {
+		t.Errorf("long post: %d, want 422", c)
+	}
+	if _, c := postBbs(t, srv.URL, visitor.ID, houseID, "normal", "スレ2本文", "t2"); c != http.StatusOK {
+		t.Fatalf("post thread2: %d", c)
+	}
+	// スレッドNO.1へのレス。存在しないスレッドへのレスは拒否。
+	if _, c := postBbsReply(t, srv.URL, owner.ID, houseID, "normal", "レスです", 1, "r1"); c != http.StatusOK {
+		t.Fatalf("reply: %d", c)
+	}
+	if _, c := postBbsReply(t, srv.URL, owner.ID, houseID, "normal", "宛先なし", 99, "r2"); c != http.StatusUnprocessableEntity {
+		t.Errorf("reply to missing thread: %d, want 422", c)
+	}
+	var parents, replies int
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM house_bbs WHERE house_id=$1 AND kind='normal' AND thread_no IS NOT NULL`, houseID).Scan(&parents)
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM house_bbs WHERE house_id=$1 AND kind='normal' AND parent_no=1`, houseID).Scan(&replies)
+	if parents != 2 || replies != 1 {
+		t.Fatalf("parents/replies = %d/%d, want 2/1", parents, replies)
+	}
+
+	// レスが付いた親記事は記事no.指定では削除できない。
+	var parent1ID int64
+	pool.QueryRow(ctx, `SELECT id FROM house_bbs WHERE house_id=$1 AND kind='normal' AND thread_no=1`, houseID).Scan(&parent1ID)
+	if _, c := deleteBbs(t, srv.URL, owner.ID, houseID, "normal", parent1ID, "d1"); c != http.StatusUnprocessableEntity {
+		t.Errorf("delete parent with reply: %d, want 422", c)
+	}
+	// 親記事no.指定でスレッドごと削除できる。
+	if _, c := deleteBbsFull(t, srv.URL, owner.ID, houseID, "normal", 0, 1, false, "d2"); c != http.StatusOK {
+		t.Fatalf("delete thread: %d", c)
+	}
+	var cnt int
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM house_bbs WHERE house_id=$1 AND kind='normal'`, houseID).Scan(&cnt)
+	if cnt != 1 {
+		t.Errorf("after thread delete = %d, want 1", cnt)
+	}
+	// 通常掲示板は書いた本人でも削除できない(家主・管理者のみ)。
+	var parent2ID int64
+	pool.QueryRow(ctx, `SELECT id FROM house_bbs WHERE house_id=$1 AND kind='normal' AND thread_no=2`, houseID).Scan(&parent2ID)
+	if _, c := deleteBbs(t, srv.URL, visitor.ID, houseID, "normal", parent2ID, "d3"); c != http.StatusUnprocessableEntity {
+		t.Errorf("author delete: %d, want 422", c)
+	}
+	// 全記事削除。
+	if _, c := deleteBbsFull(t, srv.URL, owner.ID, houseID, "normal", 0, 0, true, "d4"); c != http.StatusOK {
+		t.Fatalf("delete all: %d", c)
+	}
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM house_bbs WHERE house_id=$1 AND kind='normal'`, houseID).Scan(&cnt)
+	if cnt != 0 {
+		t.Errorf("after all delete = %d, want 0", cnt)
+	}
+
+	// 家主板: 家主が投稿し、記事no.指定で本人(家主)が削除できる。他人は不可。
+	if _, c := postBbs(t, srv.URL, owner.ID, houseID, "nushi", "家主記事", "n1"); c != http.StatusOK {
+		t.Fatalf("post nushi: %d", c)
+	}
+	var nushiID int64
+	pool.QueryRow(ctx, `SELECT id FROM house_bbs WHERE house_id=$1 AND kind='nushi'`, houseID).Scan(&nushiID)
+	if _, c := deleteBbs(t, srv.URL, visitor.ID, houseID, "nushi", nushiID, "n2"); c != http.StatusUnprocessableEntity {
+		t.Errorf("visitor nushi delete: %d, want 422", c)
+	}
+	if _, c := deleteBbs(t, srv.URL, owner.ID, houseID, "nushi", nushiID, "n3"); c != http.StatusOK {
+		t.Fatalf("owner nushi delete: %d", c)
 	}
 }
 
