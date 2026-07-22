@@ -49,6 +49,7 @@ type buildHouseReq struct {
 	Col            int    `json:"col"`
 	Exterior       string `json:"exterior"`
 	InteriorRank   int    `json:"interior_rank"`
+	Tuika          int    `json:"tuika"` // 2軒目以降の追加種別(0=家のみ)
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
@@ -68,7 +69,7 @@ func (s *Server) buildHouse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "exterior is required")
 		return
 	}
-	p, err := s.actions.DoBuildHouse(r.Context(), id, req.Town, req.Row, req.Col, req.Exterior, req.InteriorRank, req.IdempotencyKey)
+	p, err := s.actions.DoBuildHouse(r.Context(), id, req.Town, req.Row, req.Col, req.Exterior, req.InteriorRank, req.Tuika, req.IdempotencyKey)
 	writeFacilityResult(w, p, err)
 }
 

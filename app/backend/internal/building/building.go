@@ -211,12 +211,52 @@ func IsHouseContentKind(k string) bool {
 	return false
 }
 
+// Tuika is an additional-house type selectable for the 2nd+ house
+// (レガシー@housu_tuika2)。Shinsa marks the types gated by 能力審査.
+type Tuika struct {
+	No     int    `json:"no"` // 0=家のみ 1=運営 2=株式会社 3=持ち物販売店
+	Name   string `json:"name"`
+	Fee    int    `json:"fee"`    // 万円(建築費に加算)
+	Shinsa bool   `json:"shinsa"` // 能力審査(総資産1億+全パラ1万)が必要
+}
+
+// tuikas mirrors legacy @housu_tuika2 = (0,100,1000,500).
+var tuikas = []Tuika{
+	{No: 0, Name: "家のみ", Fee: 0},
+	{No: 1, Name: "運営", Fee: 100},
+	{No: 2, Name: "株式会社", Fee: 1000, Shinsa: true},
+	{No: 3, Name: "持ち物販売店", Fee: 500, Shinsa: true},
+}
+
+// Tuikas returns a copy of the additional-house type table.
+func Tuikas() []Tuika {
+	out := make([]Tuika, len(tuikas))
+	copy(out, tuikas)
+	return out
+}
+
+// TuikaByNo finds an additional-house type by number.
+func TuikaByNo(no int) (Tuika, bool) {
+	for _, t := range tuikas {
+		if t.No == no {
+			return t, true
+		}
+	}
+	return Tuika{}, false
+}
+
+// ShinsaAsset is the total-asset requirement of 能力審査 (総資産1億円).
+const ShinsaAsset = 100_000_000
+
+// ShinsaParam is the per-parameter requirement of 能力審査 (全パラ1万).
+const ShinsaParam = 10000
+
 // BuildCost returns the construction cost in 円 for a house. houseCount is the
 // number of houses the player already owns (0 = building the first, i.e. マイホーム).
 //
 //	1軒目:      (地価 + 外装) × 内装倍率(D=1..A=4)
-//	2軒目以降:  地価 + 外装×2  (tuika=家のみ; 運営/株式会社/持ち物店はフェーズ4以降)
-func BuildCost(townNo int, exterior string, interiorRank, houseCount int) (int64, error) {
+//	2軒目以降:  地価 + 外装×2 + tuika費(家のみ0/運営100/株式会社1000/持ち物販売店500万)
+func BuildCost(townNo int, exterior string, interiorRank, houseCount, tuika int) (int64, error) {
 	t, ok := townByNo(townNo)
 	if !ok {
 		return 0, fmt.Errorf("unknown town %d", townNo)
@@ -233,7 +273,11 @@ func BuildCost(townNo int, exterior string, interiorRank, houseCount int) (int64
 		}
 		man = (t.LandPrice + ext) * in.Multiplier
 	} else {
-		man = t.LandPrice + ext*2
+		tk, ok := TuikaByNo(tuika)
+		if !ok {
+			return 0, fmt.Errorf("unknown tuika %d", tuika)
+		}
+		man = t.LandPrice + ext*2 + tk.Fee
 	}
 	return int64(man) * yenPerMan, nil
 }

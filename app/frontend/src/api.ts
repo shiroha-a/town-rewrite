@@ -659,6 +659,7 @@ export interface HouseCell {
   setumei: string;
   owner_name: string;
   own: boolean;
+  tuika: number; // 0=家のみ/1=運営/2=株式会社/3=持ち物販売店
   contents: HouseContent[];
 }
 export interface MyHouse {
@@ -669,6 +670,7 @@ export interface MyHouse {
   exterior: string;
   setumei: string;
   interior_rank: number;
+  tuika: number; // 0=家のみ/1=運営/2=株式会社/3=持ち物販売店
   slots: number;
   built_at: string;
   has_shop: boolean;
@@ -682,10 +684,19 @@ export interface PlotCell {
   row: number;
   col: number;
 }
+// 2軒目以降の追加種別(レガシー@housu_tuika2)。
+export interface BuildingTuika {
+  no: number; // 0=家のみ/1=運営/2=株式会社/3=持ち物販売店
+  name: string;
+  fee: number; // 万円
+  shinsa: boolean; // 能力審査(総資産1億+全パラ1万)が必要
+}
 export interface BuildingState {
   towns: BuildingTown[];
   exteriors: BuildingExterior[];
   interiors: BuildingInterior[];
+  tuikas: BuildingTuika[];
+  shinsa_ok: boolean;
   plots: PlotCell[];
   houses: HouseCell[];
   my_houses: MyHouse[];
@@ -1016,6 +1027,7 @@ export const api = {
     col: number,
     exterior: string,
     interiorRank: number,
+    tuika = 0,
   ) =>
     request<Player>('POST', `/players/${id}/building/build`, {
       town,
@@ -1023,6 +1035,7 @@ export const api = {
       col,
       exterior,
       interior_rank: interiorRank,
+      tuika,
       idempotency_key: newIdempotencyKey(),
     }),
   sellHouse: (id: number, houseId: number) =>

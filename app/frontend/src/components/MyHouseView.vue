@@ -92,6 +92,9 @@ function selectHouse(h: MyHouse) {
   syncDrafts();
 }
 
+// 追加種別(2軒目以降)の表示名。
+const TUIKA_NAMES: Record<number, string> = { 1: '運営', 2: '株式会社', 3: '持ち物販売店' };
+
 // 店設定フォームを出すか: コンテンツ枠に「お店」があるか、既に店がある家。
 const shopConfigured = computed(
   () => (house.value?.contents.some((c) => c.kind === 'shop') ?? false) || (house.value?.has_shop ?? false),
@@ -304,7 +307,8 @@ async function doSell() {
         <img :src="`/img/${house.exterior}.gif`" :alt="house.exterior" />
         <div>
           <div class="hs-loc">{{ townName(house.town) }}／{{ rowLabel(house.row) }}{{ house.col }}</div>
-          <div class="hs-sub">外装 {{ house.exterior }}・内装{{ ['A','B','C','D'][house.interior_rank] ?? '?' }}ランク（コンテンツ枠{{ house.slots }}）</div>
+          <div v-if="house.tuika !== 0" class="hs-sub">外装 {{ house.exterior }}・種別 {{ TUIKA_NAMES[house.tuika] ?? '?' }}</div>
+          <div v-else class="hs-sub">外装 {{ house.exterior }}・内装{{ ['A','B','C','D'][house.interior_rank] ?? '?' }}ランク（コンテンツ枠{{ house.slots }}）</div>
         </div>
       </div>
 
@@ -396,8 +400,12 @@ async function doSell() {
         </div>
       </div>
 
-      <!-- コンテンツ選択(レガシー: ●コンテンツ選択) -->
-      <div class="panel-white sec">
+      <!-- コンテンツ選択(レガシー: ●コンテンツ選択)。追加種別の家は機能固定で枠なし。 -->
+      <div v-if="house.tuika !== 0" class="panel-white sec">
+        <div class="sec-head">●{{ TUIKA_NAMES[house.tuika] ?? '追加種別' }}</div>
+        <div class="note">この家は{{ TUIKA_NAMES[house.tuika] ?? '追加種別' }}です。コンテンツ枠はありません。</div>
+      </div>
+      <div v-else class="panel-white sec">
         <div class="sec-head">●コンテンツ選択</div>
         <div class="note">
           設置するコンテンツを選択してください。後で変更も可能です。タイトルは訪問画面のボタンに表示されます。<br />

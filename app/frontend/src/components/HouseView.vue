@@ -60,6 +60,10 @@ const pageBg = computed(() => {
   }
 });
 
+// 追加種別(2軒目以降)の家。0以外はコンテンツ枠ではなく固定機能の画面になる。
+const TUIKA_NAMES: Record<number, string> = { 1: '運営', 2: '株式会社', 3: '持ち物販売店' };
+const tuikaName = computed(() => TUIKA_NAMES[house.value?.tuika ?? 0] ?? '');
+
 onMounted(async () => {
   try {
     const [houses, towns] = await Promise.all([api.houses(props.player.id), api.towns()]);
@@ -68,6 +72,10 @@ onMounted(async () => {
     house.value = houses.find((h) => h.id === props.houseId) ?? null;
     if (!house.value) {
       message.value = 'その家は見つかりませんでした。';
+      return;
+    }
+    // 追加種別の家はコンテンツ枠を持たず、専用画面(運営/株式会社/闇市)になる。
+    if (house.value.tuika !== 0) {
       return;
     }
     // レガシー忠実: 公開コンテンツが無い家には入れない。
@@ -346,6 +354,12 @@ async function doDeleteBbs(kind: string, opts: { articleNo?: number; threadNo?: 
           </select>
           <button class="btn" :disabled="busy" @click="doSaisen">さい銭する</button>
         </span>
+      </div>
+
+      <!-- 追加種別の家(運営/株式会社/持ち物販売店)。専用画面はT2〜T4で実装。 -->
+      <div v-if="house.tuika !== 0" class="tuika-wrap">
+        <div class="tuika-title">{{ tuikaName }}</div>
+        <div class="tuika-body">この{{ tuikaName }}の画面は準備中です。</div>
       </div>
 
       <!-- 通常掲示板(レガシーbbs1: #ffffcc・青点線枠・スレッド形式) -->
@@ -692,6 +706,24 @@ async function doDeleteBbs(kind: string, opts: { articleNo?: number; threadNo?: 
 .ie-deru {
   text-align: center;
   margin: 24px 0 12px;
+}
+/* 追加種別(運営/株式会社/闇市)の画面 */
+.tuika-wrap {
+  max-width: 820px;
+  margin: 10px auto 0;
+  background: #fff;
+  border: 1px solid #666;
+  padding: 14px;
+  text-align: center;
+}
+.tuika-title {
+  font-size: 18px;
+  color: #ff6600;
+}
+.tuika-body {
+  font-size: 12px;
+  color: #666;
+  margin-top: 8px;
 }
 .pager {
   display: flex;

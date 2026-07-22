@@ -2542,9 +2542,15 @@ func TestCLeague(t *testing.T) {
 // updated player and HTTP status.
 func buildHouse(t *testing.T, base string, playerID int64, town, row, col int, exterior string, interiorRank int, idemKey string) (playerResp, int) {
 	t.Helper()
+	return buildHouseTuika(t, base, playerID, town, row, col, exterior, interiorRank, 0, idemKey)
+}
+
+// buildHouseTuika builds with an explicit 追加種別 (2軒目以降).
+func buildHouseTuika(t *testing.T, base string, playerID int64, town, row, col int, exterior string, interiorRank, tuika int, idemKey string) (playerResp, int) {
+	t.Helper()
 	body, _ := json.Marshal(map[string]any{
 		"town": town, "row": row, "col": col,
-		"exterior": exterior, "interior_rank": interiorRank,
+		"exterior": exterior, "interior_rank": interiorRank, "tuika": tuika,
 		"idempotency_key": idemKey,
 	})
 	resp, err := http.Post(base+"/api/v1/players/"+strconv.FormatInt(playerID, 10)+"/building/build",
@@ -2996,7 +3002,6 @@ func TestBuildHouse(t *testing.T) {
 		t.Errorf("non-plot: status=%d, want 422", c)
 	}
 
-
 	// 1軒目: 謎の街(4) の A1 に house1 + D内装。費用=(250+150)×1×10000=4,000,000。
 	got, code := buildHouse(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, "b1")
 	if code != http.StatusOK {
@@ -3049,6 +3054,66 @@ func TestBuildHouse(t *testing.T) {
 	led := ledger.New(pool)
 	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
 		t.Errorf("ledger zero-sum broken: %d", sum)
+	}
+}
+
+// TestBuildHouseTuika covers 2軒目以降の追加種別: tuika費の加算、同種1軒制限、
+// 能力審査(総資産1億+全パラ1万)、tuika家のコンテンツ枠拒否。
+func TestBuildHouseTuika(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	p := register(t, srv.URL, "misskey.example", "tuikabuilder")
+	creditSavings(t, pool, p.ID, 20_000_000)
+	seedPlots(t, pool, [][3]int{{4, 0, 1}, {4, 0, 2}, {4, 0, 3}, {4, 0, 4}})
+
+	// 1軒目(D内装)。tuika指定は無視され家のみになる。費用=(250+150)×1=400万。
+	if _, c := buildHouseTuika(t, srv.URL, p.ID, 4, 0, 1, "house1", 3, 3, "t1"); c != http.StatusOK {
+		t.Fatalf("build 1st: %d", c)
+	}
+	var tuika0 int
+	pool.QueryRow(ctx, `SELECT tuika FROM player_houses WHERE owner_id=$1`, p.ID).Scan(&tuika0)
+	if tuika0 != 0 {
+		t.Errorf("1st house tuika = %d, want 0", tuika0)
+	}
+
+	// 2軒目の持ち物販売店(tuika=3)は能力審査に落ちる(総資産1600万<1億)。
+	if _, c := buildHouseTuika(t, srv.URL, p.ID, 4, 0, 2, "house1", 0, 3, "t2"); c != http.StatusUnprocessableEntity {
+		t.Errorf("shinsa fail: %d, want 422", c)
+	}
+	// 運営(tuika=1)は審査なし。費用=250+150×2+100=650万。
+	got, c := buildHouseTuika(t, srv.URL, p.ID, 4, 0, 2, "house1", 0, 1, "t3")
+	if c != http.StatusOK {
+		t.Fatalf("build unei: %d", c)
+	}
+	if got.Savings != 20_000_000-4_000_000-6_500_000 {
+		t.Errorf("savings after unei = %d, want 9500000", got.Savings)
+	}
+	// 同種(運営)は2軒持てない。
+	if _, c := buildHouseTuika(t, srv.URL, p.ID, 4, 0, 3, "house1", 0, 1, "t4"); c != http.StatusUnprocessableEntity {
+		t.Errorf("dup unei: %d, want 422", c)
+	}
+
+	// 資産を1億超に増やしてもパラメータ不足なら審査に落ちる。
+	creditSavings(t, pool, p.ID, 100_000_000)
+	if _, c := buildHouseTuika(t, srv.URL, p.ID, 4, 0, 3, "house1", 0, 3, "t5"); c != http.StatusUnprocessableEntity {
+		t.Errorf("shinsa param fail: %d, want 422", c)
+	}
+	// 全パラ1万で審査合格。費用=250+300+500=1050万。
+	if _, err := pool.Exec(ctx, `UPDATE player_status SET kokugo=10000, suugaku=10000, rika=10000,
+		syakai=10000, eigo=10000, ongaku=10000, bijutsu=10000, looks=10000, tairyoku=10000,
+		kenkou=10000, speed=10000, power=10000, wanryoku=10000, kyakuryoku=10000, love=10000,
+		omoshirosa=10000 WHERE player_id=$1`, p.ID); err != nil {
+		t.Fatalf("set params: %v", err)
+	}
+	if _, c := buildHouseTuika(t, srv.URL, p.ID, 4, 0, 3, "house1", 0, 3, "t6"); c != http.StatusOK {
+		t.Fatalf("build yami: %d", c)
+	}
+	// tuika家にはコンテンツ枠を設定できない。
+	var yamiID int64
+	pool.QueryRow(ctx, `SELECT id FROM player_houses WHERE owner_id=$1 AND tuika=3`, p.ID).Scan(&yamiID)
+	if _, c := setContents(t, srv.URL, p.ID, yamiID,
+		[]map[string]any{{"slot": 0, "kind": "bbs"}}, "t7"); c != http.StatusUnprocessableEntity {
+		t.Errorf("contents on tuika house: %d, want 422", c)
 	}
 }
 
