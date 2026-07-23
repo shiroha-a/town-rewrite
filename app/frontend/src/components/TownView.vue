@@ -98,7 +98,7 @@ onMounted(async () => {
   }
   refreshUnread();
   try {
-    greetings.value = await api.greetings(6);
+    greetings.value = await api.greetings(30);
   } catch {
     greetings.value = [];
   }
@@ -128,8 +128,14 @@ function rollEvent() {
     .catch(() => {});
 }
 
-// 街トップのチャット窓に表示する最新のあいさつ。
+// 街トップのチャット窓に表示する最新のあいさつ。管理人・宣伝は別枠に
+// 区切って表示するため、広めに取得してフロント側で振り分ける。
 const greetings = ref<import('../api').Greeting[]>([]);
+const adminGreets = computed(() => greetings.value.filter((g) => g.category === '管理人').slice(0, 2));
+const adGreets = computed(() => greetings.value.filter((g) => g.category === '宣伝').slice(0, 2));
+const normalGreets = computed(
+  () => greetings.value.filter((g) => g.category !== '管理人' && g.category !== '宣伝').slice(0, 6),
+);
 
 // 新着メール通知。街トップ表示時とポーリングで未読数を取得する。
 const unreadMail = ref(0);
@@ -414,7 +420,7 @@ function openAisatu() {
 // (SSEが生きていれば二重更新になるだけで無害。切断時のフォールバック)。
 async function onAisatuPosted() {
   try {
-    greetings.value = await api.greetings(6);
+    greetings.value = await api.greetings(30);
   } catch {
     // チャット窓の更新失敗は無視(次回リロードで追いつく)
   }
@@ -431,7 +437,7 @@ function fmtChatTime(iso: string): string {
 // EventSourceは切断時に自動再接続する。
 let greetES: EventSource | undefined;
 onMounted(() => {
-  greetES = new EventSource('/api/v1/greetings/stream?limit=6');
+  greetES = new EventSource('/api/v1/greetings/stream?limit=30');
   greetES.onmessage = (e) => {
     try {
       greetings.value = JSON.parse(e.data);
@@ -660,7 +666,24 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
       </div>
       <button class="chat-head" @click="openAisatu">●チャット(あいさつ)</button>
       <div v-if="greetings.length" class="chat-feed">
-        <div v-for="g in greetings" :key="g.id" class="chat-line">
+        <!-- 管理人からのお知らせ(最新2件) -->
+        <div v-if="adminGreets.length" class="chat-sec admin-sec">
+          <div v-for="g in adminGreets" :key="g.id" class="chat-line">
+            <span class="cbadge admin">管理人</span>
+            <span class="ct">{{ fmtChatTime(g.posted_at) }}</span>
+            <span class="cn">{{ g.user_name }}</span>：<span :style="{ color: g.color }">{{ g.body }}</span>
+          </div>
+        </div>
+        <!-- 宣伝(有料枠、最新2件) -->
+        <div v-if="adGreets.length" class="chat-sec ad-sec">
+          <div v-for="g in adGreets" :key="g.id" class="chat-line">
+            <span class="cbadge ad">宣伝</span>
+            <span class="ct">{{ fmtChatTime(g.posted_at) }}</span>
+            <span class="cn">{{ g.user_name }}</span>：<span :style="{ color: g.color }">{{ g.body }}</span>
+          </div>
+        </div>
+        <!-- 通常のあいさつ(最新6件) -->
+        <div v-for="g in normalGreets" :key="g.id" class="chat-line">
           <span class="ct">{{ fmtChatTime(g.posted_at) }}</span>
           <span class="cn">{{ g.user_name }}</span>：<span :style="{ color: g.color }">{{ g.body }}</span>
         </div>
