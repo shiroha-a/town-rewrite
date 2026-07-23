@@ -192,8 +192,9 @@ function clickCell(col: number, rowIdx: number) {
 }
 
 // 標準施設の組み込みプリセット(townmap.Defaultと同じ内容+移動施設/空き地)。
-// 常にパレットに並び、削除はできない。
-const STD_FAC_PRESETS: FacilityPreset[] = [
+// 常にパレットに並び、削除はできない。徒歩/バスは行き先の街ごとに1チップずつ
+// 展開する(destの設定なしでそのまま配置できる)。
+const STD_FAC_BASE: FacilityPreset[] = [
   { key: 'kabu', img: 'kabu', alt: '株取引場', dest: 0 },
   { key: 'depart', img: 'depart', alt: '中央デパート', dest: 0 },
   { key: 'bank', img: 'bank', alt: '銀行', dest: 0 },
@@ -209,16 +210,21 @@ const STD_FAC_PRESETS: FacilityPreset[] = [
   { key: 'hanbai', img: 'hanbai', alt: '自動販売機', dest: 0 },
   { key: 'yakuba', img: 'yakuba', alt: '役場（住民名鑑）', dest: 0 },
   { key: 'prof', img: 'prof', alt: 'プロフィール', dest: 0 },
-  { key: 'walk', img: 'mati_link', alt: '街移動（徒歩）', dest: 0 },
-  { key: 'bus', img: 'bus', alt: 'バス（500円）', dest: 0 },
   { key: 'akichi', img: 'akiti', alt: '空き地', dest: 0 },
 ];
+const stdFacPresets = computed<FacilityPreset[]>(() => [
+  ...STD_FAC_BASE,
+  ...plotTowns.value.flatMap((t) => [
+    { key: 'walk', img: 'mati_link', alt: `徒歩→${t.name}`, dest: t.no },
+    { key: 'bus', img: 'bus', alt: `バス→${t.name}`, dest: t.no },
+  ]),
+]);
 
 // 施設プリセット(画像・表示名・遷移先を保存したテンプレート)。パレットから
 // D&Dで配置できる。プリセット自体の追加/削除は即サーバへ保存する。
 const facPresets = ref<FacilityPreset[]>([]);
 // パレット全体 = 標準(削除不可) + カスタム(保存済み)。D&Dはこの通し番号を使う。
-const allFacPresets = computed(() => [...STD_FAC_PRESETS, ...facPresets.value]);
+const allFacPresets = computed(() => [...stdFacPresets.value, ...facPresets.value]);
 const presetDraft = ref<FacilityPreset>({ key: 'depart', img: 'depart', alt: '', dest: 0 });
 const presetFormOpen = ref(false);
 async function savePreset() {
@@ -1086,7 +1092,7 @@ async function deleteEdit() {
                   v-for="(p, i) in allFacPresets"
                   :key="i"
                   class="fac-chip"
-                  :class="{ std: i < STD_FAC_PRESETS.length }"
+                  :class="{ std: i < stdFacPresets.length }"
                   draggable="true"
                   :title="`${p.alt}（${p.key}${MOVE_KEYS.includes(p.key) ? '→' + (plotTowns.find((t) => t.no === p.dest)?.name ?? p.dest) : ''}）`"
                   @dragstart="onPresetDragStart(i)"
@@ -1095,10 +1101,10 @@ async function deleteEdit() {
                   <img :src="`/img/${p.img}.gif`" width="20" height="20" alt="" draggable="false" />
                   {{ p.alt }}
                   <button
-                    v-if="i >= STD_FAC_PRESETS.length"
+                    v-if="i >= stdFacPresets.length"
                     class="chip-del"
                     title="プリセットを削除"
-                    @click.stop="deletePreset(i - STD_FAC_PRESETS.length)"
+                    @click.stop="deletePreset(i - stdFacPresets.length)"
                   >×</button>
                 </span>
                 <button class="btn mini" @click="presetFormOpen = !presetFormOpen">
