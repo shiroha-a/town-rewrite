@@ -5,6 +5,8 @@ import { satietyLabel } from '../params';
 import CommandIcon from './CommandIcon.vue';
 import PowerBar from './PowerBar.vue';
 import GreetingModal from './GreetingModal.vue';
+// v-touch-label: title属性のラベルをモバイルの長押しで表示する
+import { vTouchLabel } from '../touchlabel';
 
 const props = defineProps<{ player: Player }>();
 const emit = defineEmits<{
@@ -637,6 +639,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
               <!-- 空き地(家が建っていないakichiマス)。クリックでそのマスに建築。 -->
               <button
                 v-if="akichiAt(c, ri) && !houseAt(c, ri) && !facilityAt(c, ri)"
+                v-touch-label
                 class="facility akichi-btn"
                 :title="`${r}${c}（空き地）クリックで建築`"
                 @click="clickAkichi(c, ri)"
@@ -646,6 +649,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
               <!-- 家。クリックでその家のコンテンツ(訪問パネル)を開く。 -->
               <button
                 v-else-if="houseAt(c, ri)"
+                v-touch-label
                 class="facility house-cell"
                 :title="houseTitle(houseAt(c, ri)!)"
                 @click="clickHouse(houseAt(c, ri)!)"
@@ -654,6 +658,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
               </button>
               <button
                 v-if="facilityAt(c, ri)"
+                v-touch-label
                 class="facility"
                 :title="facilityAt(c, ri)!.alt"
                 @click="clickFacility(facilityAt(c, ri)!)"
@@ -717,7 +722,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
           </div>
 
           <div class="command-icons">
-            <button v-if="isAdmin" class="admin-link" title="管理者画面" @click="nav('admin')">
+            <button v-if="isAdmin" v-touch-label class="admin-link" title="管理者画面" @click="nav('admin')">
               <svg class="gear" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
                 <path
                   fill="currentColor"
@@ -728,6 +733,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
             <button
               v-for="cmd in commands"
               :key="cmd.key"
+              v-touch-label
               :title="cmd.key === 'work' && workCooldown ? `まだ働けません（${workCooldown}）` : cmd.alt"
               :disabled="cmd.key === 'work' && !!workCooldown"
               :class="{ 'on-cooldown': cmd.key === 'work' && !!workCooldown }"

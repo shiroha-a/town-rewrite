@@ -789,3 +789,19 @@ h1.town-title {
   letter-spacing: 4px;
   margin: 8px 0;
 }
+
+/* モバイル長押しで表示するラベルバブル(v-touch-labelディレクティブが生成) */
+.touch-label-tip {
+  position: fixed;
+  z-index: 3000;
+  display: none;
+  background: rgba(40, 40, 40, 0.92);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 4px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
