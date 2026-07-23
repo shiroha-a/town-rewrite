@@ -419,6 +419,14 @@ async function onAisatuPosted() {
     // チャット窓の更新失敗は無視(次回リロードで追いつく)
   }
 }
+// 投稿時刻の表示(RFC3339をブラウザのローカルタイムゾーンでMM/DD HH:MMに)。
+function fmtChatTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 // チャット窓のリアルタイム購読(SSE)。誰かが投稿するとサーバが最新6件をpushする。
 // EventSourceは切断時に自動再接続する。
 let greetES: EventSource | undefined;
@@ -653,7 +661,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
       <button class="chat-head" @click="openAisatu">●チャット(あいさつ)</button>
       <div v-if="greetings.length" class="chat-feed">
         <div v-for="g in greetings" :key="g.id" class="chat-line">
-          <span class="ct">{{ g.posted_at }}</span>
+          <span class="ct">{{ fmtChatTime(g.posted_at) }}</span>
           <span class="cn">{{ g.user_name }}</span>：<span :style="{ color: g.color }">{{ g.body }}</span>
         </div>
       </div>
