@@ -20,14 +20,15 @@ function showTip(text: string, x: number, y: number) {
   }
   tip.textContent = text;
   tip.style.display = 'block';
-  // 幅確定後に指の少し上へ配置し、画面端でははみ出さないよう補正する
+  // 幅確定後に指の上へ配置し、画面端でははみ出さないよう補正する。
+  // 指で隠れないよう指先からやや大きめに離す。
   requestAnimationFrame(() => {
     if (!tip || tip.style.display === 'none') return;
     const pad = 8;
     const w = tip.offsetWidth;
     const left = Math.min(Math.max(x - w / 2, pad), window.innerWidth - w - pad);
     tip.style.left = `${left}px`;
-    tip.style.top = `${Math.max(y - 48, pad)}px`;
+    tip.style.top = `${Math.max(y - 80, pad)}px`;
   });
 }
 
