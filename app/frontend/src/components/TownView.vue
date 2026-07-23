@@ -340,6 +340,7 @@ const commands = computed(() => {
     { key: 'mail', img: 'mail', alt: 'メール' },
     { key: 'doukyo', img: 'doukyo', alt: 'キャラ作成' },
     { key: 'aisatu', img: 'aisatu', alt: 'あいさつ' },
+    { key: 'ashiato', img: 'ashiato', alt: '足あと帳' },
   );
   // 家を持っていれば「家の設定」(my_house_settei相当の専用画面)を出す。
   if (hasOwnHouse.value) {
@@ -701,8 +702,6 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
       </div>
       <div class="left-links">
         <button class="link-btn" @click="nav('shopping')">商店街</button>
-        <button class="link-btn" @click="nav('ashiato')">足あと帳</button>
-        <button class="link-btn" @click="nav('yakuba')">役場(住民名鑑)</button>
         <button class="link-btn" @click="nav('casino')">カジノ</button>
       </div>
     </div>
