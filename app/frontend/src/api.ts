@@ -414,6 +414,22 @@ export interface FacilityPreset {
   dest: number;
 }
 
+// カスタムイベント(管理画面): 組み込みのランダムイベントプールに合流する。
+// 金額は[money_min, money_max]の一様乱数、disease_setは病気指数の直接代入。
+export interface AdminEvent {
+  id: number;
+  name: string;
+  message: string;
+  good: boolean;
+  money_min: number;
+  money_max: number;
+  params: Record<string, number>;
+  disease_set: number | null;
+  weight_g: number;
+  weight: number;
+  enabled: boolean;
+}
+
 // 街移動の結果。徒歩/自転車の能力上昇、乗り物、事故、迷子などを含む。
 export interface MoveResult {
   arrived_town: number;
@@ -1381,6 +1397,15 @@ export const api = {
     request<FacilityPreset[]>('GET', '/admin/townmap/presets', undefined, adminHeaders(actingId)),
   adminUpdateFacilityPresets: (actingId: number, presets: FacilityPreset[]) =>
     request<FacilityPreset[]>('PUT', '/admin/townmap/presets', presets, adminHeaders(actingId)),
+  // カスタムイベント(ランダムイベントの追加/編集/削除)。
+  adminListEvents: (actingId: number) =>
+    request<AdminEvent[]>('GET', '/admin/events', undefined, adminHeaders(actingId)),
+  adminCreateEvent: (actingId: number, e: Omit<AdminEvent, 'id'>) =>
+    request<AdminEvent>('POST', '/admin/events', e, adminHeaders(actingId)),
+  adminUpdateEvent: (actingId: number, e: AdminEvent) =>
+    request<AdminEvent>('PUT', `/admin/events/${e.id}`, e, adminHeaders(actingId)),
+  adminDeleteEvent: (actingId: number, id: number) =>
+    request<{ deleted: boolean }>('DELETE', `/admin/events/${id}`, undefined, adminHeaders(actingId)),
   // 家が建っているマス(施設エディタでロックするため)。
   adminHouseCells: (actingId: number) =>
     request<PlotCell[]>('GET', '/admin/townmap/houses', undefined, adminHeaders(actingId)),

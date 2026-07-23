@@ -91,7 +91,6 @@ var ErrItemNotFound = errors.New("item not found")
 // (旧 zaiko_tyousetuti=2). remaining = max(1, ceil(stock_master / zaikoAdjust)).
 const zaikoAdjust = 2
 
-
 // Service applies actions.
 type Service struct {
 	pool            *pgxpool.Pool
@@ -201,12 +200,12 @@ func (s *Service) runAction(ctx context.Context, playerID int64, actionType, ide
 
 // WorkResult summarizes a single work action for the result screen (design 17.5).
 type WorkResult struct {
-	ExpGained  int      // 今回の経験値増減
-	NewLevel   int      // 到達レベル
-	LeveledUp  bool     // レベルが上がったか(昇給発生)
-	ThisSalary int64    // 昇給後の給料(1回あたり)
-	Pay        int64    // 今回支給された給料(支払間隔到達時のみ>0)
-	PayEvery   int      // 支払間隔(N回出勤ごと)
+	ExpGained   int      // 今回の経験値増減
+	NewLevel    int      // 到達レベル
+	LeveledUp   bool     // レベルが上がったか(昇給発生)
+	ThisSalary  int64    // 昇給後の給料(1回あたり)
+	Pay         int64    // 今回支給された給料(支払間隔到達時のみ>0)
+	PayEvery    int      // 支払間隔(N回出勤ごと)
 	Bonus       int64    // レベルアップ時ボーナス
 	WorkBonus   int64    // 消費に見合う労働ボーナス(今回の給料に含まれる)
 	WeightLossG int      // 今回の労働で減った体重(グラム)
@@ -2651,7 +2650,12 @@ func (s *Service) DoEventRoll(ctx context.Context, playerID int64, idempotencyKe
 			}
 		}
 
-		occurred, o := event.Roll(s.rng, state.Money, state.Params["speed"].Value)
+		// 管理画面で追加されたカスタムイベントを組み込みプールに合流させる。
+		customs, err := s.loadCustomEvents(ctx, tx)
+		if err != nil {
+			return err
+		}
+		occurred, o := event.RollAll(s.rng, state.Money, state.Params["speed"].Value, customs)
 		if !occurred {
 			return nil
 		}
@@ -2662,6 +2666,27 @@ func (s *Service) DoEventRoll(ctx context.Context, playerID int64, idempotencyKe
 		return nil
 	})
 	return p, result, err
+}
+
+// loadCustomEvents reads the enabled admin-defined events for the roll pool.
+func (s *Service) loadCustomEvents(ctx context.Context, tx pgx.Tx) ([]event.Custom, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT name, message, good, money_min, money_max, params, disease_set, weight_g, weight
+		 FROM content_events WHERE enabled`)
+	if err != nil {
+		return nil, fmt.Errorf("load custom events: %w", err)
+	}
+	defer rows.Close()
+	var out []event.Custom
+	for rows.Next() {
+		var c event.Custom
+		if err := rows.Scan(&c.Name, &c.Message, &c.Good, &c.MoneyMin, &c.MoneyMax,
+			&c.Params, &c.DiseaseSet, &c.WeightG, &c.Weight); err != nil {
+			return nil, fmt.Errorf("scan custom event: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // applyEventOutcome persists one event's effects: money via the ledger, params

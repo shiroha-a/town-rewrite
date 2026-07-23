@@ -2329,6 +2329,66 @@ func TestEvent(t *testing.T) {
 	}
 }
 
+// TestCustomEvent verifies an admin-defined event joins the roll pool and its
+// outcome (money/params) is applied.
+func TestCustomEvent(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	alice := register(t, srv.URL, "misskey.example", "cevalice")
+	// 重み100のカスタムイベント(+100円, kokugo+2)を投入(組み込み21種に対し圧倒的に出やすい)。
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO content_events (name, message, good, money_min, money_max, params, weight, enabled)
+		 VALUES ('検証入金', '検証で100円拾いました。', true, 100, 100, '{"kokugo": 2}', 100, true)`); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+	roll := func(key string) string {
+		b, _ := json.Marshal(map[string]any{"idempotency_key": key})
+		resp, err := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/events/roll", "application/json", bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var r struct {
+			Event *struct {
+				Name string `json:"name"`
+			} `json:"event"`
+		}
+		json.NewDecoder(resp.Body).Decode(&r)
+		if r.Event != nil {
+			return r.Event.Name
+		}
+		return ""
+	}
+	fired := false
+	for i := 0; i < 300 && !fired; i++ {
+		if _, err := pool.Exec(ctx, `DELETE FROM player_facility_cooldowns WHERE player_id=$1 AND facility='event_roll'`, alice.ID); err != nil {
+			t.Fatal(err)
+		}
+		var before int64
+		pool.QueryRow(ctx, `SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account=$1`,
+			fmt.Sprintf("player:%d", alice.ID)).Scan(&before)
+		var kokugoBefore int
+		pool.QueryRow(ctx, `SELECT kokugo FROM player_status WHERE player_id=$1`, alice.ID).Scan(&kokugoBefore)
+		if roll(fmt.Sprintf("cev-%d", i)) == "検証入金" {
+			fired = true
+			var after int64
+			pool.QueryRow(ctx, `SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account=$1`,
+				fmt.Sprintf("player:%d", alice.ID)).Scan(&after)
+			if after-before != 100 {
+				t.Errorf("money delta = %d, want 100", after-before)
+			}
+			var kokugoAfter int
+			pool.QueryRow(ctx, `SELECT kokugo FROM player_status WHERE player_id=$1`, alice.ID).Scan(&kokugoAfter)
+			if kokugoAfter-kokugoBefore != 2 {
+				t.Errorf("kokugo delta = %d, want 2", kokugoAfter-kokugoBefore)
+			}
+		}
+	}
+	if !fired {
+		t.Error("custom event never fired in 300 rolls")
+	}
+}
+
 // grantMoney credits a player via a balanced ledger tx (test setup helper).
 func grantMoney(t *testing.T, pool *pgxpool.Pool, playerID, amount int64) {
 	t.Helper()

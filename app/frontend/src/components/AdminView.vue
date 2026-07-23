@@ -26,7 +26,7 @@ const emit = defineEmits<{ back: [] }>();
 const isAdmin = computed(() => props.player.roles.includes('admin'));
 
 // 各セクションの開閉。既定は折りたたみ(false)。
-const open = reactive({ item: false, job: false, user: false, settings: false, towns: false, map: false });
+const open = reactive({ item: false, job: false, user: false, settings: false, towns: false, map: false, events: false });
 
 // 効果/条件で対象にできるパラメータ。
 const PARAM_OPTIONS = [
@@ -114,6 +114,7 @@ async function refresh() {
     houseCells.value = await api.adminHouseCells(props.player.id);
     uploadedAssets.value = await api.adminListAssets(props.player.id);
     facPresets.value = await api.adminFacilityPresets(props.player.id);
+    adminEvents.value = await api.adminListEvents(props.player.id);
     townList.value = await api.towns();
     syncTownDraft();
     selectedIdx.value = null;
@@ -510,6 +511,77 @@ function onBgDrop(col: number, rowIdx: number) {
   }
   assets.value[srcIdx].col = col;
   assets.value[srcIdx].row = rowIdx;
+}
+
+// カスタムイベント管理(ランダムイベントの追加/編集/削除)。
+const adminEvents = ref<import('../api').AdminEvent[]>([]);
+const EV_PARAM_OPTIONS = [
+  'kokugo', 'suugaku', 'rika', 'syakai', 'eigo', 'ongaku', 'bijutsu', 'looks',
+  'tairyoku', 'kenkou', 'speed', 'power', 'wanryoku', 'kyakuryoku', 'love', 'omoshirosa',
+  'energy', 'nou_energy',
+];
+const EV_DISEASES: { label: string; value: number | null }[] = [
+  { label: 'なし', value: null },
+  { label: '風邪ぎみ(-8)', value: -8 },
+  { label: '風邪(-15)', value: -15 },
+  { label: '下痢(-18)', value: -18 },
+  { label: '肺炎(-30)', value: -30 },
+  { label: '結核(-50)', value: -50 },
+  { label: '脳腫瘍(-80)', value: -80 },
+  { label: '癌(-120)', value: -120 },
+];
+function emptyEvent(): import('../api').AdminEvent {
+  return {
+    id: 0, name: '', message: '', good: true, money_min: 0, money_max: 0,
+    params: {}, disease_set: null, weight_g: 0, weight: 1, enabled: true,
+  };
+}
+const evForm = ref(emptyEvent());
+const evParamRows = ref<{ key: string; value: number }[]>([]);
+function evEdit(e: import('../api').AdminEvent) {
+  evForm.value = { ...e, params: { ...e.params } };
+  evParamRows.value = Object.entries(e.params).map(([key, value]) => ({ key, value }));
+}
+function evReset() {
+  evForm.value = emptyEvent();
+  evParamRows.value = [];
+}
+async function evSave() {
+  busy.value = true;
+  message.value = '';
+  try {
+    const params: Record<string, number> = {};
+    for (const r of evParamRows.value) {
+      if (r.key && r.value) params[r.key] = r.value;
+    }
+    const payload = { ...evForm.value, params };
+    if (payload.id > 0) await api.adminUpdateEvent(props.player.id, payload);
+    else await api.adminCreateEvent(props.player.id, payload);
+    adminEvents.value = await api.adminListEvents(props.player.id);
+    evReset();
+    message.value = 'イベントを保存しました。';
+    kind.value = 'ok';
+  } catch (e) {
+    fail(e);
+  } finally {
+    busy.value = false;
+  }
+}
+async function evDelete() {
+  if (evForm.value.id <= 0) return;
+  if (!confirm(`イベント「${evForm.value.name}」を削除しますか?`)) return;
+  busy.value = true;
+  try {
+    await api.adminDeleteEvent(props.player.id, evForm.value.id);
+    adminEvents.value = await api.adminListEvents(props.player.id);
+    evReset();
+    message.value = 'イベントを削除しました。';
+    kind.value = 'ok';
+  } catch (e) {
+    fail(e);
+  } finally {
+    busy.value = false;
+  }
 }
 
 // 街の一覧(管理画面で設定可能。名前・地価)。マップ編集の街セレクタや街エディタで使う。
@@ -1057,6 +1129,73 @@ async function deleteEdit() {
                 <button class="btn" :disabled="townDraft.length >= 12" @click="addTown">＋街を追加</button>
                 <button class="btn primary" :disabled="busy" @click="saveTowns">保存</button>
                 <button class="btn" :disabled="busy" @click="refresh">再読込</button>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <!-- カスタムイベント -->
+        <section class="fold">
+          <button class="fold-head" @click="open.events = !open.events">
+            <span class="caret">{{ open.events ? '▼' : '▶' }}</span> イベント（{{ adminEvents.length }}）
+          </button>
+          <div v-if="open.events" class="fold-body">
+            <section class="panel">
+              <h3>
+                {{ evForm.id > 0 ? `イベント編集 #${evForm.id}` : 'イベント作成' }}
+                <span class="hint"> ※組み込みイベントと同じ抽選(発生率1/12)に合流します</span>
+              </h3>
+              <label>名前<input v-model="evForm.name" placeholder="例: 落とし穴" /></label>
+              <label>メッセージ<input v-model="evForm.message" class="wide" placeholder="例: 落とし穴に落ちて1000円落としました。" /></label>
+              <label class="chk"><input type="checkbox" v-model="evForm.good" /> 良いイベント（トーストの色）</label>
+              <label>お金(最小)<input type="number" v-model.number="evForm.money_min" /></label>
+              <label>お金(最大)<input type="number" v-model.number="evForm.money_max" /></label>
+              <span class="hint">※増減額は最小〜最大の一様乱数。マイナスで支払い。固定額は同値に</span>
+              <div class="ops">
+                <div class="ops-head">パラメータ増減</div>
+                <div v-for="(r, i) in evParamRows" :key="i" class="op-row">
+                  <select v-model="r.key">
+                    <option v-for="p in EV_PARAM_OPTIONS" :key="p" :value="p">{{ p }}</option>
+                  </select>
+                  <input type="number" v-model.number="r.value" />
+                  <button class="btn mini" @click="evParamRows.splice(i, 1)">×</button>
+                </div>
+                <button class="btn mini" @click="evParamRows.push({ key: 'kokugo', value: 1 })">＋パラメータを追加</button>
+              </div>
+              <label>病気にする
+                <select v-model="evForm.disease_set">
+                  <option v-for="d in EV_DISEASES" :key="String(d.value)" :value="d.value">{{ d.label }}</option>
+                </select>
+              </label>
+              <label>体重増減(g)<input type="number" v-model.number="evForm.weight_g" /></label>
+              <label>抽選の重み<input type="number" v-model.number="evForm.weight" min="1" max="100" /></label>
+              <span class="hint">※組み込みイベントは各1。2にすると2倍出やすい</span>
+              <label class="chk"><input type="checkbox" v-model="evForm.enabled" /> 有効</label>
+              <div class="actions">
+                <button class="btn primary" :disabled="busy || !evForm.name || !evForm.message" @click="evSave">
+                  {{ evForm.id > 0 ? '更新' : '作成' }}
+                </button>
+                <button v-if="evForm.id > 0" class="btn danger" :disabled="busy" @click="evDelete">削除</button>
+                <button v-if="evForm.id > 0" class="btn" @click="evReset">新規作成に戻る</button>
+              </div>
+            </section>
+            <section class="panel">
+              <h3>既存イベント（{{ adminEvents.length }}）<span class="hint"> ※行をクリックで編集</span></h3>
+              <div class="table-scroll">
+                <table class="list-table">
+                  <thead><tr><th>ID</th><th class="l">名前</th><th class="l">メッセージ</th><th>お金</th><th>重み</th><th>有効</th></tr></thead>
+                  <tbody>
+                    <tr v-for="e in adminEvents" :key="e.id" class="clickable" @click="evEdit(e)">
+                      <td>{{ e.id }}</td>
+                      <td class="l">{{ e.name }}</td>
+                      <td class="l">{{ e.message }}</td>
+                      <td class="r">{{ e.money_min === e.money_max ? e.money_min : `${e.money_min}〜${e.money_max}` }}</td>
+                      <td class="r">{{ e.weight }}</td>
+                      <td :class="{ off: !e.enabled }">{{ e.enabled ? '○' : '×' }}</td>
+                    </tr>
+                    <tr v-if="!adminEvents.length"><td colspan="6" class="muted">まだカスタムイベントがありません。</td></tr>
+                  </tbody>
+                </table>
               </div>
             </section>
           </div>

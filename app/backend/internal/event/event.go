@@ -210,3 +210,58 @@ func Roll(r *rng.Rand, money int64, speed int) (bool, Outcome) {
 	}
 	return true, events[r.IntN(len(events))](r, money, speed)
 }
+
+// Custom is an admin-defined event (content_events)。発生すると金額は
+// [MoneyMin, MoneyMax]の一様乱数、パラメータ/病気/体重は固定値が適用される。
+type Custom struct {
+	Name       string
+	Message    string
+	Good       bool
+	MoneyMin   int64
+	MoneyMax   int64
+	Params     map[string]int
+	DiseaseSet *int
+	WeightG    int
+	Weight     int // 抽選の重み(組み込みイベントは各1)
+}
+
+// RollAll rolls the 1/12 occurrence and then picks from the built-in pool and
+// the enabled custom events, weighted (built-ins weigh 1 each).
+func RollAll(r *rng.Rand, money int64, speed int, customs []Custom) (bool, Outcome) {
+	if r.IntN(12) != 0 {
+		return false, Outcome{}
+	}
+	total := len(events)
+	for _, c := range customs {
+		total += max(1, c.Weight)
+	}
+	n := r.IntN(total)
+	if n < len(events) {
+		return true, events[n](r, money, speed)
+	}
+	n -= len(events)
+	for _, c := range customs {
+		w := max(1, c.Weight)
+		if n < w {
+			delta := c.MoneyMin
+			if c.MoneyMax > c.MoneyMin {
+				delta += int64(r.IntN(int(c.MoneyMax-c.MoneyMin) + 1))
+			}
+			o := Outcome{
+				Name:       c.Name,
+				Message:    c.Message,
+				Good:       c.Good,
+				MoneyDelta: delta,
+				DiseaseSet: c.DiseaseSet,
+				WeightG:    c.WeightG,
+			}
+			if len(c.Params) > 0 {
+				o.Params = c.Params
+			}
+			return true, o
+		}
+		n -= w
+	}
+	// customsが並行更新で空になった場合の保険。
+	return true, events[r.IntN(len(events))](r, money, speed)
+}
