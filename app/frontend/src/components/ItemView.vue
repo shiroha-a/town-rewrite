@@ -106,7 +106,7 @@ async function use(it: ItemStack) {
     <div class="item-header">
       <div class="lead">
         持っているアイテムを使うことができます。<br />
-        ●身体パワー：<span class="pw">{{ player.status.energy }}/{{ player.status.energy_max }}</span>
+        ●身体パワー：<span class="pw">{{ player.status.energy }}/{{ player.status.energy_max }}</span><br />
         ●頭脳パワー：<span class="pw">{{ player.status.nou_energy }}/{{ player.status.nou_energy_max }}</span>
       </div>
       <div class="title">アイテム使用</div>
