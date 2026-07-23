@@ -3098,9 +3098,11 @@ func (s *Service) loadItemUse(ctx context.Context, itemID int64) (effects.Effect
 		fillsSatiety bool
 		durUnit      string
 	)
+	// enabledは購入カタログの掲載可否であり、所持済みアイテムの使用は妨げない
+	// (マスタを無効化しても手持ちが使えなくならないように)。
 	err := s.pool.QueryRow(ctx,
 		`SELECT effect, use_interval_min, fills_satiety, durability_unit
-		 FROM content_items WHERE id = $1 AND enabled`,
+		 FROM content_items WHERE id = $1`,
 		itemID).Scan(&effJSON, &intervalMin, &fillsSatiety, &durUnit)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return effects.Effect{}, 0, false, "", ErrItemNotFound
