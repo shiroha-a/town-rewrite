@@ -33,11 +33,12 @@ type Server struct {
 	attendance *attendance.Service
 	shop       *shop.Service
 	cleague    *cleague.Service
+	greetHub   *greetHub // あいさつSSE配信のプロセス内ハブ
 }
 
 // NewServer builds the HTTP handler for the REST API.
 func NewServer(players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store, stockSvc *stock.Service, keibaSvc *keiba.Service, mailSvc *mail.Service, greetingSvc *greeting.Service, attendanceSvc *attendance.Service, shopSvc *shop.Service, cleagueSvc *cleague.Service) http.Handler {
-	s := &Server{players: players, actions: actions, content: contentSvc, settings: st, townmap: tmap, stock: stockSvc, keiba: keibaSvc, mail: mailSvc, greeting: greetingSvc, attendance: attendanceSvc, shop: shopSvc, cleague: cleagueSvc}
+	s := &Server{players: players, actions: actions, content: contentSvc, settings: st, townmap: tmap, stock: stockSvc, keiba: keibaSvc, mail: mailSvc, greeting: greetingSvc, attendance: attendanceSvc, shop: shopSvc, cleague: cleagueSvc, greetHub: newGreetHub()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("POST /api/v1/players", s.registerPlayer)
@@ -62,6 +63,7 @@ func NewServer(players *player.Service, actions *action.Service, contentSvc *con
 	mux.HandleFunc("DELETE /api/v1/players/{id}/mail/{msgId}", s.mailDelete)
 	mux.HandleFunc("PUT /api/v1/players/{id}/mail/{msgId}/save", s.mailSave)
 	mux.HandleFunc("GET /api/v1/greetings", s.greetings)
+	mux.HandleFunc("GET /api/v1/greetings/stream", s.greetingsStream)
 	mux.HandleFunc("POST /api/v1/players/{id}/greetings", s.postGreeting)
 	mux.HandleFunc("DELETE /api/v1/admin/greetings/{gid}", s.deleteGreeting)
 	mux.HandleFunc("GET /api/v1/attendance", s.attendanceBoard)

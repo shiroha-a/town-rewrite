@@ -410,7 +410,8 @@ function openAisatu() {
   if (moving.value) return;
   aisatuOpen.value = true;
 }
-// 投稿後は街トップのチャット窓(最新6件)を更新し、報酬をステータスへ反映する。
+// 投稿後は街トップのチャット窓(最新6件)を更新し、報酬をステータスへ反映する
+// (SSEが生きていれば二重更新になるだけで無害。切断時のフォールバック)。
 async function onAisatuPosted() {
   try {
     greetings.value = await api.greetings(6);
@@ -418,6 +419,22 @@ async function onAisatuPosted() {
     // チャット窓の更新失敗は無視(次回リロードで追いつく)
   }
 }
+// チャット窓のリアルタイム購読(SSE)。誰かが投稿するとサーバが最新6件をpushする。
+// EventSourceは切断時に自動再接続する。
+let greetES: EventSource | undefined;
+onMounted(() => {
+  greetES = new EventSource('/api/v1/greetings/stream?limit=6');
+  greetES.onmessage = (e) => {
+    try {
+      greetings.value = JSON.parse(e.data);
+    } catch {
+      // 壊れたフレームは無視(次のpushで回復)
+    }
+  };
+});
+onUnmounted(() => {
+  greetES?.close();
+});
 
 // サーバ時刻基準の1秒クロック。就労クールタイムのカウントダウンをリアルタイム表示する。
 const skewMs = ref(0);
