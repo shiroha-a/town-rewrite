@@ -235,10 +235,14 @@ func (s *Store) Set(ctx context.Context, fs []Facility) error {
 	return nil
 }
 
-// ValidateAssets checks grid bounds, required img, and one-asset-per-cell
+// MaxAssetLayers is how many background assets may stack on one cell.
+// Array order is the z-order: later entries draw on top (e.g. tree over grass).
+const MaxAssetLayers = 3
+
+// ValidateAssets checks grid bounds, required img, and the per-cell layer cap
 // within each town.
 func ValidateAssets(as []Asset) error {
-	seen := make(map[[3]int]bool, len(as))
+	count := make(map[[3]int]int, len(as))
 	for i, a := range as {
 		if a.Img == "" {
 			return fmt.Errorf("asset %d: img is required", i)
@@ -253,10 +257,10 @@ func ValidateAssets(as []Asset) error {
 			return fmt.Errorf("asset %d: row %d out of range 0..%d", i, a.Row, Rows-1)
 		}
 		cell := [3]int{a.Town, a.Col, a.Row}
-		if seen[cell] {
-			return fmt.Errorf("asset %d: town %d cell (%d,%d) already occupied", i, a.Town, a.Col, a.Row)
+		count[cell]++
+		if count[cell] > MaxAssetLayers {
+			return fmt.Errorf("asset %d: town %d cell (%d,%d) exceeds %d layers", i, a.Town, a.Col, a.Row, MaxAssetLayers)
 		}
-		seen[cell] = true
 	}
 	return nil
 }

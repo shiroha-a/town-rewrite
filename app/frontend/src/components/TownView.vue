@@ -62,9 +62,10 @@ const houseAt = (col: number, row: number) =>
   houses.value.find((h) => h.town === displayTown.value && h.col === col && h.row === row);
 
 // 背景アセット(装飾レイヤー)。施設の下にセル単位で敷く。表示中の街のものを描画する。
+// 1マスに複数レイヤーを重ねられる(配列順=重ね順、後のものが上)。
 const assets = ref<TownAsset[]>([]);
-const assetAt = (col: number, row: number) =>
-  assets.value.find((a) => a.town === displayTown.value && a.col === col && a.row === row);
+const assetsAt = (col: number, row: number) =>
+  assets.value.filter((a) => a.town === displayTown.value && a.col === col && a.row === row);
 
 const cols = Array.from({ length: 16 }, (_, i) => i + 1);
 const rows = 'ABCDEFGHIJKL'.split('');
@@ -631,9 +632,10 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
             <div class="th">{{ r }}</div>
             <div v-for="c in cols" :key="r + '-' + c" class="tcell">
               <img
-                v-if="assetAt(c, ri)"
+                v-for="(a, ai) in assetsAt(c, ri)"
+                :key="'bg' + ai"
                 class="cell-bg"
-                :src="assetUrl(assetAt(c, ri)!.img)"
+                :src="assetUrl(a.img)"
                 alt=""
               />
               <!-- 空き地(家が建っていないakichiマス)。クリックでそのマスに建築。 -->

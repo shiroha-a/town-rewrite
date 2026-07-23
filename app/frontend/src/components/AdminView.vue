@@ -180,6 +180,11 @@ const selectedFacility = computed(() =>
 function clickCell(col: number, rowIdx: number) {
   // 家が建っているマスは編集不可(選択も移動先にもできない)。
   if (houseCellAt(col, rowIdx)) return;
+  // 一括配置モード: 選択中のプリセットをクリックしたマスへ連続配置する。
+  if (bulkPlace.value && bulkPresetIdx.value !== null) {
+    placePresetAt(bulkPresetIdx.value, col, rowIdx);
+    return;
+  }
   const idx = mapFacilityAt(col, rowIdx, facilityTown.value);
   if (idx >= 0) {
     // 施設セル: 選択(同じものを再クリックで選択解除)。
@@ -191,6 +196,41 @@ function clickCell(col: number, rowIdx: number) {
     townmap.value[selectedIdx.value].col = col;
     townmap.value[selectedIdx.value].row = rowIdx;
   }
+}
+
+// 一括配置モード: オンにするとプリセットをクリックで選択し、
+// セルをクリックするたびに同じプリセットを連続配置できる。
+const bulkPlace = ref(false);
+const bulkPresetIdx = ref<number | null>(null);
+function clickPresetChip(i: number) {
+  if (!bulkPlace.value) return;
+  bulkPresetIdx.value = bulkPresetIdx.value === i ? null : i;
+}
+// プリセットを指定セルへ配置する(占有セルは属性を上書き)。D&Dと一括配置で共用。
+function placePresetAt(i: number, col: number, rowIdx: number): number {
+  const p = allFacPresets.value[i];
+  if (!p || houseCellAt(col, rowIdx)) return -1;
+  const targetIdx = mapFacilityAt(col, rowIdx, facilityTown.value);
+  if (targetIdx >= 0) {
+    const f = townmap.value[targetIdx];
+    f.key = p.key;
+    f.img = p.img;
+    f.alt = p.alt;
+    f.dest = p.dest;
+    f.ready = true;
+    return targetIdx;
+  }
+  townmap.value.push({
+    key: p.key,
+    img: p.img,
+    alt: p.alt,
+    town: facilityTown.value,
+    col,
+    row: rowIdx,
+    dest: p.dest,
+    ready: true,
+  });
+  return townmap.value.length - 1;
 }
 
 // 標準施設の組み込みプリセット(townmap.Defaultと同じ内容+移動施設/空き地)。
@@ -290,30 +330,8 @@ function onDrop(col: number, rowIdx: number) {
   if (houseCellAt(col, rowIdx)) return;
   const targetIdx = mapFacilityAt(col, rowIdx, facilityTown.value);
   if (d.kind === 'preset') {
-    const p = allFacPresets.value[d.i];
-    if (!p) return;
-    if (targetIdx >= 0) {
-      // 占有セル: 位置はそのまま、プリセットの内容で上書きする。
-      const f = townmap.value[targetIdx];
-      f.key = p.key;
-      f.img = p.img;
-      f.alt = p.alt;
-      f.dest = p.dest;
-      f.ready = true;
-      selectedIdx.value = targetIdx;
-    } else {
-      townmap.value.push({
-        key: p.key,
-        img: p.img,
-        alt: p.alt,
-        town: facilityTown.value,
-        col,
-        row: rowIdx,
-        dest: p.dest,
-        ready: true,
-      });
-      selectedIdx.value = townmap.value.length - 1;
-    }
+    const placed = placePresetAt(d.i, col, rowIdx);
+    if (placed >= 0) selectedIdx.value = placed;
     return;
   }
   const src = townmap.value[d.idx];
@@ -389,23 +407,42 @@ const assetBrush = ref<string>(BG_PRESETS[0]);
 // 背景レイヤーで編集中の街(0..4)。背景も街ごとに配置できる。
 const assetTown = ref(0);
 
-const assetIdxAt = (col: number, rowIdx: number) =>
-  assets.value.findIndex((a) => a.town === assetTown.value && a.col === col && a.row === rowIdx);
-function assetImgAt(col: number, rowIdx: number): string {
-  const i = assetIdxAt(col, rowIdx);
-  return i >= 0 ? assets.value[i].img : '';
+// 1マスに重ねられる背景レイヤー数の上限(サーバーのMaxAssetLayersと合わせる)。
+const MAX_BG_LAYERS = 3;
+// 消しゴム筆(最上層を1枚ずつ剥がす)。パレットの特殊スウォッチ。
+const BG_ERASER = '__eraser__';
+
+// 指定マスのアセットindex一覧(配列順=重ね順、末尾が最上層)。
+function assetIdxsAt(col: number, rowIdx: number): number[] {
+  const out: number[] = [];
+  assets.value.forEach((a, i) => {
+    if (a.town === assetTown.value && a.col === col && a.row === rowIdx) out.push(i);
+  });
+  return out;
+}
+function assetImgsAt(col: number, rowIdx: number): string[] {
+  return assetIdxsAt(col, rowIdx).map((i) => assets.value[i].img);
 }
 // 指定した街の背景アセット画像(施設レイヤーで背景を薄く参照表示するのに使う)。
-function assetImgForTown(col: number, rowIdx: number, town: number): string {
-  const a = assets.value.find((x) => x.town === town && x.col === col && x.row === rowIdx);
-  return a ? a.img : '';
+function assetImgsForTown(col: number, rowIdx: number, town: number): string[] {
+  return assets.value.filter((x) => x.town === town && x.col === col && x.row === rowIdx).map((x) => x.img);
 }
-// マスをクリックで背景を配置。選択中の筆と同じなら除去(トグル)、違えば差し替え。
+// マスをクリックで背景を配置(常に連続配置)。最上層と同じ筆なら除去、
+// 消しゴムなら最上層を剥がし、それ以外は最上層に積む(上限あり)。
 function paintAsset(col: number, rowIdx: number) {
-  const i = assetIdxAt(col, rowIdx);
-  if (i >= 0) {
-    if (assets.value[i].img === assetBrush.value) assets.value.splice(i, 1);
-    else assets.value[i].img = assetBrush.value;
+  const idxs = assetIdxsAt(col, rowIdx);
+  const topIdx = idxs.length ? idxs[idxs.length - 1] : -1;
+  if (assetBrush.value === BG_ERASER) {
+    if (topIdx >= 0) assets.value.splice(topIdx, 1);
+    return;
+  }
+  if (topIdx >= 0 && assets.value[topIdx].img === assetBrush.value) {
+    assets.value.splice(topIdx, 1);
+    return;
+  }
+  if (idxs.length >= MAX_BG_LAYERS) {
+    message.value = `1マスに置ける背景は${MAX_BG_LAYERS}層までです。`;
+    kind.value = 'error';
     return;
   }
   assets.value.push({ img: assetBrush.value, town: assetTown.value, col, row: rowIdx });
@@ -495,23 +532,31 @@ function onBgDrop(col: number, rowIdx: number) {
   const d = bgDrag.value;
   bgDrag.value = null;
   if (!d) return;
+  const tgtCount = assetIdxsAt(col, rowIdx).length;
   if (d.kind === 'palette') {
-    // パレットからドロップ: そのマスに配置(既存があれば差し替え)。
-    const i = assetIdxAt(col, rowIdx);
-    if (i >= 0) assets.value[i].img = d.img;
-    else assets.value.push({ img: d.img, town: assetTown.value, col, row: rowIdx });
+    // パレットからドロップ: そのマスの最上層に積む。
+    if (d.img === BG_ERASER) return;
+    if (tgtCount >= MAX_BG_LAYERS) {
+      message.value = `1マスに置ける背景は${MAX_BG_LAYERS}層までです。`;
+      kind.value = 'error';
+      return;
+    }
+    assets.value.push({ img: d.img, town: assetTown.value, col, row: rowIdx });
     return;
   }
-  // 置いたタイルの移動。移動先に別タイルがあれば位置を入れ替える(施設レイヤーと同じ)。
-  const srcIdx = assetIdxAt(d.col, d.row);
-  if (srcIdx < 0) return;
-  const tgtIdx = assetIdxAt(col, rowIdx);
-  if (tgtIdx >= 0 && tgtIdx !== srcIdx) {
-    assets.value[tgtIdx].col = d.col;
-    assets.value[tgtIdx].row = d.row;
+  // 置いたタイルの移動: 移動元の最上層を剥がし、移動先の最上層に積む。
+  if (d.col === col && d.row === rowIdx) return;
+  const srcIdxs = assetIdxsAt(d.col, d.row);
+  if (!srcIdxs.length) return;
+  if (tgtCount >= MAX_BG_LAYERS) {
+    message.value = `1マスに置ける背景は${MAX_BG_LAYERS}層までです。`;
+    kind.value = 'error';
+    return;
   }
-  assets.value[srcIdx].col = col;
-  assets.value[srcIdx].row = rowIdx;
+  const [moved] = assets.value.splice(srcIdxs[srcIdxs.length - 1], 1);
+  moved.col = col;
+  moved.row = rowIdx;
+  assets.value.push(moved);
 }
 
 // カスタムイベント管理(ランダムイベントの追加/編集/削除)。
@@ -1272,9 +1317,10 @@ async function deleteEdit() {
                   v-for="(p, i) in allFacPresets"
                   :key="i"
                   class="fac-chip"
-                  :class="{ std: i < stdFacPresets.length }"
+                  :class="{ std: i < stdFacPresets.length, bulksel: bulkPlace && bulkPresetIdx === i }"
                   draggable="true"
                   :title="`${p.alt}（${p.key}${MOVE_KEYS.includes(p.key) ? '→' + (plotTowns.find((t) => t.no === p.dest)?.name ?? p.dest) : ''}）`"
+                  @click="clickPresetChip(i)"
                   @dragstart="onPresetDragStart(i)"
                   @dragend="onDragEnd"
                 >
@@ -1291,6 +1337,10 @@ async function deleteEdit() {
                   {{ presetFormOpen ? 'キャンセル' : '＋プリセット追加' }}
                 </button>
               </div>
+              <label class="chk bulk-toggle">
+                <input type="checkbox" v-model="bulkPlace" />
+                一括配置モード（プリセットをクリックで選択し、セルをクリックで連続配置）
+              </label>
               <div v-if="presetFormOpen" class="preset-form">
                 <label>表示名<input v-model="presetDraft.alt" maxlength="40" placeholder="例: 中央デパート" /></label>
                 <label>遷移先
@@ -1363,9 +1413,10 @@ async function deleteEdit() {
                         @drop="onDrop(c, ri)"
                       >
                         <img
-                          v-if="assetImgForTown(c, ri, facilityTown)"
+                          v-for="(im, li) in assetImgsForTown(c, ri, facilityTown)"
+                          :key="'br' + li"
                           class="bg-ref"
-                          :src="assetUrl(assetImgForTown(c, ri, facilityTown))"
+                          :src="assetUrl(im)"
                           alt=""
                           draggable="false"
                         />
@@ -1429,7 +1480,7 @@ async function deleteEdit() {
             <section v-else-if="mapLayer === 'asset'" class="panel">
               <h3>
                 背景アセット配置<span class="hint">
-                  ※街を選び、パレットで素材を選んでマスをクリックで配置。同じ素材を再クリックで除去。施設は右下に薄く参照表示（編集不可）</span
+                  ※街を選び、パレットで素材を選んでマスをクリックで連続配置（常に一括配置）。1マスに最大{{ MAX_BG_LAYERS }}層まで重ね置き可（後から置いたものが上）。最上層と同じ素材を再クリック、または消しゴムで最上層を除去。施設は右下に薄く参照表示（編集不可）</span
                 >
               </h3>
               <div class="plot-towns">
@@ -1444,6 +1495,15 @@ async function deleteEdit() {
                 </button>
               </div>
               <div class="bg-palette">
+                <div class="bg-swatch-wrap">
+                  <button
+                    :class="['bg-swatch', 'eraser', { active: assetBrush === BG_ERASER }]"
+                    title="消しゴム（クリックで最上層を除去）"
+                    @click="assetBrush = BG_ERASER"
+                  >
+                    消
+                  </button>
+                </div>
                 <div v-for="a in bgPalette" :key="a" class="bg-swatch-wrap">
                   <button
                     :class="['bg-swatch', { active: assetBrush === a }]"
@@ -1481,23 +1541,25 @@ async function deleteEdit() {
                       :key="'a' + r + '-' + c"
                       class="cell bgcell"
                       :class="{
-                        occ: assetIdxAt(c, ri) >= 0,
+                        occ: assetImgsAt(c, ri).length > 0,
                         dragsrc: bgDrag?.kind === 'tile' && bgDrag.col === c && bgDrag.row === ri,
                       }"
-                      :title="`${r}${c}${assetImgAt(c, ri) ? ' : ' + assetImgAt(c, ri) : ''}`"
+                      :title="`${r}${c}${assetImgsAt(c, ri).length ? ' : ' + assetImgsAt(c, ri).join(' / ') : ''}`"
                       @click="paintAsset(c, ri)"
                       @dragover.prevent
                       @drop="onBgDrop(c, ri)"
                     >
                       <img
-                        v-if="assetImgAt(c, ri)"
+                        v-for="(im, li) in assetImgsAt(c, ri)"
+                        :key="'t' + li"
                         class="bg-tile"
-                        :src="assetUrl(assetImgAt(c, ri))"
-                        :alt="assetImgAt(c, ri)"
-                        draggable="true"
-                        @dragstart="onBgTileDragStart(c, ri)"
+                        :src="assetUrl(im)"
+                        :alt="im"
+                        :draggable="li === assetImgsAt(c, ri).length - 1"
+                        @dragstart="li === assetImgsAt(c, ri).length - 1 ? onBgTileDragStart(c, ri) : undefined"
                         @dragend="onBgDragEnd"
                       />
+                      <span v-if="assetImgsAt(c, ri).length > 1" class="layer-badge">{{ assetImgsAt(c, ri).length }}</span>
                       <img
                         v-if="mapFacilityAt(c, ri, assetTown) >= 0"
                         class="fac-ref"
@@ -1917,6 +1979,21 @@ async function deleteEdit() {
   border-radius: 5px;
   padding: 2px 4px 2px 6px;
   cursor: grab;
+}
+/* 一括配置モードで選択中のプリセット。 */
+.fac-chip.bulksel {
+  outline: 2px solid #e67e22;
+  background: #fff3e0;
+}
+.bulk-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  margin: 4px 0 8px;
+  font-size: 12px;
+  color: #555;
+  cursor: pointer;
   font-size: 12px;
 }
 .fac-chip:active {
@@ -2026,6 +2103,28 @@ async function deleteEdit() {
 }
 .bg-swatch.active {
   border-color: #ff6600;
+}
+/* 消しゴムスウォッチ(最上層を除去する特殊筆)。 */
+.bg-swatch.eraser {
+  width: 32px;
+  height: 32px;
+  line-height: 1;
+  font-size: 12px;
+  color: #a33;
+  font-weight: bold;
+}
+/* 2層以上重なっているマスの層数バッジ。 */
+.map-grid .cell.bgcell .layer-badge {
+  position: absolute;
+  left: 1px;
+  top: 1px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 9px;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 3px;
+  pointer-events: none;
 }
 .bg-swatch img {
   display: block;
