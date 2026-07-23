@@ -230,12 +230,15 @@ const doSeizou = async () => {
 
     <template v-if="view.kind === 1 || section === 'edu'">
     <!-- 自分のパラメータ(教育できる人にだけ表示) -->
-    <table v-if="canEdu" class="my-params">
-      <tr><td v-for="p in PARAMS.slice(0, 8)" :key="p.key" class="ph">{{ p.label }}</td></tr>
-      <tr><td v-for="p in PARAMS.slice(0, 8)" :key="p.key">{{ myParams[p.key] ?? 0 }}</td></tr>
-      <tr><td v-for="p in PARAMS.slice(8)" :key="p.key" class="ph">{{ p.label }}</td></tr>
-      <tr><td v-for="p in PARAMS.slice(8)" :key="p.key">{{ myParams[p.key] ?? 0 }}</td></tr>
-    </table>
+    <template v-if="canEdu">
+      <div class="param-caption">●自分のパラメータ</div>
+      <div class="param-grid">
+        <div v-for="p in PARAMS" :key="p.key" class="param-cell">
+          <span class="pname">{{ p.label }}</span>
+          <span class="pval" :class="{ zero: !(myParams[p.key] ?? 0) }">{{ yen(myParams[p.key] ?? 0) }}</span>
+        </div>
+      </div>
+    </template>
 
     <!-- 社員一覧 -->
     <div v-for="st in view.staff" :key="st.id" class="staff">
@@ -257,14 +260,16 @@ const doSeizou = async () => {
         <span v-if="!canEduNow(st.can_edu_at)" class="wait">まだできません</span>
       </div>
       <div class="staff-sum">
-        <span class="sum-label">総合能力値：</span>{{ yen(st.sougou) }}　{{ st.job }}　{{ yen(st.income) }}円
+        <span class="sum-label">総合能力値：</span>{{ yen(st.sougou) }}
+        <span class="staff-job">{{ st.job }}</span>
+        <span class="staff-income">仕送り {{ yen(st.income) }}円/日</span>
       </div>
-      <table class="staff-params">
-        <tr><td v-for="p in PARAMS.slice(0, 8)" :key="p.key" class="ph">{{ p.label }}</td></tr>
-        <tr><td v-for="p in PARAMS.slice(0, 8)" :key="p.key">{{ st.params[p.key] ?? 0 }}</td></tr>
-        <tr><td v-for="p in PARAMS.slice(8)" :key="p.key" class="ph">{{ p.label }}</td></tr>
-        <tr><td v-for="p in PARAMS.slice(8)" :key="p.key">{{ st.params[p.key] ?? 0 }}</td></tr>
-      </table>
+      <div class="param-grid staff-grid">
+        <div v-for="p in PARAMS" :key="p.key" class="param-cell">
+          <span class="pname">{{ p.label }}</span>
+          <span class="pval" :class="{ zero: !(st.params[p.key] ?? 0) }">{{ yen(st.params[p.key] ?? 0) }}</span>
+        </div>
+      </div>
     </div>
     <div v-if="view.staff.length === 0" class="empty">まだ社員がいません。</div>
 
@@ -511,26 +516,51 @@ const doSeizou = async () => {
   color: #888;
   font-size: 10px;
 }
-.my-params,
-.staff-params {
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 1px;
+/* パラメータ表: ラベルの直下に値を置く8列グリッド。0は淡色にして
+   上がっている能力だけが目に入るようにする。 */
+.param-caption {
+  margin-top: 10px;
+  font-size: 11px;
+  font-weight: bold;
+  color: #445;
+}
+.param-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(58px, 1fr));
+  gap: 2px;
   background: #fff;
   border: 1px solid #999;
-  margin-top: 8px;
-  font-size: 11px;
+  padding: 4px;
+  margin-top: 4px;
+  max-width: 560px;
+}
+.param-cell {
+  display: flex;
+  flex-direction: column;
   text-align: center;
 }
-.my-params td,
-.staff-params td {
-  padding: 2px 4px;
-  background: #f4f4f4;
+.pname {
+  background: #556677;
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+  white-space: nowrap;
 }
-.my-params .ph,
-.staff-params .ph {
-  background: #ddd;
-  color: #444;
+.pval {
+  background: #f4f7fa;
+  font-size: 12px;
+  font-weight: bold;
+  color: #223;
+  padding: 2px 0;
+}
+.pval.zero {
+  color: #bbb;
+  font-weight: normal;
+}
+@media (max-width: 640px) {
+  .param-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
 }
 .staff {
   margin-top: 12px;
@@ -563,10 +593,24 @@ const doSeizou = async () => {
 .staff-sum {
   margin-top: 4px;
   font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 .sum-label {
   font-weight: bold;
   color: #445;
+}
+.staff-job {
+  background: #eef4ee;
+  border: 1px solid #9c9;
+  padding: 0 8px;
+  border-radius: 3px;
+  color: #262;
+}
+.staff-income {
+  color: #663300;
+  font-weight: bold;
 }
 .empty {
   margin-top: 12px;
