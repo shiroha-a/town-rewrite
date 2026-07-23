@@ -436,21 +436,19 @@ body {
   display: block;
 }
 /* 管理者導線(アイコンではなくテキストボタン)。幅は内容に合わせる。 */
+/* 管理者画面ボタン: ラベル無しの歯車アイコン(SVG)。他コマンドと同サイズで、
+   スレート地+アンバーの歯車で管理者専用と分かる配色にする。 */
 .command-icons button.admin-link {
-  width: auto;
-  height: auto;
   background: #445566;
-  color: #fff;
+  color: #ffcc33;
   border: 1px solid #223344;
-  border-radius: 6px;
-  padding: 2px 8px;
-  font-size: 12px;
-  line-height: 1.4;
-  box-shadow: none;
 }
 .command-icons button.admin-link:hover {
-  outline: 0;
   background: #33475a;
+  color: #ffe066;
+}
+.command-icons button.admin-link .gear {
+  display: block;
 }
 /* 就労クールタイム中の仕事アイコン: グレーアウト+残り時間ラベル */
 .command-icons button.on-cooldown {
