@@ -15,6 +15,7 @@ import {
   type GameSettings,
   type TownFacility,
   type TownAsset,
+  type FacilityPreset,
   type PlotCell,
   type Town,
 } from '../api';
@@ -112,6 +113,7 @@ async function refresh() {
     assets.value = await api.townAssets();
     houseCells.value = await api.adminHouseCells(props.player.id);
     uploadedAssets.value = await api.adminListAssets(props.player.id);
+    facPresets.value = await api.adminFacilityPresets(props.player.id);
     townList.value = await api.towns();
     syncTownDraft();
     selectedIdx.value = null;
@@ -189,26 +191,100 @@ function clickCell(col: number, rowIdx: number) {
   }
 }
 
-// ドラッグ&ドロップで施設を配置する。占有セルへドロップした場合は位置を入れ替える。
-const dragging = ref<number | null>(null);
-function onDragStart(idx: number) {
-  if (idx < 0) return;
-  dragging.value = idx;
-  selectedIdx.value = idx;
-}
-function onDragEnd() {
-  dragging.value = null;
-}
-function onDrop(col: number, rowIdx: number) {
-  if (dragging.value === null) return;
-  // 家が建っているマスへは移動できない(空き地を外すと不整合)。
-  if (houseCellAt(col, rowIdx)) {
-    dragging.value = null;
+// 施設プリセット(画像・表示名・遷移先を保存したテンプレート)。パレットから
+// D&Dで配置できる。プリセット自体の追加/削除は即サーバへ保存する。
+const facPresets = ref<FacilityPreset[]>([]);
+const presetDraft = ref<FacilityPreset>({ key: 'depart', img: 'depart', alt: '', dest: 0 });
+const presetFormOpen = ref(false);
+async function savePreset() {
+  if (!presetDraft.value.alt.trim()) {
+    message.value = 'プリセットの表示名を入力してください。';
+    kind.value = 'error';
     return;
   }
-  const src = townmap.value[dragging.value];
+  busy.value = true;
+  try {
+    facPresets.value = await api.adminUpdateFacilityPresets(props.player.id, [
+      ...facPresets.value,
+      { ...presetDraft.value, alt: presetDraft.value.alt.trim() },
+    ]);
+    presetFormOpen.value = false;
+    presetDraft.value = { key: 'depart', img: 'depart', alt: '', dest: 0 };
+    message.value = '施設プリセットを保存しました。';
+    kind.value = 'ok';
+  } catch (e) {
+    fail(e);
+  } finally {
+    busy.value = false;
+  }
+}
+async function deletePreset(i: number) {
+  if (!confirm(`プリセット「${facPresets.value[i]?.alt}」を削除しますか?`)) return;
+  busy.value = true;
+  try {
+    const next = facPresets.value.filter((_, j) => j !== i);
+    facPresets.value = await api.adminUpdateFacilityPresets(props.player.id, next);
+    message.value = '施設プリセットを削除しました。';
+    kind.value = 'ok';
+  } catch (e) {
+    fail(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
+// ドラッグ&ドロップで施設を配置する。タイル移動は占有セルで位置を入れ替え、
+// プリセットは空セルへ新規配置(占有セルは属性を上書き)する。
+type FacDrag = { kind: 'tile'; idx: number } | { kind: 'preset'; i: number };
+const facDrag = ref<FacDrag | null>(null);
+const dragging = computed(() => (facDrag.value?.kind === 'tile' ? facDrag.value.idx : null));
+function onDragStart(idx: number) {
+  if (idx < 0) return;
+  facDrag.value = { kind: 'tile', idx };
+  selectedIdx.value = idx;
+}
+function onPresetDragStart(i: number) {
+  facDrag.value = { kind: 'preset', i };
+}
+function onDragEnd() {
+  facDrag.value = null;
+}
+function onDrop(col: number, rowIdx: number) {
+  const d = facDrag.value;
+  facDrag.value = null;
+  if (!d) return;
+  // 家が建っているマスへは配置できない(空き地を外すと不整合)。
+  if (houseCellAt(col, rowIdx)) return;
   const targetIdx = mapFacilityAt(col, rowIdx, facilityTown.value);
-  if (targetIdx >= 0 && targetIdx !== dragging.value) {
+  if (d.kind === 'preset') {
+    const p = facPresets.value[d.i];
+    if (!p) return;
+    if (targetIdx >= 0) {
+      // 占有セル: 位置はそのまま、プリセットの内容で上書きする。
+      const f = townmap.value[targetIdx];
+      f.key = p.key;
+      f.img = p.img;
+      f.alt = p.alt;
+      f.dest = p.dest;
+      f.ready = true;
+      selectedIdx.value = targetIdx;
+    } else {
+      townmap.value.push({
+        key: p.key,
+        img: p.img,
+        alt: p.alt,
+        town: facilityTown.value,
+        col,
+        row: rowIdx,
+        dest: p.dest,
+        ready: true,
+      });
+      selectedIdx.value = townmap.value.length - 1;
+    }
+    return;
+  }
+  const src = townmap.value[d.idx];
+  if (targetIdx >= 0 && targetIdx !== d.idx) {
     // 移動先に別の施設があれば位置を入れ替える。
     const tgt = townmap.value[targetIdx];
     tgt.col = src.col;
@@ -216,7 +292,6 @@ function onDrop(col: number, rowIdx: number) {
   }
   src.col = col;
   src.row = rowIdx;
-  dragging.value = null;
 }
 
 function firstFreeCell(): { col: number; row: number } | null {
@@ -975,9 +1050,51 @@ async function deleteEdit() {
             <section v-if="mapLayer === 'facility'" class="panel">
               <h3>
                 マップ編集<span class="hint">
-                  ※街を選び、施設をドラッグ&ドロップで移動(占有セルへは入れ替え)。クリックで選択→空きセルクリックでも移動可</span
+                  ※街を選び、施設をドラッグ&ドロップで移動(占有セルへは入れ替え)。クリックで選択→空きセルクリックでも移動可。プリセットはドラッグで配置</span
                 >
               </h3>
+
+              <!-- 施設プリセットパレット: 保存済みテンプレートをD&Dで配置する -->
+              <div class="fac-palette">
+                <span class="pal-label">プリセット:</span>
+                <span
+                  v-for="(p, i) in facPresets"
+                  :key="i"
+                  class="fac-chip"
+                  draggable="true"
+                  :title="`${p.alt}（${p.key}${MOVE_KEYS.includes(p.key) ? '→' + (plotTowns.find((t) => t.no === p.dest)?.name ?? p.dest) : ''}）`"
+                  @dragstart="onPresetDragStart(i)"
+                  @dragend="onDragEnd"
+                >
+                  <img :src="`/img/${p.img}.gif`" width="20" height="20" alt="" draggable="false" />
+                  {{ p.alt }}
+                  <button class="chip-del" title="プリセットを削除" @click.stop="deletePreset(i)">×</button>
+                </span>
+                <span v-if="!facPresets.length" class="muted">まだプリセットがありません。</span>
+                <button class="btn mini" @click="presetFormOpen = !presetFormOpen">
+                  {{ presetFormOpen ? 'キャンセル' : '＋プリセット追加' }}
+                </button>
+              </div>
+              <div v-if="presetFormOpen" class="preset-form">
+                <label>表示名<input v-model="presetDraft.alt" maxlength="40" placeholder="例: 中央デパート" /></label>
+                <label>遷移先
+                  <select v-model="presetDraft.key">
+                    <option v-for="k in KEY_PRESETS" :key="k.key" :value="k.key">{{ k.label }}</option>
+                  </select>
+                </label>
+                <label v-if="MOVE_KEYS.includes(presetDraft.key)">行き先の街
+                  <select v-model.number="presetDraft.dest">
+                    <option v-for="t in plotTowns" :key="t.no" :value="t.no">{{ t.name }}</option>
+                  </select>
+                </label>
+                <label>画像
+                  <select v-model="presetDraft.img">
+                    <option v-for="im in IMG_PRESETS" :key="im" :value="im">{{ im }}</option>
+                  </select>
+                </label>
+                <img :src="`/img/${presetDraft.img}.gif`" width="24" height="24" alt="" />
+                <button class="btn primary mini" :disabled="busy" @click="savePreset">保存</button>
+              </div>
               <div class="plot-towns">
                 <button
                   v-for="t in plotTowns"
@@ -1561,6 +1678,57 @@ async function deleteEdit() {
   background: #4a7a2a;
   color: #fff;
   font-weight: bold;
+}
+/* 施設プリセットパレット(D&Dで配置) */
+.fac-palette {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 6px 0;
+  font-size: 12px;
+}
+.fac-palette .pal-label {
+  color: #556;
+  font-weight: bold;
+}
+.fac-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #fff;
+  border: 1px solid #9ab;
+  border-radius: 5px;
+  padding: 2px 4px 2px 6px;
+  cursor: grab;
+  font-size: 12px;
+}
+.fac-chip:active {
+  cursor: grabbing;
+}
+.chip-del {
+  border: 0;
+  background: none;
+  color: #c66;
+  cursor: pointer;
+  font-weight: bold;
+  padding: 0 2px;
+}
+.preset-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  background: #f4f7f0;
+  border: 1px solid #ccd;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+.preset-form label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .map-grid .cell.movable {
   background: #e3f0ff;

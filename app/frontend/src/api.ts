@@ -405,6 +405,15 @@ export interface TownAsset {
   row: number;
 }
 
+// 施設プリセット(管理画面): 画像・表示名・遷移先を保存したテンプレート。
+// D&Dでマップに配置すると施設になる。
+export interface FacilityPreset {
+  key: string;
+  img: string;
+  alt: string;
+  dest: number;
+}
+
 // 街移動の結果。徒歩/自転車の能力上昇、乗り物、事故、迷子などを含む。
 export interface MoveResult {
   arrived_town: number;
@@ -1367,6 +1376,11 @@ export const api = {
     request<TownFacility[]>('PUT', '/admin/townmap', facilities, adminHeaders(actingId)),
   adminUpdateTownAssets: (actingId: number, assets: TownAsset[]) =>
     request<TownAsset[]>('PUT', '/admin/townassets', assets, adminHeaders(actingId)),
+  // 施設プリセット(画像・表示名・遷移先の保存済みテンプレート)。
+  adminFacilityPresets: (actingId: number) =>
+    request<FacilityPreset[]>('GET', '/admin/townmap/presets', undefined, adminHeaders(actingId)),
+  adminUpdateFacilityPresets: (actingId: number, presets: FacilityPreset[]) =>
+    request<FacilityPreset[]>('PUT', '/admin/townmap/presets', presets, adminHeaders(actingId)),
   // 家が建っているマス(施設エディタでロックするため)。
   adminHouseCells: (actingId: number) =>
     request<PlotCell[]>('GET', '/admin/townmap/houses', undefined, adminHeaders(actingId)),

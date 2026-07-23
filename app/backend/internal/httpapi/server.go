@@ -171,6 +171,8 @@ func NewServer(players *player.Service, actions *action.Service, contentSvc *con
 	mux.HandleFunc("POST /api/v1/admin/assets", s.adminUploadAsset)
 	mux.HandleFunc("DELETE /api/v1/admin/assets/{name}", s.adminDeleteAsset)
 	mux.HandleFunc("PUT /api/v1/admin/townassets", s.adminUpdateTownAssets)
+	mux.HandleFunc("GET /api/v1/admin/townmap/presets", s.adminFacilityPresets)
+	mux.HandleFunc("PUT /api/v1/admin/townmap/presets", s.adminUpdateFacilityPresets)
 	mux.HandleFunc("GET /api/v1/admin/players", s.adminListPlayers)
 	mux.HandleFunc("PUT /api/v1/admin/players/{id}", s.adminUpdatePlayer)
 	mux.HandleFunc("DELETE /api/v1/admin/players/{id}", s.adminDeletePlayer)

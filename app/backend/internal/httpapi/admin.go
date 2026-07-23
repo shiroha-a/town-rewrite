@@ -148,6 +148,31 @@ func (s *Server) adminUpdateTownAssets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.townmap.GetAssets())
 }
 
+// adminFacilityPresets returns the saved facility presets (施設プリセット).
+func (s *Server) adminFacilityPresets(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	writeJSON(w, http.StatusOK, s.townmap.GetPresets())
+}
+
+// adminUpdateFacilityPresets replaces the facility preset list.
+func (s *Server) adminUpdateFacilityPresets(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	var ps []townmap.FacilityPreset
+	if err := json.NewDecoder(r.Body).Decode(&ps); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := s.townmap.SetPresets(r.Context(), ps); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.townmap.GetPresets())
+}
+
 func (s *Server) adminGetSettings(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return
