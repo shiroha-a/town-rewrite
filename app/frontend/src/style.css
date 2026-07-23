@@ -344,6 +344,12 @@ body {
   color: #333399;
   font-weight: bold;
 }
+/* 投稿時刻(MM/DD HH:MM) */
+.chat-feed .ct {
+  color: #999;
+  font-size: 10px;
+  margin-right: 3px;
+}
 
 /* 街情報ヘッダ */
 .town-info {

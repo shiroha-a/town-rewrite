@@ -653,6 +653,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
       <button class="chat-head" @click="openAisatu">●チャット(あいさつ)</button>
       <div v-if="greetings.length" class="chat-feed">
         <div v-for="g in greetings" :key="g.id" class="chat-line">
+          <span class="ct">{{ g.posted_at }}</span>
           <span class="cn">{{ g.user_name }}</span>：<span :style="{ color: g.color }">{{ g.body }}</span>
         </div>
       </div>
