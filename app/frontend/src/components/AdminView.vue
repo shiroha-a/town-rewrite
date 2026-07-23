@@ -932,6 +932,30 @@ async function deleteEdit() {
       <div v-if="message" :class="['message', kind]" data-test="message">{{ message }}</div>
 
       <div class="admin-sections">
+        <!-- ユーザー -->
+        <section class="fold">
+          <button class="fold-head" @click="open.user = !open.user">
+            <span class="caret">{{ open.user ? '▼' : '▶' }}</span> ユーザー（{{ players.length }}）
+          </button>
+          <div v-if="open.user" class="fold-body">
+            <section class="panel">
+              <h3>ユーザー一覧<span class="hint"> ※行をクリックで確認/編集</span></h3>
+              <div class="table-scroll">
+                <table class="list-table">
+                  <thead><tr><th>ID</th><th class="l">名前</th><th>職業</th><th>Lv</th><th>所持金</th><th>権限</th></tr></thead>
+                  <tbody>
+                    <tr v-for="u in players" :key="u.id" class="clickable" @click="openEditPlayer(u.id)">
+                      <td>{{ u.id }}</td><td class="l">{{ u.display_name }}</td><td>{{ u.job }}</td>
+                      <td>{{ u.job_level }}</td><td class="r">{{ u.money.toLocaleString('ja-JP') }}円</td>
+                      <td>{{ u.roles.includes('admin') ? '管理者' : '' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
         <!-- アイテム -->
         <section class="fold">
           <button class="fold-head" @click="open.item = !open.item">
@@ -1056,96 +1080,6 @@ async function deleteEdit() {
           </div>
         </section>
 
-        <!-- ユーザー -->
-        <section class="fold">
-          <button class="fold-head" @click="open.user = !open.user">
-            <span class="caret">{{ open.user ? '▼' : '▶' }}</span> ユーザー（{{ players.length }}）
-          </button>
-          <div v-if="open.user" class="fold-body">
-            <section class="panel">
-              <h3>ユーザー一覧<span class="hint"> ※行をクリックで確認/編集</span></h3>
-              <div class="table-scroll">
-                <table class="list-table">
-                  <thead><tr><th>ID</th><th class="l">名前</th><th>職業</th><th>Lv</th><th>所持金</th><th>権限</th></tr></thead>
-                  <tbody>
-                    <tr v-for="u in players" :key="u.id" class="clickable" @click="openEditPlayer(u.id)">
-                      <td>{{ u.id }}</td><td class="l">{{ u.display_name }}</td><td>{{ u.job }}</td>
-                      <td>{{ u.job_level }}</td><td class="r">{{ u.money.toLocaleString('ja-JP') }}円</td>
-                      <td>{{ u.roles.includes('admin') ? '管理者' : '' }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          </div>
-        </section>
-
-        <!-- サーバー設定 -->
-        <section class="fold">
-          <button class="fold-head" @click="open.settings = !open.settings">
-            <span class="caret">{{ open.settings ? '▼' : '▶' }}</span> サーバー設定
-          </button>
-          <div v-if="open.settings" class="fold-body">
-            <section class="panel">
-              <h3>ゲーム設定<span class="hint"> ※変更は即時反映(ワーカーは次tickで反映)</span></h3>
-              <div v-if="settings" class="settings-grid">
-                <label v-for="f in SETTINGS_FIELDS" :key="f.key" class="setting">
-                  <span class="setting-label">{{ f.label }}</span>
-                  <input type="number" v-model.number="settings[f.key] as number" />
-                  <span v-if="f.hint" class="setting-hint">{{ f.hint }}</span>
-                </label>
-                <label class="setting chk-setting">
-                  <span class="setting-label">デバッグ: 間隔ゼロ</span>
-                  <span class="chk-line"><input type="checkbox" v-model="settings.debug_no_cooldown" /> 仕事/使用/食事などの間隔制限を無視</span>
-                </label>
-                <label class="setting chk-setting">
-                  <span class="setting-label">街移動: 迷子</span>
-                  <span class="chk-line"><input type="checkbox" v-model="settings.move_maigo_enabled" /> 徒歩移動で迷子(ダウンタウンへ)を有効化</span>
-                </label>
-              </div>
-              <div class="actions">
-                <button class="btn primary" :disabled="busy || !settings" @click="saveSettings">保存</button>
-                <button class="btn" :disabled="busy" @click="refresh">再読込</button>
-              </div>
-            </section>
-          </div>
-        </section>
-
-        <!-- 街(名前・地価) -->
-        <section class="fold">
-          <button class="fold-head" @click="open.towns = !open.towns">
-            <span class="caret">{{ open.towns ? '▼' : '▶' }}</span> 街（{{ townDraft.length }}）
-          </button>
-          <div v-if="open.towns" class="fold-body">
-            <section class="panel">
-              <h3>
-                街の設定<span class="hint">
-                  ※上から順に街番号0,1,2…。名前と地価(万円)を編集。地価は建築費に使われる。「隠し」はワープで行けない隠し町。最大{{ 12 }}街。</span
-                >
-              </h3>
-              <table class="town-edit">
-                <thead>
-                  <tr><th>#</th><th>名前</th><th>地価(万)</th><th>隠し</th><th></th></tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(t, i) in townDraft" :key="i">
-                    <td>{{ i }}</td>
-                    <td><input v-model="t.name" /></td>
-                    <td><input type="number" v-model.number="t.land_price" min="0" /></td>
-                    <td class="chk-cell"><input type="checkbox" v-model="t.hidden" title="ワープで行けない隠し町" /></td>
-                    <td><button class="btn danger mini" :disabled="townDraft.length <= 1" @click="removeTown(i)">削除</button></td>
-                  </tr>
-                </tbody>
-              </table>
-              <div class="actions">
-                <button class="btn" :disabled="townDraft.length >= 12" @click="addTown">＋街を追加</button>
-                <button class="btn primary" :disabled="busy" @click="saveTowns">保存</button>
-                <button class="btn" :disabled="busy" @click="refresh">再読込</button>
-              </div>
-            </section>
-          </div>
-        </section>
-
         <!-- カスタムイベント -->
         <section class="fold">
           <button class="fold-head" @click="open.events = !open.events">
@@ -1235,6 +1169,72 @@ async function deleteEdit() {
                     <tr v-if="!adminEvents.length"><td colspan="6" class="muted">まだカスタムイベントがありません。</td></tr>
                   </tbody>
                 </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <!-- サーバー設定 -->
+        <section class="fold">
+          <button class="fold-head" @click="open.settings = !open.settings">
+            <span class="caret">{{ open.settings ? '▼' : '▶' }}</span> サーバー設定
+          </button>
+          <div v-if="open.settings" class="fold-body">
+            <section class="panel">
+              <h3>ゲーム設定<span class="hint"> ※変更は即時反映(ワーカーは次tickで反映)</span></h3>
+              <div v-if="settings" class="settings-grid">
+                <label v-for="f in SETTINGS_FIELDS" :key="f.key" class="setting">
+                  <span class="setting-label">{{ f.label }}</span>
+                  <input type="number" v-model.number="settings[f.key] as number" />
+                  <span v-if="f.hint" class="setting-hint">{{ f.hint }}</span>
+                </label>
+                <label class="setting chk-setting">
+                  <span class="setting-label">デバッグ: 間隔ゼロ</span>
+                  <span class="chk-line"><input type="checkbox" v-model="settings.debug_no_cooldown" /> 仕事/使用/食事などの間隔制限を無視</span>
+                </label>
+                <label class="setting chk-setting">
+                  <span class="setting-label">街移動: 迷子</span>
+                  <span class="chk-line"><input type="checkbox" v-model="settings.move_maigo_enabled" /> 徒歩移動で迷子(ダウンタウンへ)を有効化</span>
+                </label>
+              </div>
+              <div class="actions">
+                <button class="btn primary" :disabled="busy || !settings" @click="saveSettings">保存</button>
+                <button class="btn" :disabled="busy" @click="refresh">再読込</button>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <!-- 街(名前・地価) -->
+        <section class="fold">
+          <button class="fold-head" @click="open.towns = !open.towns">
+            <span class="caret">{{ open.towns ? '▼' : '▶' }}</span> 街（{{ townDraft.length }}）
+          </button>
+          <div v-if="open.towns" class="fold-body">
+            <section class="panel">
+              <h3>
+                街の設定<span class="hint">
+                  ※上から順に街番号0,1,2…。名前と地価(万円)を編集。地価は建築費に使われる。「隠し」はワープで行けない隠し町。最大{{ 12 }}街。</span
+                >
+              </h3>
+              <table class="town-edit">
+                <thead>
+                  <tr><th>#</th><th>名前</th><th>地価(万)</th><th>隠し</th><th></th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(t, i) in townDraft" :key="i">
+                    <td>{{ i }}</td>
+                    <td><input v-model="t.name" /></td>
+                    <td><input type="number" v-model.number="t.land_price" min="0" /></td>
+                    <td class="chk-cell"><input type="checkbox" v-model="t.hidden" title="ワープで行けない隠し町" /></td>
+                    <td><button class="btn danger mini" :disabled="townDraft.length <= 1" @click="removeTown(i)">削除</button></td>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="actions">
+                <button class="btn" :disabled="townDraft.length >= 12" @click="addTown">＋街を追加</button>
+                <button class="btn primary" :disabled="busy" @click="saveTowns">保存</button>
+                <button class="btn" :disabled="busy" @click="refresh">再読込</button>
               </div>
             </section>
           </div>
