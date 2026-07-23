@@ -191,9 +191,34 @@ function clickCell(col: number, rowIdx: number) {
   }
 }
 
+// 標準施設の組み込みプリセット(townmap.Defaultと同じ内容+移動施設/空き地)。
+// 常にパレットに並び、削除はできない。
+const STD_FAC_PRESETS: FacilityPreset[] = [
+  { key: 'kabu', img: 'kabu', alt: '株取引場', dest: 0 },
+  { key: 'depart', img: 'depart', alt: '中央デパート', dest: 0 },
+  { key: 'bank', img: 'bank', alt: '銀行', dest: 0 },
+  { key: 'syokudou', img: 'syokudou', alt: 'セントラル食堂', dest: 0 },
+  { key: 'gym', img: 'gym', alt: 'ジム', dest: 0 },
+  { key: 'keiba', img: 'keiba', alt: '競馬場', dest: 0 },
+  { key: 'jobchange', img: 'work', alt: '職業安定所', dest: 0 },
+  { key: 'onsen', img: 'onsen', alt: '温泉', dest: 0 },
+  { key: 'hospital', img: 'hospital', alt: '中央病院', dest: 0 },
+  { key: 'school', img: 'school', alt: '学校', dest: 0 },
+  { key: 'kyushitu', img: 'school', alt: '教室', dest: 0 },
+  { key: 'kentiku', img: 'kentiku', alt: '建設会社', dest: 0 },
+  { key: 'hanbai', img: 'hanbai', alt: '自動販売機', dest: 0 },
+  { key: 'yakuba', img: 'yakuba', alt: '役場（住民名鑑）', dest: 0 },
+  { key: 'prof', img: 'prof', alt: 'プロフィール', dest: 0 },
+  { key: 'walk', img: 'mati_link', alt: '街移動（徒歩）', dest: 0 },
+  { key: 'bus', img: 'bus', alt: 'バス（500円）', dest: 0 },
+  { key: 'akichi', img: 'akiti', alt: '空き地', dest: 0 },
+];
+
 // 施設プリセット(画像・表示名・遷移先を保存したテンプレート)。パレットから
 // D&Dで配置できる。プリセット自体の追加/削除は即サーバへ保存する。
 const facPresets = ref<FacilityPreset[]>([]);
+// パレット全体 = 標準(削除不可) + カスタム(保存済み)。D&Dはこの通し番号を使う。
+const allFacPresets = computed(() => [...STD_FAC_PRESETS, ...facPresets.value]);
 const presetDraft = ref<FacilityPreset>({ key: 'depart', img: 'depart', alt: '', dest: 0 });
 const presetFormOpen = ref(false);
 async function savePreset() {
@@ -257,7 +282,7 @@ function onDrop(col: number, rowIdx: number) {
   if (houseCellAt(col, rowIdx)) return;
   const targetIdx = mapFacilityAt(col, rowIdx, facilityTown.value);
   if (d.kind === 'preset') {
-    const p = facPresets.value[d.i];
+    const p = allFacPresets.value[d.i];
     if (!p) return;
     if (targetIdx >= 0) {
       // 占有セル: 位置はそのまま、プリセットの内容で上書きする。
@@ -1054,13 +1079,14 @@ async function deleteEdit() {
                 >
               </h3>
 
-              <!-- 施設プリセットパレット: 保存済みテンプレートをD&Dで配置する -->
+              <!-- 施設プリセットパレット: 標準施設(削除不可)+保存済みテンプレートをD&Dで配置する -->
               <div class="fac-palette">
                 <span class="pal-label">プリセット:</span>
                 <span
-                  v-for="(p, i) in facPresets"
+                  v-for="(p, i) in allFacPresets"
                   :key="i"
                   class="fac-chip"
+                  :class="{ std: i < STD_FAC_PRESETS.length }"
                   draggable="true"
                   :title="`${p.alt}（${p.key}${MOVE_KEYS.includes(p.key) ? '→' + (plotTowns.find((t) => t.no === p.dest)?.name ?? p.dest) : ''}）`"
                   @dragstart="onPresetDragStart(i)"
@@ -1068,9 +1094,13 @@ async function deleteEdit() {
                 >
                   <img :src="`/img/${p.img}.gif`" width="20" height="20" alt="" draggable="false" />
                   {{ p.alt }}
-                  <button class="chip-del" title="プリセットを削除" @click.stop="deletePreset(i)">×</button>
+                  <button
+                    v-if="i >= STD_FAC_PRESETS.length"
+                    class="chip-del"
+                    title="プリセットを削除"
+                    @click.stop="deletePreset(i - STD_FAC_PRESETS.length)"
+                  >×</button>
                 </span>
-                <span v-if="!facPresets.length" class="muted">まだプリセットがありません。</span>
                 <button class="btn mini" @click="presetFormOpen = !presetFormOpen">
                   {{ presetFormOpen ? 'キャンセル' : '＋プリセット追加' }}
                 </button>
@@ -1705,6 +1735,11 @@ async function deleteEdit() {
 }
 .fac-chip:active {
   cursor: grabbing;
+}
+/* 標準施設(組み込み・削除不可)は淡色で区別 */
+.fac-chip.std {
+  background: #f2f6fa;
+  border-color: #b8c4d0;
 }
 .chip-del {
   border: 0;
