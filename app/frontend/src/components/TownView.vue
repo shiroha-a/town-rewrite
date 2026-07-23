@@ -132,9 +132,9 @@ function rollEvent() {
 // 区切って表示するため、広めに取得してフロント側で振り分ける。
 const greetings = ref<import('../api').Greeting[]>([]);
 const adminGreets = computed(() => greetings.value.filter((g) => g.category === '管理人').slice(0, 2));
-const adGreets = computed(() => greetings.value.filter((g) => g.category === '宣伝').slice(0, 2));
+const adGreets = computed(() => greetings.value.filter((g) => g.category === '宣伝').slice(0, 5));
 const normalGreets = computed(
-  () => greetings.value.filter((g) => g.category !== '管理人' && g.category !== '宣伝').slice(0, 6),
+  () => greetings.value.filter((g) => g.category !== '管理人' && g.category !== '宣伝').slice(0, 15),
 );
 
 // 新着メール通知。街トップ表示時とポーリングで未読数を取得する。
