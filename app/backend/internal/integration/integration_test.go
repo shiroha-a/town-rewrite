@@ -2335,13 +2335,18 @@ func TestCustomEvent(t *testing.T) {
 	srv, pool := setup(t)
 	ctx := context.Background()
 	alice := register(t, srv.URL, "misskey.example", "cevalice")
+	// 前回実行の残留イベントを消してから投入する(content_eventsはsetupで消えない)。
+	if _, err := pool.Exec(ctx, `DELETE FROM content_events`); err != nil {
+		t.Fatal(err)
+	}
 	// 重み100のカスタムイベント(+100円, kokugo+2)を投入(組み込み21種に対し圧倒的に出やすい)。
+	// メッセージはプレースホルダー({money}/{name})の展開も検証する。
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO content_events (name, message, good, money_min, money_max, params, weight, enabled)
-		 VALUES ('検証入金', '検証で100円拾いました。', true, 100, 100, '{"kokugo": 2}', 100, true)`); err != nil {
+		 VALUES ('検証入金', '{name}は検証で{money}円拾いました。', true, 100, 100, '{"kokugo": 2}', 100, true)`); err != nil {
 		t.Fatalf("insert event: %v", err)
 	}
-	roll := func(key string) string {
+	roll := func(key string) (string, string) {
 		b, _ := json.Marshal(map[string]any{"idempotency_key": key})
 		resp, err := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/events/roll", "application/json", bytes.NewReader(b))
 		if err != nil {
@@ -2350,14 +2355,15 @@ func TestCustomEvent(t *testing.T) {
 		defer resp.Body.Close()
 		var r struct {
 			Event *struct {
-				Name string `json:"name"`
+				Name    string `json:"name"`
+				Message string `json:"message"`
 			} `json:"event"`
 		}
 		json.NewDecoder(resp.Body).Decode(&r)
 		if r.Event != nil {
-			return r.Event.Name
+			return r.Event.Name, r.Event.Message
 		}
-		return ""
+		return "", ""
 	}
 	fired := false
 	for i := 0; i < 300 && !fired; i++ {
@@ -2369,8 +2375,11 @@ func TestCustomEvent(t *testing.T) {
 			fmt.Sprintf("player:%d", alice.ID)).Scan(&before)
 		var kokugoBefore int
 		pool.QueryRow(ctx, `SELECT kokugo FROM player_status WHERE player_id=$1`, alice.ID).Scan(&kokugoBefore)
-		if roll(fmt.Sprintf("cev-%d", i)) == "検証入金" {
+		if name, msg := roll(fmt.Sprintf("cev-%d", i)); name == "検証入金" {
 			fired = true
+			if msg != "cevaliceは検証で100円拾いました。" {
+				t.Errorf("message = %q, want placeholder-expanded", msg)
+			}
 			var after int64
 			pool.QueryRow(ctx, `SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account=$1`,
 				fmt.Sprintf("player:%d", alice.ID)).Scan(&after)
@@ -2396,6 +2405,9 @@ func TestCustomEventConditions(t *testing.T) {
 	srv, pool := setup(t)
 	ctx := context.Background()
 	alice := register(t, srv.URL, "misskey.example", "cevcond")
+	if _, err := pool.Exec(ctx, `DELETE FROM content_events`); err != nil {
+		t.Fatal(err)
+	}
 	// 条件: kokugo>=9999。重み100で、条件さえ満たせば高確率で出る。
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO content_events (name, message, good, money_min, money_max, params, weight, enabled, conditions)

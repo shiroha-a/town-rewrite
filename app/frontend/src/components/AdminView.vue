@@ -1093,7 +1093,8 @@ async function deleteEdit() {
                 <span class="hint"> ※組み込みイベントと同じ抽選(発生率1/12)に合流します</span>
               </h3>
               <label>名前<input v-model="evForm.name" placeholder="例: 落とし穴" /></label>
-              <label>メッセージ<input v-model="evForm.message" class="wide" placeholder="例: 落とし穴に落ちて1000円落としました。" /></label>
+              <label>メッセージ<input v-model="evForm.message" class="wide" placeholder="例: 落とし穴に落ちて{money}円落としました。" /></label>
+              <span class="hint">※プレースホルダー: {money}=実際の増減額 {name}=プレイヤー名 {job}=職業 {town}=今いる街</span>
               <label class="chk"><input type="checkbox" v-model="evForm.good" /> 良いイベント（トーストの色）</label>
               <label>お金(最小)<input type="number" v-model.number="evForm.money_min" /></label>
               <label>お金(最大)<input type="number" v-model.number="evForm.money_max" /></label>

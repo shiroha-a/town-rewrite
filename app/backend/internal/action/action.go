@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/shiroha-a/town/internal/building"
 	"github.com/shiroha-a/town/internal/casino"
 	"github.com/shiroha-a/town/internal/cleague"
 	"github.com/shiroha-a/town/internal/condition"
@@ -2661,6 +2662,12 @@ func (s *Service) DoEventRoll(ctx context.Context, playerID int64, idempotencyKe
 		if !occurred {
 			return nil
 		}
+		// メッセージのプレースホルダー({money}/{name}/{job}/{town})を実値に展開する。
+		if msg, err := s.renderEventMessage(ctx, tx, playerID, o); err != nil {
+			return err
+		} else {
+			o.Message = msg
+		}
 		if err := s.applyEventOutcome(ctx, tx, playerID, state, o); err != nil {
 			return err
 		}
@@ -2747,6 +2754,66 @@ func (s *Service) loadCustomEvents(ctx context.Context, tx pgx.Tx, playerID int6
 		}
 	}
 	return out, nil
+}
+
+// renderEventMessage expands message placeholders with live values:
+// {money}=増減額の絶対値(カンマ区切り) {name}=プレイヤー名 {job}=職業 {town}=今いる街名。
+func (s *Service) renderEventMessage(ctx context.Context, tx pgx.Tx, playerID int64, o event.Outcome) (string, error) {
+	msg := o.Message
+	if !strings.Contains(msg, "{") {
+		return msg, nil
+	}
+	if strings.Contains(msg, "{money}") {
+		amount := o.MoneyDelta
+		if amount < 0 {
+			amount = -amount
+		}
+		msg = strings.ReplaceAll(msg, "{money}", yenComma(amount))
+	}
+	if strings.Contains(msg, "{name}") || strings.Contains(msg, "{job}") || strings.Contains(msg, "{town}") {
+		var (
+			name string
+			job  string
+			town int
+		)
+		if err := tx.QueryRow(ctx,
+			`SELECT p.display_name, COALESCE(ps.job, ''), p.current_town
+			 FROM players p LEFT JOIN player_status ps ON ps.player_id = p.id
+			 WHERE p.id = $1`, playerID).Scan(&name, &job, &town); err != nil {
+			return "", fmt.Errorf("load player for message: %w", err)
+		}
+		msg = strings.ReplaceAll(msg, "{name}", name)
+		msg = strings.ReplaceAll(msg, "{job}", job)
+		townName := ""
+		for _, t := range building.Towns() {
+			if t.No == town {
+				townName = t.Name
+				break
+			}
+		}
+		msg = strings.ReplaceAll(msg, "{town}", townName)
+	}
+	return msg, nil
+}
+
+// yenComma formats an amount with ja-JP style thousands separators.
+func yenComma(n int64) string {
+	s := strconv.FormatInt(n, 10)
+	neg := strings.HasPrefix(s, "-")
+	if neg {
+		s = s[1:]
+	}
+	var b strings.Builder
+	for i, r := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(r)
+	}
+	if neg {
+		return "-" + b.String()
+	}
+	return b.String()
 }
 
 // eventCondsPass reports whether every condition holds for the player.
