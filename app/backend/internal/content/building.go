@@ -19,6 +19,8 @@ type BuildingState struct {
 	Towns      []building.Town     `json:"towns"`
 	Exteriors  []building.Exterior `json:"exteriors"`
 	Interiors  []building.Interior `json:"interiors"`
+	Tuikas     []building.Tuika    `json:"tuikas"`      // 2軒目以降の追加種別
+	ShinsaOK   bool                `json:"shinsa_ok"`   // 能力審査(総資産1億+全パラ1万)合格か
 	Plots      []PlotCell          `json:"plots"`       // 管理者が指定した空地マス
 	Houses     []HouseCell         `json:"houses"`      // 全プレイヤーの家(グリッド描画用)
 	MyHouses   []MyHouse           `json:"my_houses"`   // 自分の家(一覧)
@@ -50,6 +52,7 @@ type HouseCell struct {
 	Setumei   string         `json:"setumei"`
 	OwnerName string         `json:"owner_name"`
 	Own       bool           `json:"own"`
+	Tuika     int            `json:"tuika"` // 0=家のみ/1=運営/2=株式会社/3=持ち物販売店
 	Contents  []HouseContent `json:"contents"`
 }
 
@@ -62,6 +65,7 @@ type MyHouse struct {
 	Exterior     string         `json:"exterior"`
 	Setumei      string         `json:"setumei"`
 	InteriorRank int            `json:"interior_rank"`
+	Tuika        int            `json:"tuika"`    // 0=家のみ/1=運営/2=株式会社/3=持ち物販売店
 	Slots        int            `json:"slots"`    // 内装ランクで決まるコンテンツ枠数
 	BuiltAt      string         `json:"built_at"` // RFC3339
 	HasShop      bool           `json:"has_shop"`
@@ -84,6 +88,7 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 		Towns:      building.Towns(),
 		Exteriors:  building.Exteriors(),
 		Interiors:  building.Interiors(),
+		Tuikas:     building.Tuikas(),
 		MochiieMax: building.MochiieMax,
 		Cols:       townmap.Cols,
 		Rows:       townmap.Rows,
@@ -91,6 +96,22 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 		Houses:     []HouseCell{},
 		MyHouses:   []MyHouse{},
 	}
+	// 能力審査(株式会社/持ち物販売店の選択条件): 総資産1億+全パラ1万。
+	var assets int64
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(SUM(delta), 0) FROM ledger_entry WHERE account IN ($1, $2, $3)`,
+		fmt.Sprintf("player:%d", playerID), fmt.Sprintf("savings:%d", playerID),
+		fmt.Sprintf("super_savings:%d", playerID)).Scan(&assets); err != nil {
+		return nil, fmt.Errorf("sum assets: %w", err)
+	}
+	var minParam int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(LEAST(kokugo, suugaku, rika, syakai, eigo, ongaku, bijutsu, looks,
+		              tairyoku, kenkou, speed, power, wanryoku, kyakuryoku, love, omoshirosa), 0)
+		 FROM player_status WHERE player_id = $1`, playerID).Scan(&minParam); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("read params: %w", err)
+	}
+	st.ShinsaOK = assets >= building.ShinsaAsset && minParam >= building.ShinsaParam
 
 	plots, err := s.ListPlots(ctx)
 	if err != nil {
@@ -105,7 +126,7 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 	st.Houses = houses
 
 	mrows, err := s.pool.Query(ctx,
-		`SELECT h.id, h.town, h.grid_row, h.grid_col, h.exterior, h.setumei, h.interior_rank, h.built_at,
+		`SELECT h.id, h.town, h.grid_row, h.grid_col, h.exterior, h.setumei, h.interior_rank, h.tuika, h.built_at,
 		        (hs.house_id IS NOT NULL), COALESCE(hs.title, ''), COALESCE(hs.syubetu, ''), COALESCE(hs.markup, 0)::float8
 		 FROM player_houses h LEFT JOIN house_shops hs ON hs.house_id = h.id
 		 WHERE h.owner_id = $1 ORDER BY h.built_at`, playerID)
@@ -118,7 +139,7 @@ func (s *Service) Building(ctx context.Context, playerID int64) (*BuildingState,
 			h     MyHouse
 			built time.Time
 		)
-		if err := mrows.Scan(&h.ID, &h.Town, &h.Row, &h.Col, &h.Exterior, &h.Setumei, &h.InteriorRank, &built,
+		if err := mrows.Scan(&h.ID, &h.Town, &h.Row, &h.Col, &h.Exterior, &h.Setumei, &h.InteriorRank, &h.Tuika, &built,
 			&h.HasShop, &h.ShopTitle, &h.ShopKind, &h.ShopMarkup); err != nil {
 			return nil, fmt.Errorf("scan my house: %w", err)
 		}
@@ -175,7 +196,7 @@ func (s *Service) ListHouses(ctx context.Context, playerID int64) ([]HouseCell, 
 		return nil, err
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT h.id, h.town, h.grid_row, h.grid_col, h.exterior, h.setumei, h.owner_id, COALESCE(p.display_name, '')
+		`SELECT h.id, h.town, h.grid_row, h.grid_col, h.exterior, h.setumei, h.tuika, h.owner_id, COALESCE(p.display_name, '')
 		 FROM player_houses h LEFT JOIN players p ON p.id = h.owner_id
 		 ORDER BY h.town, h.grid_row, h.grid_col`)
 	if err != nil {
@@ -188,7 +209,7 @@ func (s *Service) ListHouses(ctx context.Context, playerID int64) ([]HouseCell, 
 			c       HouseCell
 			ownerID int64
 		)
-		if err := rows.Scan(&c.ID, &c.Town, &c.Row, &c.Col, &c.Exterior, &c.Setumei, &ownerID, &c.OwnerName); err != nil {
+		if err := rows.Scan(&c.ID, &c.Town, &c.Row, &c.Col, &c.Exterior, &c.Setumei, &c.Tuika, &ownerID, &c.OwnerName); err != nil {
 			return nil, fmt.Errorf("scan house: %w", err)
 		}
 		c.Own = ownerID == playerID

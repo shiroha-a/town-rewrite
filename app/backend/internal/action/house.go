@@ -21,8 +21,10 @@ import (
 // DoBuildHouse builds a house on an empty plot for the player (建設会社 フェーズ2a).
 // The build fee is drawn from the player's bank savings (普通口座). It enforces
 // the 4-house limit, empty-plot validation (no facility, no existing house), and
-// the legacy cost formula (1軒目=地価+外装+内装, 2軒目以降=地価+外装×2).
-func (s *Service) DoBuildHouse(ctx context.Context, playerID int64, town, row, col int, exterior string, interiorRank int, idempotencyKey string) (*player.Player, error) {
+// the legacy cost formula (1軒目=(地価+外装)×内装倍率, 2軒目以降=地価+外装×2+tuika費).
+// tuika selects the 2nd+ house type (0=家のみ/1=運営/2=株式会社/3=持ち物販売店);
+// 株式会社/持ち物販売店には能力審査(総資産1億+全パラ1万)がかかる。
+func (s *Service) DoBuildHouse(ctx context.Context, playerID int64, town, row, col int, exterior string, interiorRank, tuika int, idempotencyKey string) (*player.Player, error) {
 	return s.runAction(ctx, playerID, "build_house", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
 		if town < 0 || town >= building.TownCount() || col < 1 || col > townmap.Cols || row < 0 || row >= townmap.Rows {
 			return &ConditionError{Message: "建築場所の指定が正しくありません。"}
@@ -46,6 +48,36 @@ func (s *Service) DoBuildHouse(ctx context.Context, playerID int64, town, row, c
 		if count >= building.MochiieMax {
 			return &ConditionError{Message: fmt.Sprintf("家は%d軒までしか持てません。", building.MochiieMax)}
 		}
+		// 追加種別(tuika)は2軒目以降のみ。1軒目は常に家のみ(0)。
+		if count == 0 {
+			tuika = 0
+		}
+		tk, ok := building.TuikaByNo(tuika)
+		if !ok {
+			return &ConditionError{Message: "追加種別の指定が正しくありません。"}
+		}
+		if tuika != 0 {
+			// 同種の追加家は1人1軒まで(レガシー: 同種別サフィックス検出で非表示)。
+			var sameCnt int
+			if err := tx.QueryRow(ctx,
+				`SELECT COUNT(*) FROM player_houses WHERE owner_id = $1 AND tuika = $2`,
+				playerID, tuika).Scan(&sameCnt); err != nil {
+				return fmt.Errorf("count same tuika: %w", err)
+			}
+			if sameCnt > 0 {
+				return &ConditionError{Message: fmt.Sprintf("%sはすでに持っています。", tk.Name)}
+			}
+			// 能力審査(株式会社/持ち物販売店): 総資産1億円+全パラメータ1万以上。
+			if tk.Shinsa {
+				ok, err := s.checkShinsa(ctx, tx, playerID)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return &ConditionError{Message: fmt.Sprintf("設営能力不足です。%sには総資産%d円と全パラメータ%d以上が必要です。", tk.Name, building.ShinsaAsset, building.ShinsaParam)}
+				}
+			}
+		}
 		// 建築可能マス = key='akichi' の空き地施設があるマスのみ(空き地は施設に統合済み)。
 		// 通常施設のあるマスには akichi が無い(1セル1施設)ので、自動的に建築不可になる。
 		var isPlot bool
@@ -61,7 +93,7 @@ func (s *Service) DoBuildHouse(ctx context.Context, playerID int64, town, row, c
 		if !isPlot {
 			return &ConditionError{Message: "そこは空地に指定されていません。空地に設定された場所にのみ家を建てられます。"}
 		}
-		cost, err := building.BuildCost(town, exterior, interiorRank, count)
+		cost, err := building.BuildCost(town, exterior, interiorRank, count, tuika)
 		if err != nil {
 			return &ConditionError{Message: "外装または内装の指定が正しくありません。"}
 		}
@@ -98,12 +130,34 @@ func (s *Service) DoBuildHouse(ctx context.Context, playerID int64, town, row, c
 		}
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO player_houses (owner_id, town, grid_row, grid_col, exterior, interior_rank, tuika)
-			 VALUES ($1, $2, $3, $4, $5, $6, 0)`,
-			playerID, town, row, col, exterior, ir); err != nil {
+			 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			playerID, town, row, col, exterior, ir, tuika); err != nil {
 			return fmt.Errorf("insert house: %w", err)
 		}
 		return nil
 	})
+}
+
+// checkShinsa reports whether the player passes 能力審査: total assets
+// (現金+普通口座+スーパー普通口座) >= ShinsaAsset and every parameter >= ShinsaParam.
+func (s *Service) checkShinsa(ctx context.Context, tx pgx.Tx, playerID int64) (bool, error) {
+	var assets int64
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(SUM(delta), 0) FROM ledger_entry WHERE account IN ($1, $2, $3)`,
+		ledger.PlayerAccount(playerID), ledger.SavingsAccount(playerID), ledger.SuperSavingsAccount(playerID)).Scan(&assets); err != nil {
+		return false, fmt.Errorf("sum assets: %w", err)
+	}
+	if assets < building.ShinsaAsset {
+		return false, nil
+	}
+	var minParam int
+	if err := tx.QueryRow(ctx,
+		`SELECT LEAST(kokugo, suugaku, rika, syakai, eigo, ongaku, bijutsu, looks,
+		              tairyoku, kenkou, speed, power, wanryoku, kyakuryoku, love, omoshirosa)
+		 FROM player_status WHERE player_id = $1`, playerID).Scan(&minParam); err != nil {
+		return false, fmt.Errorf("read params: %w", err)
+	}
+	return minParam >= building.ShinsaParam, nil
 }
 
 // DoSellHouse demolishes one of the player's houses and refunds the land price
@@ -130,6 +184,17 @@ func (s *Service) DoSellHouse(ctx context.Context, playerID, houseID int64, idem
 		}
 		if isAdmin {
 			refund = 0 // 管理者は返金なし
+		}
+		// 持ち物販売店(闇市)の売り場・倉庫の品は持ち主の持ち物へ戻す
+		// (レガシーは運営ログを残す=消滅させない)。
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO player_items (player_id, item_id, quantity, remaining_uses)
+			 SELECT $1, item_id, COUNT(*), SUM(uses) FROM yami_items WHERE house_id = $2 GROUP BY item_id
+			 ON CONFLICT (player_id, item_id) DO UPDATE SET
+			   quantity = player_items.quantity + EXCLUDED.quantity,
+			   remaining_uses = player_items.remaining_uses + EXCLUDED.remaining_uses, updated_at = now()`,
+			playerID, houseID); err != nil {
+			return fmt.Errorf("return yami items: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM player_houses WHERE id = $1`, houseID); err != nil {
 			return fmt.Errorf("delete house: %w", err)
@@ -428,6 +493,19 @@ func (s *Service) DoShiire(ctx context.Context, playerID, houseID, itemID int64,
 // maxBuyQty is the legacy per-purchase quantity limit (item_kosuuseigen).
 const maxBuyQty = 4
 
+// hasCreditCard reports whether the player holds a usable credit card item.
+func hasCreditCard(ctx context.Context, tx pgx.Tx, playerID int64) (bool, error) {
+	var hasCard bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS(
+		   SELECT 1 FROM player_items pi JOIN content_items ci ON ci.id = pi.item_id
+		   WHERE pi.player_id = $1 AND pi.remaining_uses > 0 AND ci.name = ANY($2))`,
+		playerID, creditCardNames).Scan(&hasCard); err != nil {
+		return false, fmt.Errorf("check credit card: %w", err)
+	}
+	return hasCard, nil
+}
+
 // creditCardNames are the items that enable credit (bank) payment at shops
 // (レガシーのクレジット系アイテム)。
 var creditCardNames = []string{"クレジットカード", "ゴールドクレジットカード", "スペシャルクレジットカード"}
@@ -518,13 +596,9 @@ func (s *Service) DoBuyFromHouseShop(ctx context.Context, buyerID, houseID, item
 		// 支払い方法: 現金 or クレジット(クレジットカード所持で普通口座から)。
 		buyerAccount := ledger.PlayerAccount(buyerID)
 		if payMethod == "credit" {
-			var hasCard bool
-			if err := tx.QueryRow(ctx,
-				`SELECT EXISTS(
-				   SELECT 1 FROM player_items pi JOIN content_items ci ON ci.id = pi.item_id
-				   WHERE pi.player_id = $1 AND pi.remaining_uses > 0 AND ci.name = ANY($2))`,
-				buyerID, creditCardNames).Scan(&hasCard); err != nil {
-				return fmt.Errorf("check credit card: %w", err)
+			hasCard, err := hasCreditCard(ctx, tx, buyerID)
+			if err != nil {
+				return err
 			}
 			if !hasCard {
 				return &ConditionError{Message: "クレジットカードを持っていません。"}
@@ -789,9 +863,9 @@ func (s *Service) DoSetHouseContents(ctx context.Context, playerID, houseID int6
 	}
 	return s.runAction(ctx, playerID, "house_contents", idempotencyKey, func(ctx context.Context, tx pgx.Tx, _ effects.State) error {
 		var ownerID int64
-		var rank int
-		err := tx.QueryRow(ctx, `SELECT owner_id, interior_rank FROM player_houses WHERE id = $1`, houseID).
-			Scan(&ownerID, &rank)
+		var rank, tuika int
+		err := tx.QueryRow(ctx, `SELECT owner_id, interior_rank, tuika FROM player_houses WHERE id = $1`, houseID).
+			Scan(&ownerID, &rank, &tuika)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return &ConditionError{Message: "その家は存在しません。"}
 		}
@@ -800,6 +874,10 @@ func (s *Service) DoSetHouseContents(ctx context.Context, playerID, houseID int6
 		}
 		if ownerID != playerID {
 			return &ConditionError{Message: "自分の家のコンテンツだけ設定できます。"}
+		}
+		// 追加種別(運営/株式会社/持ち物販売店)の家は機能が固定でコンテンツ枠を持たない。
+		if tuika != 0 {
+			return &ConditionError{Message: "この家にはコンテンツ枠がありません。"}
 		}
 		slots := building.SlotsByRank(rank)
 		seen := map[int]bool{}

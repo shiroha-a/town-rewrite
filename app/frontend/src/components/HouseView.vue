@@ -11,6 +11,8 @@ import {
   type BbsPost,
 } from '../api';
 import Toast from './Toast.vue';
+import YamiShop from './YamiShop.vue';
+import CompanyPanel from './CompanyPanel.vue';
 import { useToast } from '../toast';
 
 // 家訪問(レガシー original_house.cgi houmon)。レガシーのレイアウトを再現:
@@ -68,6 +70,10 @@ onMounted(async () => {
     house.value = houses.find((h) => h.id === props.houseId) ?? null;
     if (!house.value) {
       message.value = 'その家は見つかりませんでした。';
+      return;
+    }
+    // 追加種別の家はコンテンツ枠を持たず、専用画面(運営/株式会社/闇市)になる。
+    if (house.value.tuika !== 0) {
       return;
     }
     // レガシー忠実: 公開コンテンツが無い家には入れない。
@@ -347,6 +353,15 @@ async function doDeleteBbs(kind: string, opts: { articleNo?: number; threadNo?: 
           <button class="btn" :disabled="busy" @click="doSaisen">さい銭する</button>
         </span>
       </div>
+
+      <!-- 追加種別の家: 持ち物販売店=闇市 / 運営・株式会社=社員教育。 -->
+      <YamiShop v-if="house.tuika === 3" :player="player" :house-id="house.id" @update="emit('update', $event)" />
+      <CompanyPanel
+        v-else-if="house.tuika === 1 || house.tuika === 2"
+        :player="player"
+        :house-id="house.id"
+        @update="emit('update', $event)"
+      />
 
       <!-- 通常掲示板(レガシーbbs1: #ffffcc・青点線枠・スレッド形式) -->
       <template v-if="current && current.kind === 'bbs'">

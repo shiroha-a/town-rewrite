@@ -165,6 +165,10 @@ func (w *Worker) runDailyIfNeeded(ctx context.Context, now time.Time) {
 		if _, err := DrawLoto6(ctx, tx, w.ledger, w.rng, date); err != nil {
 			return err
 		}
+		// 運営/株式会社の日次収入(社員の職給与+総合能力値から算出)。
+		if _, err := PayCompanyIncome(ctx, tx, w.ledger); err != nil {
+			return err
+		}
 		return nil
 		// TODO: 経済再計算・ランダムイベント等もここに追加する。
 	})

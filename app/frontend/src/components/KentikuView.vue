@@ -158,6 +158,15 @@ function selectTown(no: number) {
   selectedCell.value = null;
 }
 
+// 追加種別(2軒目以降)。同種は1軒まで、株式会社/持ち物販売店は能力審査が必要。
+const selectedTuika = ref(0);
+const ownedTuikas = computed(() => new Set((state.value?.my_houses ?? []).map((h) => h.tuika).filter((t) => t !== 0)));
+function tuikaDisabled(t: { no: number; shinsa: boolean }): string {
+  if (t.no !== 0 && ownedTuikas.value.has(t.no)) return 'すでに所有';
+  if (t.shinsa && !state.value?.shinsa_ok) return '設営能力不足';
+  return '';
+}
+
 // 建築費プレビュー(building.BuildCostと同じ式。単位:円)。
 const cost = computed(() => {
   const s = state.value;
@@ -171,7 +180,8 @@ const cost = computed(() => {
     if (!inte) return 0;
     man = (town.land_price + ext.price) * inte.multiplier;
   } else {
-    man = town.land_price + ext.price * 2;
+    const tk = s.tuikas.find((t) => t.no === selectedTuika.value);
+    man = town.land_price + ext.price * 2 + (tk?.fee ?? 0);
   }
   return man * 10000;
 });
@@ -188,6 +198,7 @@ async function build() {
       selectedCell.value.col,
       selectedExterior.value,
       isFirstHouse.value ? selectedInterior.value : 0,
+      isFirstHouse.value ? 0 : selectedTuika.value,
     );
     emit('update', after);
     await refresh();
@@ -278,7 +289,19 @@ async function build() {
             </option>
           </select>
         </div>
-        <div v-else class="row note">2軒目以降は内装を選べません（家のみ）。</div>
+        <div v-else class="row ext-row">
+          <span class="lbl">種別</span>
+          <div class="tuika-list">
+            <label v-for="t in state.tuikas" :key="t.no" class="tuika-opt" :class="{ off: !!tuikaDisabled(t) }">
+              <input v-model.number="selectedTuika" type="radio" :value="t.no" :disabled="!!tuikaDisabled(t)" />
+              {{ t.name }}<template v-if="t.fee > 0">（+{{ t.fee }}万）</template>
+              <span v-if="tuikaDisabled(t)" class="tuika-ng">{{ tuikaDisabled(t) }}</span>
+            </label>
+            <div class="note tuika-note">
+              2軒目以降は内装を選べません。株式会社・持ち物販売店には能力審査（総資産1億円＋全パラメータ1万以上）があります。
+            </div>
+          </div>
+        </div>
         <div class="row cost-row">
           <span class="lbl">建築費</span>
           <span class="cost">{{ yen(cost) }}円</span>
@@ -474,6 +497,27 @@ async function build() {
 }
 .build-form .ext-row .lbl {
   padding-top: 6px;
+}
+.tuika-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tuika-opt {
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.tuika-opt.off {
+  color: #aaa;
+}
+.tuika-ng {
+  font-size: 11px;
+  color: #c44;
+}
+.tuika-note {
+  font-size: 11px;
 }
 .build-form .note {
   color: #888;

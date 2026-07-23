@@ -49,6 +49,7 @@ type buildHouseReq struct {
 	Col            int    `json:"col"`
 	Exterior       string `json:"exterior"`
 	InteriorRank   int    `json:"interior_rank"`
+	Tuika          int    `json:"tuika"` // 2軒目以降の追加種別(0=家のみ)
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
@@ -68,7 +69,7 @@ func (s *Server) buildHouse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "exterior is required")
 		return
 	}
-	p, err := s.actions.DoBuildHouse(r.Context(), id, req.Town, req.Row, req.Col, req.Exterior, req.InteriorRank, req.IdempotencyKey)
+	p, err := s.actions.DoBuildHouse(r.Context(), id, req.Town, req.Row, req.Col, req.Exterior, req.InteriorRank, req.Tuika, req.IdempotencyKey)
 	writeFacilityResult(w, p, err)
 }
 
@@ -358,6 +359,325 @@ func (s *Server) buyFromHouseShop(w http.ResponseWriter, r *http.Request) {
 			Method:   result.Method,
 		},
 	})
+}
+
+// yamiShop returns the 持ち物販売店(闇市) shelf of a house.
+func (s *Server) yamiShop(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	houseID, err := strconv.ParseInt(r.URL.Query().Get("house_id"), 10, 64)
+	if err != nil || houseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
+		return
+	}
+	view, err := s.content.Yami(r.Context(), id, houseID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// yamiInventory lists the player's own items for listing onto their 闇市.
+func (s *Server) yamiInventory(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	items, err := s.content.YamiInventory(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+type yamiListReq struct {
+	HouseID        int64  `json:"house_id"`
+	ItemID         int64  `json:"item_id"`
+	Price          int64  `json:"price"`     // 0=既定価格(単価×残耐久)
+	Warehouse      bool   `json:"warehouse"` // true=預ける(倉庫)
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// yamiList puts one of the player's items onto their 闇市 shelf (販売/預ける).
+func (s *Server) yamiList(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req yamiListReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 || req.ItemID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id and item_id are required")
+		return
+	}
+	p, err := s.actions.DoYamiList(r.Context(), id, req.HouseID, req.ItemID, req.Price, req.Warehouse, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
+type yamiBuyReq struct {
+	HouseID        int64  `json:"house_id"`
+	ListingID      int64  `json:"listing_id"`
+	PayMethod      string `json:"pay_method"` // cash / credit
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// yamiBuy buys one listing from a 闇市 (家主は500円で回収).
+func (s *Server) yamiBuy(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req yamiBuyReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 || req.ListingID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id and listing_id are required")
+		return
+	}
+	p, result, err := s.actions.DoYamiBuy(r.Context(), id, req.HouseID, req.ListingID, req.PayMethod, req.IdempotencyKey)
+	if err != nil {
+		writeFacilityResult(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		playerResp
+		YamiResult *action.YamiBuyResult `json:"yami_result"`
+	}{toResp(p), result})
+}
+
+// companyView returns the 運営/株式会社 screen state of a house.
+func (s *Server) companyView(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	houseID, err := strconv.ParseInt(r.URL.Query().Get("house_id"), 10, 64)
+	if err != nil || houseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
+		return
+	}
+	view, err := s.content.Company(r.Context(), id, houseID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+type companyStaffReq struct {
+	HouseID        int64  `json:"house_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// companyStaffAdd adds an employee to the player's 運営/株式会社.
+func (s *Server) companyStaffAdd(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req companyStaffReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
+		return
+	}
+	p, err := s.actions.DoStaffAdd(r.Context(), id, req.HouseID, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
+type companyEducateReq struct {
+	HouseID        int64  `json:"house_id"`
+	StaffID        int64  `json:"staff_id"`
+	Param          string `json:"param"`  // player_statusの列名(kokugo..omoshirosa)
+	Amount         int    `json:"amount"` // 消費する自分のパラメータ量(1..1000)
+	PayMethod      string `json:"pay_method"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// companyEducate performs 社員教育 (自分のパラメータを社員へ移転).
+func (s *Server) companyEducate(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req companyEducateReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 || req.StaffID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id and staff_id are required")
+		return
+	}
+	p, result, err := s.actions.DoStaffEducate(r.Context(), id, req.HouseID, req.StaffID, req.Param, req.Amount, req.PayMethod, req.IdempotencyKey)
+	if err != nil {
+		writeFacilityResult(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		playerResp
+		EduResult *action.StaffEduResult `json:"edu_result"`
+	}{toResp(p), result})
+}
+
+type companyBbsReq struct {
+	HouseID        int64  `json:"house_id"`
+	Board          string `json:"board"` // open / member
+	Body           string `json:"body"`
+	WantJoin       bool   `json:"want_join"`  // オープン板: 入会希望
+	WantLeave      bool   `json:"want_leave"` // メンバー板: 退会希望
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// companyBbsPost writes to the 会社BBS (入会/退会希望付き投稿にも使う).
+func (s *Server) companyBbsPost(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req companyBbsReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
+		return
+	}
+	p, err := s.actions.DoCompanyBbsPost(r.Context(), id, req.HouseID, req.Board, req.Body, req.WantJoin, req.WantLeave, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
+type companyApproveReq struct {
+	HouseID        int64  `json:"house_id"`
+	PostID         int64  `json:"post_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// companyApprove approves a pending 入会/退会 request (オーナーのみ).
+func (s *Server) companyApprove(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req companyApproveReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 || req.PostID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id and post_id are required")
+		return
+	}
+	p, err := s.actions.DoCompanyApprove(r.Context(), id, req.HouseID, req.PostID, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
+type companyKickReq struct {
+	HouseID        int64  `json:"house_id"`
+	OfficerID      int64  `json:"officer_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// companyKick removes an officer (オーナーの退会指定).
+func (s *Server) companyKick(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req companyKickReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 || req.OfficerID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id and officer_id are required")
+		return
+	}
+	p, err := s.actions.DoCompanyKick(r.Context(), id, req.HouseID, req.OfficerID, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
+type companyBbsDeleteReq struct {
+	HouseID        int64  `json:"house_id"`
+	Board          string `json:"board"`
+	No             int    `json:"no"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// companyBbsDelete deletes a 会社BBS post by number (オーナーのみ).
+func (s *Server) companyBbsDelete(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req companyBbsDeleteReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 || req.No <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id and no are required")
+		return
+	}
+	p, err := s.actions.DoCompanyBbsDelete(r.Context(), id, req.HouseID, req.Board, req.No, req.IdempotencyKey)
+	writeFacilityResult(w, p, err)
+}
+
+type companySeizouReq struct {
+	HouseID        int64              `json:"house_id"`
+	Input          action.SeizouInput `json:"input"`
+	IdempotencyKey string             `json:"idempotency_key"`
+}
+
+// companySeizou manufactures an original product (オーナーのみ・1日1回).
+func (s *Server) companySeizou(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req companySeizouReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.HouseID <= 0 {
+		writeError(w, http.StatusBadRequest, "house_id is required")
+		return
+	}
+	p, result, err := s.actions.DoSeizou(r.Context(), id, req.HouseID, req.Input, req.IdempotencyKey)
+	if err != nil {
+		writeFacilityResult(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		playerResp
+		SeizouResult *action.SeizouResult `json:"seizou_result"`
+	}{toResp(p), result})
 }
 
 // houseBbs returns a house's bulletin-board posts (誰でも閲覧可).
