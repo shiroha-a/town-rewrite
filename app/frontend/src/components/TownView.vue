@@ -4,6 +4,7 @@ import { api, WARP_FEE, assetUrl, type Player, type Params, type TownFacility, t
 import { satietyLabel } from '../params';
 import CommandIcon from './CommandIcon.vue';
 import PowerBar from './PowerBar.vue';
+import GreetingModal from './GreetingModal.vue';
 
 const props = defineProps<{ player: Player }>();
 const emit = defineEmits<{
@@ -399,7 +400,23 @@ function clickCommand(key: string) {
     emit('reload');
     rollEvent(); // 更新ボタンでもイベントを抽選する
   } else if (key === 'off') emit('logout');
+  else if (key === 'aisatu') aisatuOpen.value = true; // ページ遷移せずモーダルで投稿
   else emit('navigate', key);
+}
+
+// あいさつのSNS風投稿モーダル。
+const aisatuOpen = ref(false);
+function openAisatu() {
+  if (moving.value) return;
+  aisatuOpen.value = true;
+}
+// 投稿後は街トップのチャット窓(最新6件)を更新し、報酬をステータスへ反映する。
+async function onAisatuPosted() {
+  try {
+    greetings.value = await api.greetings(6);
+  } catch {
+    // チャット窓の更新失敗は無視(次回リロードで追いつく)
+  }
 }
 
 // サーバ時刻基準の1秒クロック。就労クールタイムのカウントダウンをリアルタイム表示する。
@@ -616,7 +633,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
         </template>
         <template v-else>株価情報を取得中…</template>
       </div>
-      <button class="chat-head" @click="nav('aisatu')">●チャット(あいさつ)</button>
+      <button class="chat-head" @click="openAisatu">●チャット(あいさつ)</button>
       <div v-if="greetings.length" class="chat-feed">
         <div v-for="g in greetings" :key="g.id" class="chat-line">
           <span class="cn">{{ g.user_name }}</span>：<span :style="{ color: g.color }">{{ g.body }}</span>
@@ -739,4 +756,13 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
     [HOME]<br />
     - TOWN リライト版 (Vue) -
   </div>
+
+  <!-- あいさつ投稿モーダル(SNS風) -->
+  <GreetingModal
+    v-if="aisatuOpen"
+    :player="player"
+    @close="aisatuOpen = false"
+    @update="emit('reload')"
+    @posted="onAisatuPosted"
+  />
 </template>
