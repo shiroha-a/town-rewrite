@@ -396,8 +396,8 @@ async function saveTownMap() {
 const assets = ref<TownAsset[]>([]);
 // 編集中のレイヤー('facility'=施設(空き地含む) / 'asset'=背景)。
 const mapLayer = ref<'facility' | 'asset'>('facility');
-// 背景アセットのパレット(組み込みのlegacy地形素材)。
-const BG_PRESETS = ['kusa', 'sima', 'umi', 'tree1', 'tree2', 'tree3', 'tree4'];
+// 背景アセットのパレット(組み込みのSVG地形素材)。
+const BG_PRESETS = ['kusa', 'tuti', 'sima', 'umi', 'oki', 'tree1', 'tree2', 'tree3', 'tree4', 'yama'];
 // アップロードされた画像名(背景に追加できる)。'u:'接頭辞でimg値に使う。
 const uploadedAssets = ref<string[]>([]);
 // パレット = 組み込み + アップロード('u:'接頭辞)。

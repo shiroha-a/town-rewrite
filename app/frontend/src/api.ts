@@ -468,9 +468,9 @@ export type BuyResp = Player & { buy_result: BuyResult };
 export const WARP_FEE = 100000;
 
 // 背景アセット画像のURLを解決する。'u:'接頭辞はアップロード画像(DB配信)、
-// それ以外は組み込みのpublic/img/*.gif。
+// それ以外は組み込みのpublic/img/svg/*.svg(GIFからSVG化済み)。
 export function assetUrl(img: string): string {
-  return img.startsWith('u:') ? `/api/v1/assets/${encodeURIComponent(img.slice(2))}` : `/img/${img}.gif`;
+  return img.startsWith('u:') ? `/api/v1/assets/${encodeURIComponent(img.slice(2))}` : `/img/svg/${img}.svg`;
 }
 
 export interface StockPrice {
