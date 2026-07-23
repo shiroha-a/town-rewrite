@@ -104,7 +104,11 @@ async function use(it: ItemStack) {
     <Toast :toast="toast" @close="closeToast" />
     <button class="btn back" @click="emit('back')">街に戻る</button>
     <div class="item-header">
-      <div class="lead">持っているアイテムを使うことができます。</div>
+      <div class="lead">
+        持っているアイテムを使うことができます。<br />
+        ●身体パワー：<span class="pw">{{ player.status.energy }}/{{ player.status.energy_max }}</span>
+        ●頭脳パワー：<span class="pw">{{ player.status.nou_energy }}/{{ player.status.nou_energy_max }}</span>
+      </div>
       <div class="title">アイテム使用</div>
     </div>
 
@@ -183,6 +187,11 @@ async function use(it: ItemStack) {
   background: #fff;
   padding: 8px 12px;
   color: #333;
+  line-height: 1.6;
+}
+.item-header .pw {
+  color: #cc3300;
+  font-weight: bold;
 }
 .item-header .title {
   flex: 0 0 140px;
