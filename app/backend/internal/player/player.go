@@ -65,6 +65,7 @@ type Params struct {
 type ItemStack struct {
 	ItemID          int64
 	Name            string
+	Category        string // 一覧のカテゴリ見出し(未分類は空)
 	Quantity        int
 	RemainingUses   int            // 残量('use'=残り総使用回数, 'day'=残日数)
 	Sets            int            // 表示セット数 = ceil(remaining_uses/durability)
@@ -519,7 +520,7 @@ func (s *Service) Get(ctx context.Context, id int64) (*Player, error) {
 	}
 
 	items, err := s.pool.Query(ctx,
-		`SELECT ci.id, ci.name, pi.quantity, pi.remaining_uses,
+		`SELECT ci.id, ci.name, COALESCE(ci.category, ''), pi.quantity, pi.remaining_uses,
 		        CEIL(pi.remaining_uses::numeric / ci.durability)::int AS sets,
 		        ci.durability_unit, ci.effect, ci.use_interval_min,
 		        CASE WHEN pi.last_used_at IS NOT NULL
@@ -539,7 +540,7 @@ func (s *Service) Get(ctx context.Context, id int64) (*Player, error) {
 			it      ItemStack
 			effJSON []byte
 		)
-		if err := items.Scan(&it.ItemID, &it.Name, &it.Quantity, &it.RemainingUses, &it.Sets, &it.DurabilityUnit, &effJSON, &it.IntervalMin, &it.NextAvailableAt); err != nil {
+		if err := items.Scan(&it.ItemID, &it.Name, &it.Category, &it.Quantity, &it.RemainingUses, &it.Sets, &it.DurabilityUnit, &effJSON, &it.IntervalMin, &it.NextAvailableAt); err != nil {
 			return nil, fmt.Errorf("scan item: %w", err)
 		}
 		if debugNoCd {

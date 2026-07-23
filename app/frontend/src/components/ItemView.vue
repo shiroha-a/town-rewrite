@@ -11,6 +11,17 @@ const emit = defineEmits<{ update: [player: Player]; back: [] }>();
 const busy = ref(false);
 const { toast, showToast, closeToast } = useToast();
 
+// カテゴリ別にグループ化(デパートと同じカテゴリ見出し付き表を再現)
+const grouped = computed(() => {
+  const g = new Map<string, ItemStack[]>();
+  for (const it of props.player.items) {
+    const c = it.category || 'その他';
+    if (!g.has(c)) g.set(c, []);
+    g.get(c)!.push(it);
+  }
+  return [...g.entries()];
+});
+
 // サーバ時刻とクライアント時計のずれ(ms)。カウントダウンをサーバ基準に補正し、
 // 端末時計がずれていても残り時間が正しく表示されるようにする。
 const skewMs = ref(0);
@@ -126,37 +137,42 @@ async function use(it: ItemStack) {
               <th>間隔</th>
             </tr>
           </thead>
-          <tbody>
-            <tr v-for="it in player.items" :key="it.item_id" :data-test="`item-${it.item_id}`">
-              <td class="l">○{{ it.name }}</td>
-              <td
-                class="cooldown"
-                :class="{
-                  ok: !cooldowns[it.item_id].active,
-                  soon: cooldowns[it.item_id].active && cooldowns[it.item_id].soon,
-                  wait: cooldowns[it.item_id].active && !cooldowns[it.item_id].soon,
-                }"
-                :data-test="`cooldown-${it.item_id}`"
-              >
-                {{ cooldowns[it.item_id].label }}
-              </td>
-              <td>
-                <button
-                  class="btn"
-                  :disabled="busy || cooldowns[it.item_id].active"
-                  :data-test="`use-${it.item_id}`"
-                  @click="use(it)"
+          <template v-for="[cat, list] in grouped" :key="cat">
+            <tbody>
+              <tr class="cat-row">
+                <td :colspan="PARAM_COLUMNS.length + 5">●{{ cat }}</td>
+              </tr>
+              <tr v-for="it in list" :key="it.item_id" :data-test="`item-${it.item_id}`">
+                <td class="l">○{{ it.name }}</td>
+                <td
+                  class="cooldown"
+                  :class="{
+                    ok: !cooldowns[it.item_id].active,
+                    soon: cooldowns[it.item_id].active && cooldowns[it.item_id].soon,
+                    wait: cooldowns[it.item_id].active && !cooldowns[it.item_id].soon,
+                  }"
+                  :data-test="`cooldown-${it.item_id}`"
                 >
-                  使う
-                </button>
-              </td>
-              <td>{{ it.remaining_uses }}{{ it.durability_unit === 'day' ? '日' : '回' }}</td>
-              <td v-for="c in PARAM_COLUMNS" :key="c.key" class="p" :class="{ up: (it.params[c.key] ?? 0) > 0 }">
-                {{ it.params[c.key] ?? 0 }}
-              </td>
-              <td class="interval">{{ it.interval_min > 0 ? `${it.interval_min}分` : '-' }}</td>
-            </tr>
-          </tbody>
+                  {{ cooldowns[it.item_id].label }}
+                </td>
+                <td>
+                  <button
+                    class="btn"
+                    :disabled="busy || cooldowns[it.item_id].active"
+                    :data-test="`use-${it.item_id}`"
+                    @click="use(it)"
+                  >
+                    使う
+                  </button>
+                </td>
+                <td>{{ it.remaining_uses }}{{ it.durability_unit === 'day' ? '日' : '回' }}</td>
+                <td v-for="c in PARAM_COLUMNS" :key="c.key" class="p" :class="{ up: (it.params[c.key] ?? 0) > 0 }">
+                  {{ it.params[c.key] ?? 0 }}
+                </td>
+                <td class="interval">{{ it.interval_min > 0 ? `${it.interval_min}分` : '-' }}</td>
+              </tr>
+            </tbody>
+          </template>
         </table>
       </div>
     </div>
@@ -240,6 +256,13 @@ async function use(it: ItemStack) {
   color: #060;
   font-weight: bold;
   background: #eaffea;
+}
+.item-table tr.cat-row td {
+  background: #ffedcc;
+  color: #995500;
+  font-weight: bold;
+  text-align: left;
+  border-top: 2px solid #cc9933;
 }
 .item-table td.cooldown {
   font-weight: bold;

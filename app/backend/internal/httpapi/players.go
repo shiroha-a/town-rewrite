@@ -42,6 +42,7 @@ type statusResp struct {
 type itemResp struct {
 	ItemID          int64          `json:"item_id"`
 	Name            string         `json:"name"`
+	Category        string         `json:"category"`
 	Quantity        int            `json:"quantity"`
 	RemainingUses   int            `json:"remaining_uses"`
 	Sets            int            `json:"sets"`
@@ -108,6 +109,7 @@ func toResp(p *player.Player) playerResp {
 		items = append(items, itemResp{
 			ItemID:          it.ItemID,
 			Name:            it.Name,
+			Category:        it.Category,
 			Quantity:        it.Quantity,
 			RemainingUses:   it.RemainingUses,
 			Sets:            it.Sets,

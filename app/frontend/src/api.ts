@@ -4,6 +4,7 @@
 export interface ItemStack {
   item_id: number;
   name: string;
+  category: string;
   quantity: number;
   remaining_uses: number;
   sets: number;
