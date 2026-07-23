@@ -2266,7 +2266,7 @@ func TestEvent(t *testing.T) {
 	// 慈善イベントの受け皿として別プレイヤーも用意。
 	register(t, srv.URL, "misskey.example", "bob")
 
-	roll := func(key string) (int, bool) {
+	roll := func(key string) (int, bool, string) {
 		b, _ := json.Marshal(map[string]any{"idempotency_key": key})
 		resp, err := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/events/roll", "application/json", bytes.NewReader(b))
 		if err != nil {
@@ -2279,21 +2279,36 @@ func TestEvent(t *testing.T) {
 			} `json:"event"`
 		}
 		json.NewDecoder(resp.Body).Decode(&r)
-		return resp.StatusCode, r.Event != nil
+		name := ""
+		if r.Event != nil {
+			name = r.Event.Name
+		}
+		return resp.StatusCode, r.Event != nil, name
 	}
 
 	events := 0
 	for i := 0; i < 180; i++ {
-		// レート制限を解除して毎回抽選させる。
+		// レート制限を解除して毎回抽選させる。健康の貯金を積んでおき、
+		// 体調不良イベントが「代入」で即風邪ぎみにすることを検証する。
 		if _, err := pool.Exec(ctx, `DELETE FROM player_facility_cooldowns WHERE player_id=$1 AND facility='event_roll'`, alice.ID); err != nil {
 			t.Fatal(err)
 		}
-		code, fired := roll(fmt.Sprintf("ev-%d", i))
+		if _, err := pool.Exec(ctx, `UPDATE player_status SET disease_index=50 WHERE player_id=$1`, alice.ID); err != nil {
+			t.Fatal(err)
+		}
+		code, fired, name := roll(fmt.Sprintf("ev-%d", i))
 		if code != http.StatusOK {
 			t.Fatalf("roll status = %d", code)
 		}
 		if fired {
 			events++
+		}
+		if name == "体調不良" {
+			var idx int
+			pool.QueryRow(ctx, `SELECT disease_index FROM player_status WHERE player_id=$1`, alice.ID).Scan(&idx)
+			if idx != -8 {
+				t.Errorf("体調不良後のdisease_index = %d, want -8 (代入されていない)", idx)
+			}
 		}
 	}
 	if events == 0 {
@@ -2309,7 +2324,7 @@ func TestEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	roll("rate-1")
-	if _, fired := roll("rate-2"); fired {
+	if _, fired, _ := roll("rate-2"); fired {
 		t.Errorf("second roll within interval fired an event (rate limit not applied)")
 	}
 }

@@ -20,10 +20,11 @@ type Outcome struct {
 	Good       bool           `json:"good"`
 	MoneyDelta int64          `json:"money_delta"`
 	Params     map[string]int `json:"params"`
-	// DiseaseDelta は disease_index への加算(負=病気が悪化)。0で変化なし。
-	DiseaseDelta int    `json:"disease_delta"`
-	WeightG      int    `json:"weight_g"`
-	Special      string `json:"special"` // "charity" | "confiscate" | ""
+	// DiseaseSet は disease_index への直接代入(レガシー$byouki_sisuu = N)。
+	// 健康の貯金(プラス指数)に関係なく即その病状になる。nilで変化なし。
+	DiseaseSet *int   `json:"disease_set"`
+	WeightG    int    `json:"weight_g"`
+	Special    string `json:"special"` // "charity" | "confiscate" | ""
 }
 
 func good(name, msg string, o Outcome) Outcome { o.Name, o.Message, o.Good = name, msg, true; return o }
@@ -93,9 +94,10 @@ var events = []func(r *rng.Rand, money int64, speed int) Outcome{
 	func(_ *rng.Rand, _ int64, _ int) Outcome {
 		return good("優しい気持ち", "優しい気持ちになりLOVE度が5アップしました。", Outcome{Params: param("love", 5)})
 	},
-	// 15 風邪ぎみ(病気指数-8)
+	// 15 風邪ぎみ(病気指数=-8の直接代入。レガシー$byouki_sisuu = -8)
 	func(_ *rng.Rand, _ int64, _ int) Outcome {
-		return bad("体調不良", "裸で寝ていて体調を崩しました(風邪ぎみ)。", Outcome{DiseaseDelta: -8})
+		idx := -8
+		return bad("体調不良", "裸で寝ていて体調を崩しました(風邪ぎみ)。", Outcome{DiseaseSet: &idx})
 	},
 	// 16 スリ(持ち金半減)
 	func(_ *rng.Rand, money int64, _ int) Outcome {

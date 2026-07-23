@@ -2717,10 +2717,12 @@ func (s *Service) applyEventOutcome(ctx context.Context, tx pgx.Tx, playerID int
 			return err
 		}
 	}
-	if o.DiseaseDelta != 0 {
+	if o.DiseaseSet != nil {
+		// レガシーは加算ではなく代入($byouki_sisuu = N)。健康の貯金があっても
+		// 即その病状になる(悪い病気が軽くなる方向もレガシーどおり許す)。
 		if _, err := tx.Exec(ctx,
-			`UPDATE player_status SET disease_index = GREATEST(-200, disease_index + $2) WHERE player_id = $1`,
-			playerID, o.DiseaseDelta); err != nil {
+			`UPDATE player_status SET disease_index = $2 WHERE player_id = $1`,
+			playerID, *o.DiseaseSet); err != nil {
 			return fmt.Errorf("event disease: %w", err)
 		}
 	}
