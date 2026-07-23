@@ -115,21 +115,16 @@ async function use(it: ItemStack) {
           <thead>
             <tr>
               <th class="l">品名</th>
+              <th>使用可</th>
+              <th></th>
               <th>残り</th>
               <th v-for="c in PARAM_COLUMNS" :key="c.key" class="p">{{ c.label }}</th>
               <th>間隔</th>
-              <th>使用可</th>
-              <th></th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="it in player.items" :key="it.item_id" :data-test="`item-${it.item_id}`">
               <td class="l">○{{ it.name }}</td>
-              <td>{{ it.remaining_uses }}{{ it.durability_unit === 'day' ? '日' : '回' }}</td>
-              <td v-for="c in PARAM_COLUMNS" :key="c.key" class="p" :class="{ up: (it.params[c.key] ?? 0) > 0 }">
-                {{ it.params[c.key] ?? 0 }}
-              </td>
-              <td class="interval">{{ it.interval_min > 0 ? `${it.interval_min}分` : '-' }}</td>
               <td
                 class="cooldown"
                 :class="{
@@ -151,6 +146,11 @@ async function use(it: ItemStack) {
                   使う
                 </button>
               </td>
+              <td>{{ it.remaining_uses }}{{ it.durability_unit === 'day' ? '日' : '回' }}</td>
+              <td v-for="c in PARAM_COLUMNS" :key="c.key" class="p" :class="{ up: (it.params[c.key] ?? 0) > 0 }">
+                {{ it.params[c.key] ?? 0 }}
+              </td>
+              <td class="interval">{{ it.interval_min > 0 ? `${it.interval_min}分` : '-' }}</td>
             </tr>
           </tbody>
         </table>
