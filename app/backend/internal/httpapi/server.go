@@ -44,6 +44,7 @@ func NewServer(players *player.Service, actions *action.Service, contentSvc *con
 	mux.HandleFunc("POST /api/v1/players", s.registerPlayer)
 	mux.HandleFunc("GET /api/v1/players", s.listPlayers)
 	mux.HandleFunc("GET /api/v1/players/{id}", s.getPlayer)
+	mux.HandleFunc("GET /api/v1/participants", s.participants)
 	mux.HandleFunc("GET /api/v1/players/{id}/profile", s.playerProfile)
 	mux.HandleFunc("GET /api/v1/townmap", s.townMap)
 	mux.HandleFunc("GET /api/v1/townassets", s.townAssets)

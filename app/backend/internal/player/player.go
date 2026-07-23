@@ -563,3 +563,40 @@ func (s *Service) Get(ctx context.Context, id int64) (*Player, error) {
 	p.ItemKindLimit = cfg.ItemKindLimit
 	return p, nil
 }
+
+// Participant is one currently-active player for the town-top participant list.
+type Participant struct {
+	ID          int64  `json:"id"`
+	DisplayName string `json:"display_name"`
+}
+
+// TouchLastSeen records player activity for the participant list. Throttled to
+// one write per 30 seconds; errors are ignored (表示用の心拍であり本処理を
+// 妨げない)。
+func (s *Service) TouchLastSeen(ctx context.Context, id int64) {
+	_, _ = s.pool.Exec(ctx,
+		`UPDATE players SET last_seen_at = now()
+		 WHERE id = $1 AND (last_seen_at IS NULL OR last_seen_at < now() - interval '30 seconds')`, id)
+}
+
+// Participants lists players active within the last 20 minutes
+// (レガシー$logout_time=1200秒の参加者リスト相当)。
+func (s *Service) Participants(ctx context.Context) ([]Participant, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, display_name FROM players
+		 WHERE deleted_at IS NULL AND last_seen_at > now() - interval '20 minutes'
+		 ORDER BY last_seen_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list participants: %w", err)
+	}
+	defer rows.Close()
+	out := []Participant{}
+	for rows.Next() {
+		var p Participant
+		if err := rows.Scan(&p.ID, &p.DisplayName); err != nil {
+			return nil, fmt.Errorf("scan participant: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}

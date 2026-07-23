@@ -149,6 +149,17 @@ async function refreshUnread() {
 // 親のポーリング(player更新)に合わせて未読も更新する。
 watch(() => props.player, refreshUnread);
 
+// 現在の総参加者(20分以内に活動したプレイヤー)。ポーリングに合わせて更新する。
+const participants = ref<{ id: number; display_name: string }[]>([]);
+async function refreshParticipants() {
+  try {
+    participants.value = await api.participants();
+  } catch {
+    participants.value = [];
+  }
+}
+watch(() => props.player, refreshParticipants, { immediate: true });
+
 // 株価ティッカー(街トップの帯)。全銘柄の現在株価と前回比の騰落方向を表示する。
 const stockPrices = ref<{ symbol: string; price: number }[]>([]);
 type PriceDir = 'up' | 'down' | 'flat';
@@ -593,9 +604,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
   </div>
 
   <div class="participant">
-    現在の総参加者(1人)：★
-    <img :src="`/img/img062.gif`" width="12" height="12" style="vertical-align: middle" alt="" />
-    <span class="name">{{ player.display_name }}</span>★
+    現在の総参加者({{ participants.length }}人)：★<template v-for="p in participants" :key="p.id"><img :src="`/img/img062.gif`" width="12" height="12" style="vertical-align: middle" alt="" /><span class="name" :class="{ me: p.id === player.id }">{{ p.display_name }}</span>★</template>
   </div>
 
   <button v-if="unreadMail > 0" class="mail-notice" @click="nav('mail')">

@@ -254,5 +254,18 @@ func (s *Server) getPlayer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// 参加者表示用の最終アクセスを刻む(クライアントのポーリングが心拍になる)。
+	s.players.TouchLastSeen(r.Context(), id)
 	writeJSON(w, http.StatusOK, toResp(p))
+}
+
+// participants returns the players active within the last 20 minutes
+// (レガシー$logout_time=1200の参加者リスト)。Public.
+func (s *Server) participants(w http.ResponseWriter, r *http.Request) {
+	list, err := s.players.Participants(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
 }

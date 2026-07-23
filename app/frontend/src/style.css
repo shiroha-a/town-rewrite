@@ -179,6 +179,9 @@ body {
   padding: 3px 6px;
   margin-bottom: 4px;
 }
+.participant .name.me {
+  font-weight: bold;
+}
 
 /* 街マップ */
 .mapwrap {

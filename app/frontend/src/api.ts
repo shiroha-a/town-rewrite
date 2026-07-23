@@ -1306,6 +1306,7 @@ export const api = {
       input,
       idempotency_key: newIdempotencyKey(),
     }),
+  participants: () => request<{ id: number; display_name: string }[]>('GET', '/participants'),
   houseShopStock: (id: number, houseId: number) =>
     request<ShopStockView>('GET', `/players/${id}/building/shop/stock?house_id=${houseId}`),
   setHouseShopPrice: (id: number, houseId: number, itemId: number, sellPrice: number) =>
