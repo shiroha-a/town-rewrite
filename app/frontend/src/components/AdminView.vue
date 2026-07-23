@@ -530,21 +530,33 @@ const EV_DISEASES: { label: string; value: number | null }[] = [
   { label: '脳腫瘍(-80)', value: -80 },
   { label: '癌(-120)', value: -120 },
 ];
+// 発生条件の編集行。predごとに使うフィールドが変わる。
+const EV_COND_PREDS: { value: string; label: string }[] = [
+  { value: 'money_gte', label: '所持金が◯円以上' },
+  { value: 'money_lte', label: '所持金が◯円以下' },
+  { value: 'param_gte', label: 'パラメータが◯以上' },
+  { value: 'param_lte', label: 'パラメータが◯以下' },
+  { value: 'has_item', label: 'アイテムを所持' },
+  { value: 'job_is', label: '職業が' },
+];
 function emptyEvent(): import('../api').AdminEvent {
   return {
     id: 0, name: '', message: '', good: true, money_min: 0, money_max: 0,
-    params: {}, disease_set: null, weight_g: 0, weight: 1, enabled: true,
+    params: {}, disease_set: null, weight_g: 0, weight: 1, enabled: true, conditions: [],
   };
 }
 const evForm = ref(emptyEvent());
 const evParamRows = ref<{ key: string; value: number }[]>([]);
+const evCondRows = ref<import('../api').EventCond[]>([]);
 function evEdit(e: import('../api').AdminEvent) {
   evForm.value = { ...e, params: { ...e.params } };
   evParamRows.value = Object.entries(e.params).map(([key, value]) => ({ key, value }));
+  evCondRows.value = (e.conditions ?? []).map((c) => ({ ...c }));
 }
 function evReset() {
   evForm.value = emptyEvent();
   evParamRows.value = [];
+  evCondRows.value = [];
 }
 async function evSave() {
   busy.value = true;
@@ -554,7 +566,7 @@ async function evSave() {
     for (const r of evParamRows.value) {
       if (r.key && r.value) params[r.key] = r.value;
     }
-    const payload = { ...evForm.value, params };
+    const payload = { ...evForm.value, params, conditions: evCondRows.value };
     if (payload.id > 0) await api.adminUpdateEvent(props.player.id, payload);
     else await api.adminCreateEvent(props.player.id, payload);
     adminEvents.value = await api.adminListEvents(props.player.id);
@@ -1161,6 +1173,33 @@ async function deleteEdit() {
                   <button class="btn mini" @click="evParamRows.splice(i, 1)">×</button>
                 </div>
                 <button class="btn mini" @click="evParamRows.push({ key: 'kokugo', value: 1 })">＋パラメータを追加</button>
+              </div>
+              <div class="ops">
+                <div class="ops-head">発生条件（すべて満たすプレイヤーにだけ発生。空=全員）</div>
+                <div v-for="(c, i) in evCondRows" :key="i" class="op-row">
+                  <select v-model="c.pred">
+                    <option v-for="p in EV_COND_PREDS" :key="p.value" :value="p.value">{{ p.label }}</option>
+                  </select>
+                  <select v-if="c.pred === 'param_gte' || c.pred === 'param_lte'" v-model="c.param">
+                    <option v-for="p in EV_PARAM_OPTIONS" :key="p" :value="p">{{ p }}</option>
+                  </select>
+                  <input
+                    v-if="c.pred !== 'has_item' && c.pred !== 'job_is'"
+                    type="number"
+                    v-model.number="c.value"
+                    placeholder="値"
+                  />
+                  <select v-if="c.pred === 'has_item'" v-model.number="c.item_id">
+                    <option v-for="it in items" :key="it.id" :value="it.id">{{ it.name }}</option>
+                  </select>
+                  <select v-if="c.pred === 'job_is'" v-model="c.job">
+                    <option v-for="j in jobs" :key="j.id" :value="j.name">{{ j.name }}</option>
+                  </select>
+                  <button class="btn mini" @click="evCondRows.splice(i, 1)">×</button>
+                </div>
+                <button class="btn mini" @click="evCondRows.push({ pred: 'money_gte', param: 'kokugo', value: 0 })">
+                  ＋条件を追加
+                </button>
               </div>
               <label>病気にする
                 <select v-model="evForm.disease_set">

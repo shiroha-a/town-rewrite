@@ -2389,6 +2389,63 @@ func TestCustomEvent(t *testing.T) {
 	}
 }
 
+// TestCustomEventConditions verifies eligibility conditions: a condition-gated
+// event never fires for a player who fails the condition, and can fire once the
+// condition is met.
+func TestCustomEventConditions(t *testing.T) {
+	srv, pool := setup(t)
+	ctx := context.Background()
+	alice := register(t, srv.URL, "misskey.example", "cevcond")
+	// 条件: kokugo>=9999。重み100で、条件さえ満たせば高確率で出る。
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO content_events (name, message, good, money_min, money_max, params, weight, enabled, conditions)
+		 VALUES ('秀才の幸運', '勉強のご褒美に10円拾いました。', true, 10, 10, '{}', 100, true,
+		         '[{"pred":"param_gte","param":"kokugo","value":9999}]')`); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+	roll := func(key string) string {
+		b, _ := json.Marshal(map[string]any{"idempotency_key": key})
+		resp, err := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(alice.ID, 10)+"/events/roll", "application/json", bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var r struct {
+			Event *struct {
+				Name string `json:"name"`
+			} `json:"event"`
+		}
+		json.NewDecoder(resp.Body).Decode(&r)
+		if r.Event != nil {
+			return r.Event.Name
+		}
+		return ""
+	}
+	// 条件未達(kokugo初期値)では絶対に出ない。
+	for i := 0; i < 120; i++ {
+		if _, err := pool.Exec(ctx, `DELETE FROM player_facility_cooldowns WHERE player_id=$1 AND facility='event_roll'`, alice.ID); err != nil {
+			t.Fatal(err)
+		}
+		if roll(fmt.Sprintf("cc-a%d", i)) == "秀才の幸運" {
+			t.Fatal("gated event fired for unqualified player")
+		}
+	}
+	// 条件を満たすと出る。
+	if _, err := pool.Exec(ctx, `UPDATE player_status SET kokugo=9999 WHERE player_id=$1`, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	fired := false
+	for i := 0; i < 300 && !fired; i++ {
+		if _, err := pool.Exec(ctx, `DELETE FROM player_facility_cooldowns WHERE player_id=$1 AND facility='event_roll'`, alice.ID); err != nil {
+			t.Fatal(err)
+		}
+		fired = roll(fmt.Sprintf("cc-b%d", i)) == "秀才の幸運"
+	}
+	if !fired {
+		t.Error("gated event never fired for qualified player in 300 rolls")
+	}
+}
+
 // grantMoney credits a player via a balanced ledger tx (test setup helper).
 func grantMoney(t *testing.T, pool *pgxpool.Pool, playerID, amount int64) {
 	t.Helper()

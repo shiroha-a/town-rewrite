@@ -414,6 +414,15 @@ export interface FacilityPreset {
   dest: number;
 }
 
+// カスタムイベントの発生条件(すべて満たすプレイヤーにだけ発生)。
+export interface EventCond {
+  pred: string; // money_gte/money_lte/param_gte/param_lte/has_item/job_is
+  param?: string;
+  value?: number;
+  item_id?: number;
+  job?: string;
+}
+
 // カスタムイベント(管理画面): 組み込みのランダムイベントプールに合流する。
 // 金額は[money_min, money_max]の一様乱数、disease_setは病気指数の直接代入。
 export interface AdminEvent {
@@ -428,6 +437,7 @@ export interface AdminEvent {
   weight_g: number;
   weight: number;
   enabled: boolean;
+  conditions: EventCond[];
 }
 
 // 街移動の結果。徒歩/自転車の能力上昇、乗り物、事故、迷子などを含む。

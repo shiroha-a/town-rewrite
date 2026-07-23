@@ -20,6 +20,7 @@ import (
 	"github.com/shiroha-a/town/internal/casino"
 	"github.com/shiroha-a/town/internal/cleague"
 	"github.com/shiroha-a/town/internal/condition"
+	"github.com/shiroha-a/town/internal/content"
 	"github.com/shiroha-a/town/internal/effects"
 	"github.com/shiroha-a/town/internal/event"
 	"github.com/shiroha-a/town/internal/gametime"
@@ -2650,8 +2651,9 @@ func (s *Service) DoEventRoll(ctx context.Context, playerID int64, idempotencyKe
 			}
 		}
 
-		// 管理画面で追加されたカスタムイベントを組み込みプールに合流させる。
-		customs, err := s.loadCustomEvents(ctx, tx)
+		// 管理画面で追加されたカスタムイベントを組み込みプールに合流させる
+		// (条件付きイベントは条件を満たすプレイヤーにだけ候補になる)。
+		customs, err := s.loadCustomEvents(ctx, tx, playerID, state)
 		if err != nil {
 			return err
 		}
@@ -2668,25 +2670,118 @@ func (s *Service) DoEventRoll(ctx context.Context, playerID int64, idempotencyKe
 	return p, result, err
 }
 
-// loadCustomEvents reads the enabled admin-defined events for the roll pool.
-func (s *Service) loadCustomEvents(ctx context.Context, tx pgx.Tx) ([]event.Custom, error) {
+// loadCustomEvents reads the enabled admin-defined events for the roll pool and
+// filters them by their eligibility conditions (所持金/パラメータ/所持アイテム/職業)。
+func (s *Service) loadCustomEvents(ctx context.Context, tx pgx.Tx, playerID int64, state effects.State) ([]event.Custom, error) {
 	rows, err := tx.Query(ctx,
-		`SELECT name, message, good, money_min, money_max, params, disease_set, weight_g, weight
+		`SELECT name, message, good, money_min, money_max, params, disease_set, weight_g, weight, conditions
 		 FROM content_events WHERE enabled`)
 	if err != nil {
 		return nil, fmt.Errorf("load custom events: %w", err)
 	}
 	defer rows.Close()
-	var out []event.Custom
+	type candidate struct {
+		c     event.Custom
+		conds []content.EventCond
+	}
+	var cands []candidate
+	needItems := map[int64]bool{}
+	needJob := false
 	for rows.Next() {
-		var c event.Custom
-		if err := rows.Scan(&c.Name, &c.Message, &c.Good, &c.MoneyMin, &c.MoneyMax,
-			&c.Params, &c.DiseaseSet, &c.WeightG, &c.Weight); err != nil {
+		var cd candidate
+		if err := rows.Scan(&cd.c.Name, &cd.c.Message, &cd.c.Good, &cd.c.MoneyMin, &cd.c.MoneyMax,
+			&cd.c.Params, &cd.c.DiseaseSet, &cd.c.WeightG, &cd.c.Weight, &cd.conds); err != nil {
 			return nil, fmt.Errorf("scan custom event: %w", err)
 		}
-		out = append(out, c)
+		for _, cond := range cd.conds {
+			if cond.Pred == "has_item" {
+				needItems[cond.ItemID] = true
+			}
+			if cond.Pred == "job_is" {
+				needJob = true
+			}
+		}
+		cands = append(cands, cd)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	// 条件評価に必要な補助データ(所持アイテム/職業)をまとめて読む。
+	owned := map[int64]bool{}
+	if len(needItems) > 0 {
+		ids := make([]int64, 0, len(needItems))
+		for id := range needItems {
+			ids = append(ids, id)
+		}
+		irows, err := tx.Query(ctx,
+			`SELECT item_id FROM player_items WHERE player_id = $1 AND item_id = ANY($2) AND remaining_uses > 0`,
+			playerID, ids)
+		if err != nil {
+			return nil, fmt.Errorf("load owned items: %w", err)
+		}
+		for irows.Next() {
+			var id int64
+			if err := irows.Scan(&id); err != nil {
+				irows.Close()
+				return nil, err
+			}
+			owned[id] = true
+		}
+		irows.Close()
+		if err := irows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	job := ""
+	if needJob {
+		if err := tx.QueryRow(ctx,
+			`SELECT COALESCE(job, '') FROM player_status WHERE player_id = $1`, playerID).Scan(&job); err != nil {
+			return nil, fmt.Errorf("load job: %w", err)
+		}
+	}
+	var out []event.Custom
+	for _, cd := range cands {
+		if eventCondsPass(cd.conds, state, owned, job) {
+			out = append(out, cd.c)
+		}
+	}
+	return out, nil
+}
+
+// eventCondsPass reports whether every condition holds for the player.
+func eventCondsPass(conds []content.EventCond, state effects.State, owned map[int64]bool, job string) bool {
+	for _, c := range conds {
+		switch c.Pred {
+		case "money_gte":
+			if state.Money < c.Value {
+				return false
+			}
+		case "money_lte":
+			if state.Money > c.Value {
+				return false
+			}
+		case "param_gte":
+			if int64(state.Params[c.Param].Value) < c.Value {
+				return false
+			}
+		case "param_lte":
+			if int64(state.Params[c.Param].Value) > c.Value {
+				return false
+			}
+		case "has_item":
+			if !owned[c.ItemID] {
+				return false
+			}
+		case "job_is":
+			if job != c.Job {
+				return false
+			}
+		default:
+			return false // 未知の条件は安全側に倒して発生させない
+		}
+	}
+	return true
 }
 
 // applyEventOutcome persists one event's effects: money via the ledger, params
