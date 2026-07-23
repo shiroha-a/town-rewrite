@@ -2,6 +2,8 @@
 import { ref, computed, onMounted } from 'vue';
 import { api, type Player, type ShopItem } from '../api';
 import { PARAM_COLUMNS } from '../params';
+import Toast from './Toast.vue';
+import { useToast, buildEffectLines } from '../toast';
 
 const props = defineProps<{ player: Player }>();
 const emit = defineEmits<{ update: [player: Player]; back: [] }>();
@@ -11,6 +13,7 @@ const items = ref<ShopItem[]>([]);
 const message = ref('');
 const kind = ref<'ok' | 'error'>('ok');
 const busy = ref(false);
+const { toast, showToast, closeToast } = useToast();
 
 onMounted(async () => {
   try {
@@ -37,14 +40,24 @@ const grouped = computed(() => {
 async function buy(it: ShopItem) {
   busy.value = true;
   message.value = '';
+  const before = props.player;
   try {
-    emit('update', await api.buy(props.player.id, it.id));
+    const after = await api.buy(props.player.id, it.id);
+    emit('update', after);
     items.value = await api.shopItems(); // 購入後の在庫数を反映する
-    message.value = `●${it.name}を購入しました。`;
-    kind.value = 'ok';
+    showToast({
+      variant: 'item',
+      title: `${it.name}を購入した`,
+      lines: buildEffectLines(before, after),
+      icon: 'item',
+    });
   } catch (e) {
-    message.value = e instanceof Error ? e.message : String(e);
-    kind.value = 'error';
+    showToast({
+      variant: 'error',
+      title: '購入できませんでした',
+      lines: [e instanceof Error ? e.message : String(e)],
+      icon: 'item',
+    });
   } finally {
     busy.value = false;
   }
@@ -53,6 +66,7 @@ async function buy(it: ShopItem) {
 
 <template>
   <div class="facility-page depart-page">
+    <Toast :toast="toast" @close="closeToast" />
     <button class="btn back" @click="emit('back')">街に戻る</button>
 
     <div class="depart-header">
