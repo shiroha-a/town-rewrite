@@ -15,9 +15,9 @@ const busy = ref(false);
 const { toast, showToast, closeToast } = useToast();
 
 const view = ref<CompanyView | null>(null);
-const eduParam = ref<Record<number, string>>({});
-const eduAmount = ref<Record<number, number>>({});
-const eduPay = ref<Record<number, string>>({});
+// 教育の設定は上部で1回だけ選び、社員のパラメータセルをクリックして上げる。
+const eduAmount = ref(10);
+const eduPay = ref('cash');
 
 const PARAMS: { key: string; label: string }[] = [
   { key: 'kokugo', label: '国語' },
@@ -53,13 +53,12 @@ function canEduNow(canEduAt: string): boolean {
 
 async function reload() {
   view.value = await api.companyView(props.player.id, props.houseId);
-  for (const st of view.value.staff) {
-    if (!eduParam.value[st.id]) eduParam.value[st.id] = 'kokugo';
-    if (!eduAmount.value[st.id]) eduAmount.value[st.id] = 10;
-    if (!eduPay.value[st.id]) eduPay.value[st.id] = 'cash';
-  }
 }
 onMounted(reload);
+
+// 教育プレビュー: 社員に入る量と養育費。
+const eduGain = computed(() => Math.floor(eduAmount.value / (view.value?.edu_efficiency ?? 10)));
+const eduFee = computed(() => eduGain.value * (view.value?.edu_fee_point ?? 20000));
 
 async function addStaff() {
   busy.value = true;
@@ -75,16 +74,17 @@ async function addStaff() {
   }
 }
 
-async function educate(staffId: number) {
+async function educate(staffId: number, paramKey: string) {
+  if (busy.value) return;
   busy.value = true;
   try {
     const after = await api.companyEducate(
       props.player.id,
       props.houseId,
       staffId,
-      eduParam.value[staffId] ?? 'kokugo',
-      eduAmount.value[staffId] ?? 10,
-      eduPay.value[staffId] ?? 'cash',
+      paramKey,
+      eduAmount.value,
+      eduPay.value,
     );
     emit('update', after);
     await reload();
@@ -229,46 +229,67 @@ const doSeizou = async () => {
     </div>
 
     <template v-if="view.kind === 1 || section === 'edu'">
+    <!-- 教育設定バー: 上げる量と支払い方法をここで選び、社員のパラメータをクリックして上げる。 -->
+    <div v-if="canEdu" class="edu-bar">
+      <span class="edu-bar-label">上げる量</span>
+      <select v-model.number="eduAmount">
+        <option v-for="a in AMOUNTS" :key="a" :value="a">{{ a }}</option>
+      </select>
+      <span class="divide">÷{{ view.edu_efficiency }}</span>
+      <span class="edu-preview">→ 社員に <b>+{{ eduGain }}</b>・費用 <b>{{ yen(eduFee) }}円</b></span>
+      <span class="edu-bar-label">支払い</span>
+      <select v-model="eduPay">
+        <option value="cash">現金</option>
+        <option value="credit" :disabled="!hasCreditCard">クレジット</option>
+      </select>
+      <span class="edu-hint">社員の上げたいパラメータをクリックすると教育します</span>
+    </div>
+
     <!-- 自分のパラメータ(教育できる人にだけ表示) -->
     <template v-if="canEdu">
-      <div class="param-caption">●自分のパラメータ</div>
+      <div class="param-caption">●自分のパラメータ（教育すると選んだ量だけ減ります）</div>
       <div class="param-grid">
         <div v-for="p in PARAMS" :key="p.key" class="param-cell">
           <span class="pname">{{ p.label }}</span>
-          <span class="pval" :class="{ zero: !(myParams[p.key] ?? 0) }">{{ yen(myParams[p.key] ?? 0) }}</span>
+          <span class="pval" :class="{ zero: !(myParams[p.key] ?? 0), lack: (myParams[p.key] ?? 0) < eduAmount }">{{ yen(myParams[p.key] ?? 0) }}</span>
         </div>
       </div>
     </template>
 
     <!-- 社員一覧 -->
     <div v-for="st in view.staff" :key="st.id" class="staff">
-      <div v-if="canEdu" class="edu-log">最後の教育：{{ st.edu_log || '（まだ教育していません）' }}</div>
-      <div v-if="canEdu" class="edu-form">
-        <select v-model="eduParam[st.id]">
-          <option v-for="p in PARAMS" :key="p.key" :value="p.key">{{ p.label }}パラメータを</option>
-        </select>
-        <select v-model.number="eduAmount[st.id]">
-          <option v-for="a in AMOUNTS" :key="a" :value="a">{{ a }}</option>
-        </select>
-        <span class="divide">÷{{ view.edu_efficiency }}</span>
-        支払い
-        <select v-model="eduPay[st.id]">
-          <option value="cash">現金</option>
-          <option value="credit" :disabled="!hasCreditCard">クレジット</option>
-        </select>
-        <button class="btn" :disabled="busy || !canEduNow(st.can_edu_at)" @click="educate(st.id)">あげる</button>
-        <span v-if="!canEduNow(st.can_edu_at)" class="wait">まだできません</span>
+      <div v-if="canEdu" class="edu-log">
+        最後の教育：{{ st.edu_log || '（まだ教育していません）' }}
+        <span v-if="!canEduNow(st.can_edu_at)" class="wait">（次の教育まで待ち時間があります）</span>
       </div>
       <div class="staff-sum">
         <span class="sum-label">総合能力値：</span>{{ yen(st.sougou) }}
         <span class="staff-job">{{ st.job }}</span>
         <span class="staff-income">仕送り {{ yen(st.income) }}円/日</span>
+        <button
+          v-if="canEdu && view.kind === 2"
+          class="btn mini-btn"
+          :disabled="busy || !canEduNow(st.can_edu_at)"
+          @click="educate(st.id, 'syoku')"
+        >食材購入</button>
       </div>
       <div class="param-grid staff-grid">
-        <div v-for="p in PARAMS" :key="p.key" class="param-cell">
-          <span class="pname">{{ p.label }}</span>
-          <span class="pval" :class="{ zero: !(st.params[p.key] ?? 0) }">{{ yen(st.params[p.key] ?? 0) }}</span>
-        </div>
+        <template v-for="p in PARAMS" :key="p.key">
+          <button
+            v-if="canEdu"
+            class="param-cell cell-btn"
+            :disabled="busy || !canEduNow(st.can_edu_at) || (myParams[p.key] ?? 0) < eduAmount"
+            :title="`${p.label}を+${eduGain}（自分の${p.label}-${eduAmount}・費用${yen(eduFee)}円）`"
+            @click="educate(st.id, p.key)"
+          >
+            <span class="pname">{{ p.label }}</span>
+            <span class="pval" :class="{ zero: !(st.params[p.key] ?? 0) }">{{ yen(st.params[p.key] ?? 0) }}</span>
+          </button>
+          <div v-else class="param-cell">
+            <span class="pname">{{ p.label }}</span>
+            <span class="pval" :class="{ zero: !(st.params[p.key] ?? 0) }">{{ yen(st.params[p.key] ?? 0) }}</span>
+          </div>
+        </template>
       </div>
     </div>
     <div v-if="view.staff.length === 0" class="empty">まだ社員がいません。</div>
@@ -557,6 +578,10 @@ const doSeizou = async () => {
   color: #bbb;
   font-weight: normal;
 }
+/* 自分のパラメータが選択量に足りないセル */
+.pval.lack {
+  color: #c88;
+}
 @media (max-width: 640px) {
   .param-grid {
     grid-template-columns: repeat(4, 1fr);
@@ -572,15 +597,28 @@ const doSeizou = async () => {
   border: 1px solid #ccc;
   border-bottom: none;
 }
-.edu-form {
+.edu-bar {
+  margin-top: 8px;
   background: #dddddd;
+  border: 1px solid #bbb;
   padding: 6px 8px;
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  border: 1px solid #ccc;
   font-size: 12px;
+}
+.edu-bar-label {
+  font-weight: bold;
+  color: #445;
+}
+.edu-preview {
+  color: #333;
+}
+.edu-hint {
+  color: #666;
+  font-size: 11px;
+  margin-left: auto;
 }
 .divide {
   color: #ff0000;
@@ -589,6 +627,25 @@ const doSeizou = async () => {
 .wait {
   color: #c44;
   font-size: 11px;
+}
+/* クリックで教育するパラメータセル */
+.cell-btn {
+  border: 0;
+  padding: 0;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+}
+.cell-btn:hover:not(:disabled) .pval {
+  background: #ffe9b8;
+  color: #663300;
+}
+.cell-btn:hover:not(:disabled) .pname {
+  background: #cc7a00;
+}
+.cell-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 .staff-sum {
   margin-top: 4px;
