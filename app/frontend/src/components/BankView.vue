@@ -37,12 +37,16 @@ const doDeposit = () => run('預け入れ', () => api.deposit(props.player.id, d
 const doWithdraw = () => run('引き出し', () => api.withdraw(props.player.id, withdrawAmt.value));
 
 // 入出金明細。ボタン押下で取得する。null=未取得、[]=取引なし。
+// 普通口座とスーパー定期は別々の通帳として表示する。
 const statement = ref<StatementEntry[] | null>(null);
-async function loadStatement() {
+const superStatement = ref<StatementEntry[] | null>(null);
+async function loadStatement(account: 'normal' | 'super' = 'normal') {
   busy.value = true;
   message.value = '';
   try {
-    statement.value = await api.bankStatement(props.player.id);
+    const entries = await api.bankStatement(props.player.id, account);
+    if (account === 'super') superStatement.value = entries;
+    else statement.value = entries;
   } catch (e) {
     message.value = e instanceof Error ? e.message : String(e);
     kind.value = 'error';
@@ -62,15 +66,17 @@ const transferAmt = ref<number>(0);
 const doTransfer = () =>
   run('振り込み', async () => {
     const p = await api.transfer(props.player.id, transferName.value, transferAmt.value);
-    if (statement.value) statement.value = await api.bankStatement(props.player.id);
+    await reloadStatement();
     return p;
   });
 
 // スーパー定期(100万円単位で入力)。
 const superDepositMan = ref<number>(0);
 const superCancelMan = ref<number>(0);
+// 表示中の明細だけ取り直す(未取得のものは開かない)。
 const reloadStatement = async () => {
   if (statement.value) statement.value = await api.bankStatement(props.player.id);
+  if (superStatement.value) superStatement.value = await api.bankStatement(props.player.id, 'super');
 };
 const doSuperDeposit = () =>
   run('スーパー定期の預け入れ', async () => {
@@ -147,8 +153,10 @@ const doLoanRepay = () =>
         </div>
 
         <h3 class="sec">■入出金明細</h3>
-        <p class="note">※普通預金の入出金明細を見ることができます(最新30件)。</p>
-        <button class="btn" :disabled="busy" data-test="statement" @click="loadStatement">入出金明細を見る</button>
+        <p class="note">※普通口座の入出金明細を見ることができます(最新30件)。</p>
+        <button class="btn" :disabled="busy" data-test="statement" @click="loadStatement('normal')">
+          入出金明細を見る
+        </button>
         <table v-if="statement" class="statement">
           <thead>
             <tr><th>年月日</th><th>お取り引き</th><th class="num">金額</th><th class="num">残高</th></tr>
@@ -203,6 +211,30 @@ const doLoanRepay = () =>
           <button class="btn" :disabled="busy" data-test="super-cancel" @click="doSuperCancel(false)">部分解約</button>
           <button class="btn" :disabled="busy" data-test="super-cancel-all" @click="doSuperCancel(true)">全額解約</button>
         </div>
+
+        <h3 class="sec">■スーパー定期明細</h3>
+        <p class="note">※スーパー定期の預入・解約・利息の明細を見ることができます(最新30件)。</p>
+        <button class="btn" :disabled="busy" data-test="super-statement" @click="loadStatement('super')">
+          スーパー定期明細を見る
+        </button>
+        <table v-if="superStatement" class="statement">
+          <thead>
+            <tr><th>年月日</th><th>お取り引き</th><th class="num">金額</th><th class="num">残高</th></tr>
+          </thead>
+          <tbody>
+            <tr v-if="!superStatement.length">
+              <td colspan="4" class="muted">まだ取引がありません。</td>
+            </tr>
+            <tr v-for="(s, i) in superStatement" :key="i">
+              <td>{{ fmtDate(s.at) }}</td>
+              <td>{{ s.label }}</td>
+              <td class="num" :class="s.amount >= 0 ? 'plus' : 'minus'">
+                {{ s.amount >= 0 ? '+' : '' }}{{ yen(s.amount) }}
+              </td>
+              <td class="num">{{ yen(s.balance) }}</td>
+            </tr>
+          </tbody>
+        </table>
 
         <h3 class="sec">■ローン</h3>
         <p class="note">※当銀行へのご利用度や収入に応じてお金を借りることができます。</p>

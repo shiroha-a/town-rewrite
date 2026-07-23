@@ -172,7 +172,7 @@ export interface WorkResult {
 }
 export type WorkResponse = Player & { work_result: WorkResult };
 
-// 普通口座の入出金明細1行。
+// 口座の入出金明細1行(普通/スーパー定期は別々に取得する)。
 export interface StatementEntry {
   at: string;
   label: string;
@@ -1080,7 +1080,11 @@ export const api = {
       amount,
       idempotency_key: newIdempotencyKey(),
     }),
-  bankStatement: (id: number) => request<StatementEntry[]>('GET', `/players/${id}/bank/statement`),
+  bankStatement: (id: number, account: 'normal' | 'super' = 'normal') =>
+    request<StatementEntry[]>(
+      'GET',
+      `/players/${id}/bank/statement${account === 'super' ? '?account=super' : ''}`,
+    ),
   transfer: (id: number, toName: string, amount: number) =>
     request<Player>('POST', `/players/${id}/bank/transfer`, {
       to_name: toName,

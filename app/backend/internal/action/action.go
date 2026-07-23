@@ -1690,18 +1690,28 @@ const bankStatementLimit = 30
 // BankStatement returns the player's recent savings-account movements, newest
 // first, each labelled from the ledger reason (預け入れ/引き出し/利息/おさい銭…).
 func (s *Service) BankStatement(ctx context.Context, playerID int64) ([]StatementEntry, error) {
+	return s.bankStatementFor(ctx, ledger.SavingsAccount(playerID))
+}
+
+// BankStatementSuper returns the recent passbook lines of the スーパー定期口座.
+func (s *Service) BankStatementSuper(ctx context.Context, playerID int64) ([]StatementEntry, error) {
+	return s.bankStatementFor(ctx, ledger.SuperSavingsAccount(playerID))
+}
+
+// bankStatementFor lists one account's passbook (口座ごとに別の明細)。
+func (s *Service) bankStatementFor(ctx context.Context, account string) ([]StatementEntry, error) {
 	// running=そのentry時点の口座残高(累積和)。全履歴で累積してから最新N件を返す。
 	rows, err := s.pool.Query(ctx,
 		`SELECT created_at, reason, delta, running
 		 FROM (
 		   SELECT e.id, t.created_at, t.reason, e.delta,
-		          SUM(e.delta) OVER (PARTITION BY e.account ORDER BY e.id) AS running
+		          SUM(e.delta) OVER (ORDER BY e.id) AS running
 		   FROM ledger_entry e
 		   JOIN ledger_tx t ON t.id = e.tx_id
-		   WHERE e.account IN ($1, $2)
+		   WHERE e.account = $1
 		 ) x
 		 ORDER BY id DESC
-		 LIMIT $3`, ledger.SavingsAccount(playerID), ledger.SuperSavingsAccount(playerID), bankStatementLimit)
+		 LIMIT $2`, account, bankStatementLimit)
 	if err != nil {
 		return nil, fmt.Errorf("query statement: %w", err)
 	}
@@ -1736,8 +1746,15 @@ func statementLabel(reason string, amount int64) string {
 		return "おさい銭"
 	case reason == "shiire":
 		return "仕入れ"
-	case reason == "house_shop_buy":
+	// 家の店・闇市の代金は売り手の普通口座に入る(買い手側は現金なので通帳には出ない)。
+	case reason == "house_shop_buy" || reason == "shop_buy":
 		return "売上"
+	case reason == "yami_buy":
+		return "売上(闇市)"
+	case reason == "build_house":
+		return "家の建築"
+	case reason == "rebuild_house":
+		return "家の建て替え"
 	case reason == "transfer":
 		if amount < 0 {
 			return "振込(送金)"
