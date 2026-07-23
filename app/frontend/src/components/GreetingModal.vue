@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
-import { api, type Player, type Greeting } from '../api';
+import { api, type Player } from '../api';
 
 // あいさつのSNS風投稿モーダル(旧ChatViewの専用ページを置き換え)。
-// 上部が投稿フォーム、下部が最新のタイムライン。投稿すると報酬
-// (ランダム+ジャンケンで倍/半)がもらえる。
+// 投稿フォームのみのコンパクトなモーダル。最新の投稿は街トップの
+// チャット窓に表示される。投稿すると報酬(ランダム+ジャンケンで倍/半)がもらえる。
 const props = defineProps<{ player: Player }>();
 const emit = defineEmits<{ update: [player: Player]; close: []; posted: [] }>();
 
@@ -29,7 +29,6 @@ const JANKEN = [
 ];
 const MAX_LEN = 60;
 
-const list = ref<Greeting[]>([]);
 const category = ref('あいさつ');
 const body = ref('');
 const color = ref('#333333');
@@ -40,15 +39,6 @@ const busy = ref(false);
 
 const yen = (n: number) => n.toLocaleString('ja-JP');
 const remain = computed(() => MAX_LEN - body.value.length);
-
-async function load() {
-  try {
-    list.value = await api.greetings(30);
-  } catch (e) {
-    fail(e);
-  }
-}
-onMounted(load);
 
 function fail(e: unknown) {
   message.value = e instanceof Error ? e.message : String(e);
@@ -76,21 +66,6 @@ async function post() {
     message.value = parts.join(' ');
     kind.value = 'ok';
     body.value = '';
-    emit('posted');
-    await load();
-  } catch (e) {
-    fail(e);
-  } finally {
-    busy.value = false;
-  }
-}
-
-async function del(g: Greeting) {
-  if (!window.confirm('この発言を削除しますか?')) return;
-  busy.value = true;
-  try {
-    await api.adminDeleteGreeting(props.player.id, g.id);
-    await load();
     emit('posted');
   } catch (e) {
     fail(e);
@@ -146,21 +121,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKey));
         </div>
         <div v-if="message" :class="['gm-message', kind]">{{ message }}</div>
       </div>
-
-      <!-- タイムライン -->
-      <div class="gm-feed">
-        <div v-if="!list.length" class="gm-muted">まだ投稿がありません。</div>
-        <div v-for="g in list" :key="g.id" class="gm-post-item">
-          <div class="gm-post-meta">
-            <span class="gm-name">{{ g.user_name }}</span>
-            <span class="gm-cat">{{ g.category }}</span>
-            <span v-if="g.janken" class="gm-janken">ジャンケン{{ g.janken }}</span>
-            <span class="gm-date">{{ g.posted_at }}</span>
-            <button v-if="isAdmin" class="gm-del" :disabled="busy" @click="del(g)">削除</button>
-          </div>
-          <div class="gm-body" :style="{ color: g.color }">{{ g.body }}</div>
-        </div>
-      </div>
     </div>
   </div>
 </template>
@@ -213,7 +173,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKey));
 }
 .gm-compose {
   padding: 10px 12px;
-  border-bottom: 1px solid #eee;
 }
 .gm-input {
   width: 100%;
@@ -281,56 +240,5 @@ onUnmounted(() => window.removeEventListener('keydown', onKey));
 .gm-message.error {
   background: #fbe9e9;
   color: #b33;
-}
-.gm-feed {
-  overflow-y: auto;
-  padding: 4px 12px 10px;
-}
-.gm-post-item {
-  padding: 8px 0;
-  border-bottom: 1px solid #f0ede2;
-}
-.gm-post-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-}
-.gm-name {
-  color: #333399;
-  font-weight: bold;
-  font-size: 12px;
-}
-.gm-cat {
-  background: #f0ead8;
-  color: #8a7a55;
-  border-radius: 8px;
-  padding: 0 7px;
-}
-.gm-janken {
-  color: #cc6600;
-}
-.gm-date {
-  color: #bbb;
-  margin-left: auto;
-}
-.gm-del {
-  border: 1px solid #c99;
-  background: #fff;
-  color: #b33;
-  font-size: 10px;
-  border-radius: 3px;
-  cursor: pointer;
-}
-.gm-body {
-  margin-top: 2px;
-  font-size: 13px;
-  line-height: 1.6;
-  word-break: break-word;
-}
-.gm-muted {
-  color: #999;
-  font-size: 12px;
-  padding: 8px 0;
 }
 </style>
