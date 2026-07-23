@@ -350,7 +350,7 @@ const commands = computed(() => {
 });
 // 画面上部のトースト(iOS通知バナー風。上からスライドインし数秒で自動的に消える)。
 // 仕事結果やランダムイベントの発生を通知する。
-type ToastVariant = 'work' | 'event-good' | 'event-bad' | 'error';
+type ToastVariant = 'work' | 'event-good' | 'event-bad' | 'error' | 'item';
 interface Toast {
   variant: ToastVariant;
   title: string;
@@ -423,9 +423,15 @@ function clickCommand(key: string) {
 
 // あいさつのSNS風投稿モーダル(コマンドバーの「あいさつ」から開く)。
 const aisatuOpen = ref(false);
-// 投稿後は街トップのチャット窓(最新6件)を更新し、報酬をステータスへ反映する
+// 投稿後: 結果(報酬/ジャンケン/罰金)をトーストで見せ、チャット窓を更新する
 // (SSEが生きていれば二重更新になるだけで無害。切断時のフォールバック)。
-async function onAisatuPosted() {
+async function onAisatuPosted(lines: string[], good: boolean) {
+  showToast({
+    variant: good ? 'item' : 'event-bad',
+    title: '投稿しました',
+    lines,
+    icon: 'aisatu',
+  });
   try {
     greetings.value = await api.greetings(30);
   } catch {

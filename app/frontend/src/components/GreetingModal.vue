@@ -6,7 +6,12 @@ import { api, type Player } from '../api';
 // 投稿フォームのみのコンパクトなモーダル。最新の投稿は街トップの
 // チャット窓に表示される。投稿すると報酬(ランダム+ジャンケンで倍/半)がもらえる。
 const props = defineProps<{ player: Player }>();
-const emit = defineEmits<{ update: [player: Player]; close: []; posted: [] }>();
+const emit = defineEmits<{
+  update: [player: Player];
+  close: [];
+  // 投稿成功: 結果メッセージ(報酬/ジャンケン/罰金)を親のトーストで表示する。
+  posted: [lines: string[], good: boolean];
+}>();
 
 const isAdmin = computed(() => props.player.roles.includes('admin'));
 
@@ -57,16 +62,16 @@ async function post() {
     const res = await api.postGreeting(props.player.id, category.value, body.value, color.value, janken.value);
     emit('update', res.player);
     const r = res.result;
-    const parts: string[] = ['投稿しました。'];
-    if (r.janken) parts.push(`ジャンケン${r.janken}(相手は${r.janken_pc})`);
-    if (r.jackpot) parts.push('大当たり！');
-    if (r.reward > 0) parts.push(`${yen(r.reward)}円もらいました。`);
-    else if (r.reward < 0) parts.push(`${yen(-r.reward)}円払いました。`);
-    if (r.fine) parts.push('NGワードで罰金30,000円!');
-    message.value = parts.join(' ');
-    kind.value = 'ok';
+    const lines: string[] = [];
+    if (r.janken) lines.push(`ジャンケン${r.janken}(相手は${r.janken_pc})`);
+    if (r.jackpot) lines.push('大当たり！');
+    if (r.reward > 0) lines.push(`${yen(r.reward)}円もらいました。`);
+    else if (r.reward < 0) lines.push(`${yen(-r.reward)}円払いました。`);
+    if (r.fine) lines.push('NGワードで罰金30,000円!');
     body.value = '';
-    emit('posted');
+    // 投稿できたらフォームは閉じ、結果は親(街トップ)のトーストで見せる。
+    emit('posted', lines, !r.fine && r.reward >= 0);
+    emit('close');
   } catch (e) {
     fail(e);
   } finally {
