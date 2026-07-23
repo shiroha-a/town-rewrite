@@ -311,19 +311,9 @@ body {
 }
 /* 街トップのチャット窓(あいさつの最新表示) */
 .chat-head {
-  display: block;
-  width: 100%;
-  text-align: left;
-  border: 0;
-  background: transparent;
   color: #ff6600;
   font-size: 12px;
   margin-bottom: 2px;
-  cursor: pointer;
-  padding: 0;
-}
-.chat-head:hover {
-  text-decoration: underline;
 }
 .chat-feed {
   background: #fff;

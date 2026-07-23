@@ -410,12 +410,8 @@ function clickCommand(key: string) {
   else emit('navigate', key);
 }
 
-// あいさつのSNS風投稿モーダル。
+// あいさつのSNS風投稿モーダル(コマンドバーの「あいさつ」から開く)。
 const aisatuOpen = ref(false);
-function openAisatu() {
-  if (moving.value) return;
-  aisatuOpen.value = true;
-}
 // 投稿後は街トップのチャット窓(最新6件)を更新し、報酬をステータスへ反映する
 // (SSEが生きていれば二重更新になるだけで無害。切断時のフォールバック)。
 async function onAisatuPosted() {
@@ -664,7 +660,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
         </template>
         <template v-else>株価情報を取得中…</template>
       </div>
-      <button class="chat-head" @click="openAisatu">●チャット(あいさつ)</button>
+      <div class="chat-head">●チャット(あいさつ)</div>
       <div v-if="greetings.length" class="chat-feed">
         <!-- 管理人からのお知らせ(最新2件) -->
         <div v-if="adminGreets.length" class="chat-sec admin-sec">
