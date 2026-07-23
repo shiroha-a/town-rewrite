@@ -23,6 +23,29 @@ export const PARAM_LABEL: Record<string, string> = {
   omoshirosa: '面',
 };
 
+// パラメータの正式名称(管理画面の編集フォームなど、省略しない表示で使う)。
+export const PARAM_FULL: Record<string, string> = {
+  energy: '身体パワー',
+  nou_energy: '頭脳パワー',
+  satiety: '満腹度',
+  kokugo: '国語',
+  suugaku: '数学',
+  rika: '理科',
+  syakai: '社会',
+  eigo: '英語',
+  ongaku: '音楽',
+  bijutsu: '美術',
+  looks: 'ルックス',
+  tairyoku: '体力',
+  kenkou: '健康',
+  speed: 'スピード',
+  power: 'パワー',
+  wanryoku: '腕力',
+  kyakuryoku: '脚力',
+  love: 'LOVE',
+  omoshirosa: '面白さ',
+};
+
 // デパート等の横並び表で使う列順(パワー2種 + 詳細16種)。
 export const PARAM_ORDER: string[] = [
   'energy',

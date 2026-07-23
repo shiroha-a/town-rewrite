@@ -19,6 +19,7 @@ import {
   type PlotCell,
   type Town,
 } from '../api';
+import { PARAM_FULL } from '../params';
 
 const props = defineProps<{ player: Player }>();
 const emit = defineEmits<{ back: [] }>();
@@ -518,7 +519,7 @@ const adminEvents = ref<import('../api').AdminEvent[]>([]);
 const EV_PARAM_OPTIONS = [
   'kokugo', 'suugaku', 'rika', 'syakai', 'eigo', 'ongaku', 'bijutsu', 'looks',
   'tairyoku', 'kenkou', 'speed', 'power', 'wanryoku', 'kyakuryoku', 'love', 'omoshirosa',
-  'energy', 'nou_energy',
+  'energy', 'nou_energy', 'satiety',
 ];
 const EV_DISEASES: { label: string; value: number | null }[] = [
   { label: 'なし', value: null },
@@ -976,7 +977,7 @@ async function deleteEdit() {
                     <option value="add_money">お金</option>
                   </select>
                   <select v-if="op.op === 'add_param'" v-model="op.param">
-                    <option v-for="p in PARAM_OPTIONS" :key="p" :value="p">{{ p }}</option>
+                    <option v-for="p in PARAM_OPTIONS" :key="p" :value="p">{{ PARAM_FULL[p] ?? p }}</option>
                   </select>
                   <input type="number" v-model.number="op.amount" />
                   <button class="btn mini" @click="item.effect.splice(i, 1)">×</button>
@@ -1035,7 +1036,7 @@ async function deleteEdit() {
                 <div class="ops-head">就くための必要条件(以上)</div>
                 <div v-for="(req, i) in job.requirements" :key="i" class="op-row">
                   <select v-model="req.param">
-                    <option v-for="p in PARAM_OPTIONS" :key="p" :value="p">{{ p }}</option>
+                    <option v-for="p in PARAM_OPTIONS" :key="p" :value="p">{{ PARAM_FULL[p] ?? p }}</option>
                   </select>
                   <span class="ge">≧</span>
                   <input type="number" v-model.number="req.value" />
@@ -1051,7 +1052,7 @@ async function deleteEdit() {
                     <option value="add_money">お金</option>
                   </select>
                   <select v-if="op.op === 'add_param'" v-model="op.param">
-                    <option v-for="p in PARAM_OPTIONS" :key="p" :value="p">{{ p }}</option>
+                    <option v-for="p in PARAM_OPTIONS" :key="p" :value="p">{{ PARAM_FULL[p] ?? p }}</option>
                   </select>
                   <input type="number" v-model.number="op.amount" />
                   <button class="btn mini" @click="job.effect.splice(i, 1)">×</button>
@@ -1101,7 +1102,7 @@ async function deleteEdit() {
                 <div class="ops-head">パラメータ増減</div>
                 <div v-for="(r, i) in evParamRows" :key="i" class="op-row">
                   <select v-model="r.key">
-                    <option v-for="p in EV_PARAM_OPTIONS" :key="p" :value="p">{{ p }}</option>
+                    <option v-for="p in EV_PARAM_OPTIONS" :key="p" :value="p">{{ PARAM_FULL[p] ?? p }}</option>
                   </select>
                   <input type="number" v-model.number="r.value" />
                   <button class="btn mini" @click="evParamRows.splice(i, 1)">×</button>
@@ -1115,7 +1116,7 @@ async function deleteEdit() {
                     <option v-for="p in EV_COND_PREDS" :key="p.value" :value="p.value">{{ p.label }}</option>
                   </select>
                   <select v-if="c.pred === 'param_gte' || c.pred === 'param_lte'" v-model="c.param">
-                    <option v-for="p in EV_PARAM_OPTIONS" :key="p" :value="p">{{ p }}</option>
+                    <option v-for="p in EV_PARAM_OPTIONS" :key="p" :value="p">{{ PARAM_FULL[p] ?? p }}</option>
                   </select>
                   <input
                     v-if="c.pred !== 'has_item' && c.pred !== 'job_is'"
@@ -1535,7 +1536,7 @@ async function deleteEdit() {
               <option value="add_money">お金</option>
             </select>
             <select v-if="op.op === 'add_param'" v-model="op.param">
-              <option v-for="p in PARAM_OPTIONS" :key="p" :value="p">{{ p }}</option>
+              <option v-for="p in PARAM_OPTIONS" :key="p" :value="p">{{ PARAM_FULL[p] ?? p }}</option>
             </select>
             <input type="number" v-model.number="op.amount" />
             <button class="btn mini" @click="editing.effect.splice(i, 1)">×</button>
@@ -1570,7 +1571,7 @@ async function deleteEdit() {
           <div class="ops-head">就くための必要条件(以上)</div>
           <div v-for="(req, i) in editingJob.requirements" :key="i" class="op-row">
             <select v-model="req.param">
-              <option v-for="p in PARAM_OPTIONS" :key="p" :value="p">{{ p }}</option>
+              <option v-for="p in PARAM_OPTIONS" :key="p" :value="p">{{ PARAM_FULL[p] ?? p }}</option>
             </select>
             <span class="ge">≧</span>
             <input type="number" v-model.number="req.value" />
@@ -1586,7 +1587,7 @@ async function deleteEdit() {
               <option value="add_money">お金</option>
             </select>
             <select v-if="op.op === 'add_param'" v-model="op.param">
-              <option v-for="p in PARAM_OPTIONS" :key="p" :value="p">{{ p }}</option>
+              <option v-for="p in PARAM_OPTIONS" :key="p" :value="p">{{ PARAM_FULL[p] ?? p }}</option>
             </select>
             <input type="number" v-model.number="op.amount" />
             <button class="btn mini" @click="editingJob.effect.splice(i, 1)">×</button>
