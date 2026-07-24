@@ -647,10 +647,13 @@ body {
   background-color: #e04040;
 }
 
-/* パラメータ一覧(右端) */
+/* パラメータ一覧(右端)。市松柄の上でも読めるよう白背景の箱にする。 */
 .params {
   width: 150px;
   flex: 0 0 auto;
+  background: #fff;
+  border: 1px solid #cfcfcf;
+  padding: 4px 6px;
 }
 .params .phead {
   text-align: center;
