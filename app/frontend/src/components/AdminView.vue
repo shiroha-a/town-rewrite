@@ -401,7 +401,8 @@ const mapLayer = ref<'facility' | 'asset'>('facility');
 // 背景アセットのパレット(組み込みのSVG地形素材)。
 const BG_PRESETS = [
   'kusa', 'tuti', 'sima', 'umi', 'oki',
-  'michi_yoko', 'michi_tate', 'michi_kado1', 'michi_kado2', 'michi_kado3', 'michi_kado4', 'michi_juji',
+  'michi_yoko', 'michi_tate', 'michi_kado1', 'michi_kado2', 'michi_kado3', 'michi_kado4',
+  'michi_t1', 'michi_t2', 'michi_t3', 'michi_t4', 'michi_juji',
   'tree1', 'tree2', 'tree3', 'tree4', 'yama',
 ];
 // アップロードされた画像名(背景に追加できる)。'u:'接頭辞でimg値に使う。
