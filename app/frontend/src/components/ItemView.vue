@@ -186,7 +186,8 @@ async function use(it: ItemStack) {
 <style scoped>
 .item-page {
   background-color: #ffcc66;
-  background-image: url(/img/command_bak.gif);
+  /* 旧command_bak.gifのCSS再現: 6px周期の1pxライン */
+  background-image: repeating-linear-gradient(180deg, transparent 0 2px, #ffcc33 2px 3px, transparent 3px 6px);
   padding: 6px;
   min-height: 80vh;
 }

@@ -9,8 +9,15 @@
 
 body {
   margin: 5px;
-  background-color: #e0ffff;
-  background-image: url(/img/wall029.gif);
+  background-color: #ffffff;
+  /* 旧wall029.gif(緑チェック柄)のCSS再現: 100px周期の帯2方向+帯内ストライプ。
+     半透明緑の重なりで元GIFと同じ3段階の濃淡になる。 */
+  --plaid: rgba(59, 197, 115, 0.25);
+  background-image:
+    repeating-linear-gradient(90deg, transparent 0 50px, var(--plaid) 50px 100px),
+    repeating-linear-gradient(90deg, transparent 0 56px, var(--plaid) 56px 61px, transparent 61px 89px, var(--plaid) 89px 94px, transparent 94px 100px),
+    repeating-linear-gradient(0deg, transparent 0 50px, var(--plaid) 50px 100px),
+    repeating-linear-gradient(0deg, transparent 0 56px, var(--plaid) 56px 61px, transparent 61px 89px, var(--plaid) 89px 94px, transparent 94px 100px);
   font-family: "MS PGothic", Osaka, "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
   font-size: 13px;
   color: #000;

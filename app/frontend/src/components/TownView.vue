@@ -614,7 +614,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
   </div>
 
   <div class="participant">
-    現在の総参加者({{ participants.length }}人)：★<template v-for="p in participants" :key="p.id"><img :src="`/img/img062.gif`" width="12" height="12" style="vertical-align: middle" alt="" /><span class="name" :class="{ me: p.id === player.id }">{{ p.display_name }}</span>★</template>
+    現在の総参加者({{ participants.length }}人)：★<template v-for="p in participants" :key="p.id"><img src="/img/svg/tree2.svg" width="12" height="12" style="vertical-align: middle" alt="" /><span class="name" :class="{ me: p.id === player.id }">{{ p.display_name }}</span>★</template>
   </div>
 
   <button v-if="unreadMail > 0" class="mail-notice" @click="nav('mail')">

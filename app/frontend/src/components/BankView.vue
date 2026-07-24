@@ -288,7 +288,8 @@ const doLoanRepay = () =>
 <style scoped>
 .bank-page {
   background-color: #999999;
-  background-image: url(/img/shop_bak.gif);
+  /* 旧shop_bak.gifのCSS再現: 6px周期の1pxライン */
+  background-image: repeating-linear-gradient(180deg, transparent 0 2px, #cccccc 2px 3px, transparent 3px 6px);
   padding: 6px;
   min-height: 80vh;
 }
