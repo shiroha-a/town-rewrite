@@ -646,7 +646,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
                 :title="`${r}${c}（空き地）クリックで建築`"
                 @click="clickAkichi(c, ri)"
               >
-                <img class="akichi-img" src="/img/akiti.gif" alt="空き地" />
+                <img class="akichi-img" src="/img/svg/akiti.svg" alt="空き地" />
               </button>
               <!-- 家。クリックでその家のコンテンツ(訪問パネル)を開く。 -->
               <button
@@ -656,7 +656,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
                 :title="houseTitle(houseAt(c, ri)!)"
                 @click="clickHouse(houseAt(c, ri)!)"
               >
-                <img :src="`/img/${houseAt(c, ri)!.exterior}.gif`" :alt="`${houseAt(c, ri)!.owner_name}さんの家`" />
+                <img :src="`/img/svg/${houseAt(c, ri)!.exterior}.svg`" :alt="`${houseAt(c, ri)!.owner_name}さんの家`" />
               </button>
               <button
                 v-if="facilityAt(c, ri)"
@@ -665,7 +665,7 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
                 :title="facilityAt(c, ri)!.alt"
                 @click="clickFacility(facilityAt(c, ri)!)"
               >
-                <img :src="`/img/${facilityAt(c, ri)!.img}.gif`" :alt="facilityAt(c, ri)!.alt" />
+                <img :src="`/img/svg/${facilityAt(c, ri)!.img}.svg`" :alt="facilityAt(c, ri)!.alt" />
               </button>
             </div>
           </template>

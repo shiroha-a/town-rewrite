@@ -1324,7 +1324,7 @@ async function deleteEdit() {
                   @dragstart="onPresetDragStart(i)"
                   @dragend="onDragEnd"
                 >
-                  <img :src="`/img/${p.img}.gif`" width="20" height="20" alt="" draggable="false" />
+                  <img :src="`/img/svg/${p.img}.svg`" width="20" height="20" alt="" draggable="false" />
                   {{ p.alt }}
                   <button
                     v-if="i >= stdFacPresets.length"
@@ -1358,7 +1358,7 @@ async function deleteEdit() {
                     <option v-for="im in IMG_PRESETS" :key="im" :value="im">{{ im }}</option>
                   </select>
                 </label>
-                <img :src="`/img/${presetDraft.img}.gif`" width="24" height="24" alt="" />
+                <img :src="`/img/svg/${presetDraft.img}.svg`" width="24" height="24" alt="" />
                 <button class="btn primary mini" :disabled="busy" @click="savePreset">保存</button>
               </div>
               <div class="plot-towns">
@@ -1423,7 +1423,7 @@ async function deleteEdit() {
                         <img
                           v-if="mapFacilityAt(c, ri, facilityTown) >= 0"
                           class="fac-icon"
-                          :src="`/img/${townmap[mapFacilityAt(c, ri, facilityTown)].img}.gif`"
+                          :src="`/img/svg/${townmap[mapFacilityAt(c, ri, facilityTown)].img}.svg`"
                           width="24"
                           height="24"
                           :alt="townmap[mapFacilityAt(c, ri, facilityTown)].alt"
@@ -1459,7 +1459,7 @@ async function deleteEdit() {
                     <label class="chk"><input type="checkbox" v-model="selectedFacility.ready" /> 有効（オフで準備中=クリック不可）</label>
                     <div class="sel-prev">
                       位置: {{ mapRows[selectedFacility.row] }}{{ selectedFacility.col }}
-                      <img :src="`/img/${selectedFacility.img}.gif`" width="28" height="28" alt="" />
+                      <img :src="`/img/svg/${selectedFacility.img}.svg`" width="28" height="28" alt="" />
                     </div>
                     <button class="btn danger mini" @click="deleteFacility">この施設を削除</button>
                   </div>
@@ -1563,7 +1563,7 @@ async function deleteEdit() {
                       <img
                         v-if="mapFacilityAt(c, ri, assetTown) >= 0"
                         class="fac-ref"
-                        :src="`/img/${townmap[mapFacilityAt(c, ri, assetTown)].img}.gif`"
+                        :src="`/img/svg/${townmap[mapFacilityAt(c, ri, assetTown)].img}.svg`"
                         alt=""
                         draggable="false"
                       />
