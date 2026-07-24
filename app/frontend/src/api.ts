@@ -151,13 +151,44 @@ export interface PublicSummary {
   display_name: string;
   job: string;
   job_level: number;
+  created_at: string; // 入居日
 }
 // 公開プロフィール(お金/身元などの非公開項目は含まない)。
 export interface PublicProfile {
   id: number;
   display_name: string;
+  created_at: string;
   status: Player['status'];
   params: Params;
+}
+
+// 役場: 街のニュース/住民の出来事の1件。
+export interface NewsEntry {
+  id: number;
+  kind: string; // 入居/就職/家/イベント/当選
+  actor_id: number | null;
+  actor_name: string;
+  message: string;
+  good: boolean | null; // イベントの良悪。null=中立
+  at: string;
+}
+// 役場: ランキング種別。
+export interface RankingKey {
+  key: string;
+  label: string;
+  unit: string;
+}
+export interface RankingEntry {
+  rank: number;
+  id: number;
+  display_name: string;
+  job: string;
+  job_level: number;
+  value: number;
+}
+export interface RankingResult extends RankingKey {
+  entries: RankingEntry[];
+  self: RankingEntry | null; // 圏外のときだけ入る自分の行
 }
 
 // 仕事1回の結果サマリ(給料・昇給・ボーナス・経験値)。
@@ -913,6 +944,11 @@ export const api = {
   getPlayer: (id: number) => request<Player>('GET', `/players/${id}`),
   listPlayers: () => request<PublicSummary[]>('GET', '/players'),
   playerProfile: (id: number) => request<PublicProfile>('GET', `/players/${id}/profile`),
+  // 役場: 街のニュース(街全体)と住民ごとの出来事。
+  townNews: (limit = 100) => request<NewsEntry[]>('GET', `/news?limit=${limit}`),
+  playerNews: (id: number, limit = 50) => request<NewsEntry[]>('GET', `/players/${id}/news?limit=${limit}`),
+  rankingKeys: () => request<RankingKey[]>('GET', '/ranking/keys'),
+  ranking: (key: string, self: number) => request<RankingResult>('GET', `/ranking?key=${key}&self=${self}`),
   townMap: () => request<TownFacility[]>('GET', '/townmap'),
   townAssets: () => request<TownAsset[]>('GET', '/townassets'),
   towns: () => request<Town[]>('GET', '/towns'),

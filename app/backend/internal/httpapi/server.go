@@ -12,7 +12,9 @@ import (
 	"github.com/shiroha-a/town/internal/greeting"
 	"github.com/shiroha-a/town/internal/keiba"
 	"github.com/shiroha-a/town/internal/mail"
+	"github.com/shiroha-a/town/internal/news"
 	"github.com/shiroha-a/town/internal/player"
+	"github.com/shiroha-a/town/internal/ranking"
 	"github.com/shiroha-a/town/internal/settings"
 	"github.com/shiroha-a/town/internal/stock"
 	"github.com/shiroha-a/town/internal/townmap"
@@ -31,12 +33,14 @@ type Server struct {
 	greeting   *greeting.Service
 	attendance *attendance.Service
 	cleague    *cleague.Service
+	news       *news.Service
+	ranking    *ranking.Service
 	greetHub   *greetHub // あいさつSSE配信のプロセス内ハブ
 }
 
 // NewServer builds the HTTP handler for the REST API.
-func NewServer(players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store, stockSvc *stock.Service, keibaSvc *keiba.Service, mailSvc *mail.Service, greetingSvc *greeting.Service, attendanceSvc *attendance.Service, cleagueSvc *cleague.Service) http.Handler {
-	s := &Server{players: players, actions: actions, content: contentSvc, settings: st, townmap: tmap, stock: stockSvc, keiba: keibaSvc, mail: mailSvc, greeting: greetingSvc, attendance: attendanceSvc, cleague: cleagueSvc, greetHub: newGreetHub()}
+func NewServer(players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store, stockSvc *stock.Service, keibaSvc *keiba.Service, mailSvc *mail.Service, greetingSvc *greeting.Service, attendanceSvc *attendance.Service, cleagueSvc *cleague.Service, newsSvc *news.Service, rankingSvc *ranking.Service) http.Handler {
+	s := &Server{players: players, actions: actions, content: contentSvc, settings: st, townmap: tmap, stock: stockSvc, keiba: keibaSvc, mail: mailSvc, greeting: greetingSvc, attendance: attendanceSvc, cleague: cleagueSvc, news: newsSvc, ranking: rankingSvc, greetHub: newGreetHub()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("POST /api/v1/players", s.registerPlayer)
@@ -44,6 +48,10 @@ func NewServer(players *player.Service, actions *action.Service, contentSvc *con
 	mux.HandleFunc("GET /api/v1/players/{id}", s.getPlayer)
 	mux.HandleFunc("GET /api/v1/participants", s.participants)
 	mux.HandleFunc("GET /api/v1/players/{id}/profile", s.playerProfile)
+	mux.HandleFunc("GET /api/v1/news", s.townNews)
+	mux.HandleFunc("GET /api/v1/players/{id}/news", s.playerNews)
+	mux.HandleFunc("GET /api/v1/ranking", s.townRanking)
+	mux.HandleFunc("GET /api/v1/ranking/keys", s.rankingKeys)
 	mux.HandleFunc("GET /api/v1/townmap", s.townMap)
 	mux.HandleFunc("GET /api/v1/townassets", s.townAssets)
 	mux.HandleFunc("GET /api/v1/towns", s.towns)

@@ -14,6 +14,7 @@ import (
 	"github.com/shiroha-a/town/internal/condition"
 	"github.com/shiroha-a/town/internal/effects"
 	"github.com/shiroha-a/town/internal/ledger"
+	"github.com/shiroha-a/town/internal/news"
 	"github.com/shiroha-a/town/internal/rng"
 	"github.com/shiroha-a/town/internal/settings"
 )
@@ -30,7 +31,8 @@ type Player struct {
 	SuperSavings int64
 	LoanDaily    int64 // 住宅ローンの日額返済(なければ0)
 	LoanCount    int   // 住宅ローンの残り返済回数(なければ0)
-	CurrentTown   int   // 現在いる街(0=公園..4=謎の街)。街移動で変化
+	CurrentTown   int       // 現在いる街(0=公園..4=謎の街)。街移動で変化
+	CreatedAt     time.Time // 入居日(役場の名鑑/プロフィールで在住日数を出す)
 	Status        Status
 	Params        Params
 	Items         []ItemStack
@@ -170,7 +172,9 @@ func (s *Service) Register(ctx context.Context, instanceHost, remoteUserID, disp
 			`INSERT INTO player_roles (player_id, role) VALUES ($1, $2)`, id, role); err != nil {
 			return fmt.Errorf("insert player_roles: %w", err)
 		}
-		return nil
+		// 街のニュース(レガシー game.cgi の news_kiroku("入居", ...))。
+		return news.RecordFor(ctx, tx, news.KindMoveIn, id, displayName,
+			fmt.Sprintf("%sさんが新しい住民になりました。", displayName), nil, true)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("register: %w", err)
@@ -223,13 +227,14 @@ type PublicSummary struct {
 	DisplayName string
 	Job         string
 	JobLevel    int
+	CreatedAt   time.Time // 入居日(役場の「新着順」並び替えに使う)
 }
 
 // ListPublic returns all active players with public summary fields, for the
 // profile/roster screen. Private fields (money, identity) are never included.
 func (s *Service) ListPublic(ctx context.Context) ([]PublicSummary, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT p.id, p.display_name, ps.job, ps.job_level
+		`SELECT p.id, p.display_name, ps.job, ps.job_level, p.created_at
 		 FROM players p JOIN player_status ps ON ps.player_id = p.id
 		 WHERE p.deleted_at IS NULL ORDER BY p.id`)
 	if err != nil {
@@ -239,7 +244,7 @@ func (s *Service) ListPublic(ctx context.Context) ([]PublicSummary, error) {
 	out := []PublicSummary{}
 	for rows.Next() {
 		var ps PublicSummary
-		if err := rows.Scan(&ps.ID, &ps.DisplayName, &ps.Job, &ps.JobLevel); err != nil {
+		if err := rows.Scan(&ps.ID, &ps.DisplayName, &ps.Job, &ps.JobLevel, &ps.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan player summary: %w", err)
 		}
 		out = append(out, ps)
@@ -402,9 +407,9 @@ func (s *Service) HasRole(ctx context.Context, id int64, role string) (bool, err
 func (s *Service) Get(ctx context.Context, id int64) (*Player, error) {
 	p := &Player{ID: id}
 	err := s.pool.QueryRow(ctx,
-		`SELECT instance_host, remote_user_id, display_name, current_town
+		`SELECT instance_host, remote_user_id, display_name, current_town, created_at
 		 FROM players WHERE id = $1 AND deleted_at IS NULL`, id).
-		Scan(&p.InstanceHost, &p.RemoteUserID, &p.DisplayName, &p.CurrentTown)
+		Scan(&p.InstanceHost, &p.RemoteUserID, &p.DisplayName, &p.CurrentTown, &p.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

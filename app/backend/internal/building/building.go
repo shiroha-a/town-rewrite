@@ -91,6 +91,14 @@ func IsHidden(no int) bool {
 	return false
 }
 
+// TownName returns the display name of the town at no, or "" if unknown.
+func TownName(no int) string {
+	if t, ok := townByNo(no); ok {
+		return t.Name
+	}
+	return ""
+}
+
 // townByNo finds a town by its number.
 func townByNo(no int) (Town, bool) {
 	townsMu.RLock()

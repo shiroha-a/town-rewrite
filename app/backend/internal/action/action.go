@@ -29,6 +29,7 @@ import (
 	"github.com/shiroha-a/town/internal/jobrule"
 	"github.com/shiroha-a/town/internal/keiba"
 	"github.com/shiroha-a/town/internal/ledger"
+	"github.com/shiroha-a/town/internal/news"
 	"github.com/shiroha-a/town/internal/player"
 	"github.com/shiroha-a/town/internal/rng"
 	"github.com/shiroha-a/town/internal/settings"
@@ -418,7 +419,13 @@ func (s *Service) DoChangeJob(ctx context.Context, playerID int64, jobName, idem
 			 VALUES ($1, 'job', $2, $3, 'job_change')`, playerID, oldJob, jobName); err != nil {
 			return fmt.Errorf("insert history: %w", err)
 		}
-		return nil
+		// 街のニュース(レガシー basic.cgi の news_kiroku("就職", ...))。
+		name, err := news.ActorName(ctx, tx, playerID)
+		if err != nil {
+			return err
+		}
+		return news.RecordFor(ctx, tx, news.KindJob, playerID, name,
+			fmt.Sprintf("%sさんが、%s から %s になりました。", name, oldJob, jobName), nil, true)
 	})
 }
 
@@ -2937,7 +2944,18 @@ func (s *Service) applyEventOutcome(ctx context.Context, tx pgx.Tx, playerID int
 			return fmt.Errorf("event weight: %w", err)
 		}
 	}
-	return nil
+
+	// 役場のイベント履歴に残す。イベントは頻度が高いので既定では本人の履歴だけに
+	// 入れ、高額(TownWideMoneyThreshold以上)のものだけ街のニュースへ昇格させる
+	// (レガシーは「地震」「運用」という大金の動くイベントだけを news_kiroku していた)。
+	name, err := news.ActorName(ctx, tx, playerID)
+	if err != nil {
+		return err
+	}
+	good := o.Good
+	townWide := o.MoneyDelta >= news.TownWideMoneyThreshold || o.MoneyDelta <= -news.TownWideMoneyThreshold
+	return news.RecordFor(ctx, tx, news.KindEvent, playerID, name,
+		fmt.Sprintf("%sさん：%s", name, o.Message), &good, townWide)
 }
 
 // cleagueMatchInterval rate-limits battles per player (legacy 疲労クールタイム).
