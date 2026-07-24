@@ -85,21 +85,21 @@ async function attend(item: ShopItem) {
         <thead>
           <tr>
             <th class="l">講座名</th>
+            <th></th>
             <th v-for="s in SUBJECTS" :key="s.key" class="p">{{ s.label }}</th>
             <th>金額</th>
             <th>頭</th>
-            <th></th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="item in menu" :key="item.id" :data-test="`course-${item.id}`">
             <td class="l">{{ item.name }}</td>
+            <td class="use"><button class="btn" :disabled="busy" @click="attend(item)">受講する</button></td>
             <td v-for="s in SUBJECTS" :key="s.key" class="p" :class="{ up: (item.params[s.key] ?? 0) > 0 }">
               {{ item.params[s.key] ?? 0 }}
             </td>
             <td class="price">{{ yen(item.price) }}円</td>
             <td class="cost">{{ brainCost(item) }}</td>
-            <td class="use"><button class="btn" :disabled="busy" @click="attend(item)">受講する</button></td>
           </tr>
         </tbody>
       </table>
