@@ -12,6 +12,7 @@ export interface ItemStack {
   money: number;
   params: Record<string, number>;
   interval_min: number;
+  calorie_g: number; // 摂取カロリー(食べると体重+calorie_g g)
   // クールタイム中の再使用可能時刻(ISO8601)。使用可能ならnull。
   next_available_at: string | null;
 }
@@ -102,6 +103,7 @@ export interface ShopItem {
   durability: number;
   durability_unit: string; // 'use'(回) or 'day'(日)
   power_multiplier: number; // 温泉の回復速度倍率(0=温泉ではない)
+  calorie_g: number; // 摂取カロリー(食べると体重+calorie_g g)
   stock: number; // 本日の店頭在庫(-1=無制限)
 }
 

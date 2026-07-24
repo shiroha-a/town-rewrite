@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { api, type Player, type ShopItem } from '../api';
-import { PARAM_COLUMNS } from '../params';
+import { PARAM_COLUMNS, PARAM_COLUMNS_MAIN, PARAM_COLUMNS_POWER } from '../params';
 import Toast from './Toast.vue';
 import { useToast, buildEffectLines } from '../toast';
 
@@ -88,7 +88,9 @@ async function buy(it: ShopItem) {
               <th class="l">品名</th>
               <th>価格</th>
               <th>耐久</th>
-              <th v-for="c in PARAM_COLUMNS" :key="c.key" class="p">{{ c.label }}</th>
+              <th v-for="c in PARAM_COLUMNS_MAIN" :key="c.key" class="p">{{ c.label }}</th>
+              <th>ｶﾛﾘｰ</th>
+              <th v-for="c in PARAM_COLUMNS_POWER" :key="c.key" class="p">{{ c.label }}</th>
               <th>間隔</th>
               <th>在庫</th>
               <th></th>
@@ -97,13 +99,17 @@ async function buy(it: ShopItem) {
           <template v-for="[cat, list] in grouped" :key="cat">
             <tbody>
               <tr class="cat-row">
-                <td :colspan="PARAM_COLUMNS.length + 6">●{{ cat }}</td>
+                <td :colspan="PARAM_COLUMNS.length + 7">●{{ cat }}</td>
               </tr>
               <tr v-for="it in list" :key="it.id" :data-test="`shop-${it.id}`">
                 <td class="l">{{ it.name }}</td>
                 <td class="price">{{ yen(it.price) }}円</td>
                 <td class="dura">{{ it.durability }}{{ it.durability_unit === 'day' ? '日' : '回' }}</td>
-                <td v-for="c in PARAM_COLUMNS" :key="c.key" class="p" :class="{ up: (it.params[c.key] ?? 0) > 0 }">
+                <td v-for="c in PARAM_COLUMNS_MAIN" :key="c.key" class="p" :class="{ up: (it.params[c.key] ?? 0) > 0 }">
+                  {{ it.params[c.key] ?? 0 }}
+                </td>
+                <td class="cal">{{ it.calorie_g > 0 ? it.calorie_g : '-' }}</td>
+                <td v-for="c in PARAM_COLUMNS_POWER" :key="c.key" class="p" :class="{ up: (it.params[c.key] ?? 0) > 0 }">
                   {{ it.params[c.key] ?? 0 }}
                 </td>
                 <td class="interval">{{ intervalLabel(it.interval_min) }}</td>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { api, type Player, type ItemStack } from '../api';
-import { PARAM_COLUMNS } from '../params';
+import { PARAM_COLUMNS, PARAM_COLUMNS_MAIN, PARAM_COLUMNS_POWER } from '../params';
 import Toast from './Toast.vue';
 import { useToast, buildEffectLines } from '../toast';
 
@@ -133,14 +133,16 @@ async function use(it: ItemStack) {
               <th>使用可</th>
               <th></th>
               <th>残り</th>
-              <th v-for="c in PARAM_COLUMNS" :key="c.key" class="p">{{ c.label }}</th>
+              <th v-for="c in PARAM_COLUMNS_MAIN" :key="c.key" class="p">{{ c.label }}</th>
+              <th>ｶﾛﾘｰ</th>
+              <th v-for="c in PARAM_COLUMNS_POWER" :key="c.key" class="p">{{ c.label }}</th>
               <th>間隔</th>
             </tr>
           </thead>
           <template v-for="[cat, list] in grouped" :key="cat">
             <tbody>
               <tr class="cat-row">
-                <td :colspan="PARAM_COLUMNS.length + 5">●{{ cat }}</td>
+                <td :colspan="PARAM_COLUMNS.length + 6">●{{ cat }}</td>
               </tr>
               <tr v-for="it in list" :key="it.item_id" :data-test="`item-${it.item_id}`">
                 <td class="l">○{{ it.name }}</td>
@@ -166,7 +168,11 @@ async function use(it: ItemStack) {
                   </button>
                 </td>
                 <td>{{ it.remaining_uses }}{{ it.durability_unit === 'day' ? '日' : '回' }}</td>
-                <td v-for="c in PARAM_COLUMNS" :key="c.key" class="p" :class="{ up: (it.params[c.key] ?? 0) > 0 }">
+                <td v-for="c in PARAM_COLUMNS_MAIN" :key="c.key" class="p" :class="{ up: (it.params[c.key] ?? 0) > 0 }">
+                  {{ it.params[c.key] ?? 0 }}
+                </td>
+                <td>{{ it.calorie_g > 0 ? it.calorie_g : '-' }}</td>
+                <td v-for="c in PARAM_COLUMNS_POWER" :key="c.key" class="p" :class="{ up: (it.params[c.key] ?? 0) > 0 }">
                   {{ it.params[c.key] ?? 0 }}
                 </td>
                 <td class="interval">{{ it.interval_min > 0 ? `${it.interval_min}分` : '-' }}</td>

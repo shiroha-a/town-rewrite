@@ -91,6 +91,11 @@ export const PARAM_COLUMNS: { key: string; label: string }[] = [
   { key: 'nou_energy', label: '頭' },
 ];
 
+// カロリー列を面白さ(面)の右に挿す画面向けの分割ビュー。
+const calCut = PARAM_COLUMNS.findIndex((c) => c.key === 'omoshirosa') + 1;
+export const PARAM_COLUMNS_MAIN = PARAM_COLUMNS.slice(0, calCut);
+export const PARAM_COLUMNS_POWER = PARAM_COLUMNS.slice(calCut);
+
 const label = (k: string) => PARAM_LABEL[k] ?? k;
 
 // 上昇/消費パラメータを "体力+2 国語+2" のように整形。

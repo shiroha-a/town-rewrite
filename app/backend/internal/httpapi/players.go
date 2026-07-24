@@ -50,6 +50,7 @@ type itemResp struct {
 	Money           int64          `json:"money"`
 	Params          map[string]int `json:"params"`
 	IntervalMin     int            `json:"interval_min"`
+	CalorieG        int            `json:"calorie_g"`
 	NextAvailableAt *time.Time     `json:"next_available_at"`
 }
 
@@ -117,6 +118,7 @@ func toResp(p *player.Player) playerResp {
 			Money:           it.Money,
 			Params:          params,
 			IntervalMin:     it.IntervalMin,
+			CalorieG:        it.CalorieG,
 			NextAvailableAt: it.NextAvailableAt,
 		})
 	}
