@@ -134,148 +134,170 @@ const doLoanRepay = () =>
 
     <div v-if="message" :class="['message', kind]" data-test="message">{{ message }}</div>
 
+    <!--
+      PCは左右2カラム、モバイルは.colをdisplay:contentsで解体しorderで
+      普通口座→明細→スーパー定期→明細→振り込み→ローンの縦一列に並べ替える。
+    -->
     <div class="panel-white two-col">
       <div class="col">
-        <h3 class="sec">■普通口座<span class="blue">●現在の預け入れ額：{{ yen(player.savings) }}</span></h3>
-        <p class="note">
-          ※普通口座にお金を預けておくと、1日1回0.5％の利息がつきます。<br />
-          (毎日AM5:00に付与)
-        </p>
-        <div class="row">
-          <span class="lbl">◆お　預　け</span>
-          <input type="number" v-model.number="depositAmt" data-test="deposit-amount" /> 円
-          <button class="btn" :disabled="busy" data-test="deposit" @click="doDeposit">預ける</button>
-        </div>
-        <div class="row">
-          <span class="lbl">◆お引き出し</span>
-          <input type="number" v-model.number="withdrawAmt" data-test="withdraw-amount" /> 円
-          <button class="btn" :disabled="busy" data-test="withdraw" @click="doWithdraw">引き出す</button>
-        </div>
+        <section class="bsec bsec-normal">
+          <h3 class="sec">■普通口座<span class="blue">●現在の預け入れ額：{{ yen(player.savings) }}</span></h3>
+          <p class="note">
+            ※普通口座にお金を預けておくと、1日1回0.5％の利息がつきます。<br />
+            (毎日AM5:00に付与)
+          </p>
+          <div class="row">
+            <span class="lbl">◆お　預　け</span>
+            <input type="number" v-model.number="depositAmt" data-test="deposit-amount" /> 円
+            <button class="btn" :disabled="busy" data-test="deposit" @click="doDeposit">預ける</button>
+          </div>
+          <div class="row">
+            <span class="lbl">◆お引き出し</span>
+            <input type="number" v-model.number="withdrawAmt" data-test="withdraw-amount" /> 円
+            <button class="btn" :disabled="busy" data-test="withdraw" @click="doWithdraw">引き出す</button>
+          </div>
+        </section>
 
-        <h3 class="sec">■入出金明細</h3>
-        <p class="note">※普通口座の入出金明細を見ることができます(最新30件)。</p>
-        <button class="btn" :disabled="busy" data-test="statement" @click="loadStatement('normal')">
-          入出金明細を見る
-        </button>
-        <table v-if="statement" class="statement">
-          <thead>
-            <tr><th>年月日</th><th>お取り引き</th><th class="num">金額</th><th class="num">残高</th></tr>
-          </thead>
-          <tbody>
-            <tr v-if="!statement.length">
-              <td colspan="4" class="muted">まだ取引がありません。</td>
-            </tr>
-            <tr v-for="(s, i) in statement" :key="i">
-              <td>{{ fmtDate(s.at) }}</td>
-              <td>{{ s.label }}</td>
-              <td class="num" :class="s.amount >= 0 ? 'plus' : 'minus'">
-                {{ s.amount >= 0 ? '+' : '' }}{{ yen(s.amount) }}
-              </td>
-              <td class="num">{{ yen(s.balance) }}</td>
-            </tr>
-          </tbody>
-        </table>
+        <section class="bsec bsec-stmt">
+          <h3 class="sec">■入出金明細</h3>
+          <p class="note">※普通口座の入出金明細を見ることができます(最新30件)。</p>
+          <button class="btn" :disabled="busy" data-test="statement" @click="loadStatement('normal')">
+            入出金明細を見る
+          </button>
+          <div v-if="statement" class="table-scroll">
+            <table class="statement">
+              <thead>
+                <tr><th>年月日</th><th>お取り引き</th><th class="num">金額</th><th class="num">残高</th></tr>
+              </thead>
+              <tbody>
+                <tr v-if="!statement.length">
+                  <td colspan="4" class="muted">まだ取引がありません。</td>
+                </tr>
+                <tr v-for="(s, i) in statement" :key="i">
+                  <td>{{ fmtDate(s.at) }}</td>
+                  <td>{{ s.label }}</td>
+                  <td class="num" :class="s.amount >= 0 ? 'plus' : 'minus'">
+                    {{ s.amount >= 0 ? '+' : '' }}{{ yen(s.amount) }}
+                  </td>
+                  <td class="num">{{ yen(s.balance) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
 
-        <h3 class="sec">■振り込み</h3>
-        <p class="note">
-          ※参加者のメンバー名がわかれば送金することができます。<br />
-          お金は普通口座から引き落とされます(送金は1回100万円まで、超えた分は寄付されます)。
-        </p>
-        <div class="row">
-          <span class="lbl">◆お相手</span>
-          <input type="text" v-model.trim="transferName" placeholder="メンバー名" data-test="transfer-name" />
-        </div>
-        <div class="row">
-          <span class="lbl">◆金　額</span>
-          <input type="number" v-model.number="transferAmt" data-test="transfer-amount" /> 円
-          <button class="btn" :disabled="busy" data-test="transfer" @click="doTransfer">振り込む</button>
-        </div>
+        <section class="bsec bsec-transfer">
+          <h3 class="sec">■振り込み</h3>
+          <p class="note">
+            ※参加者のメンバー名がわかれば送金することができます。<br />
+            お金は普通口座から引き落とされます(送金は1回100万円まで、超えた分は寄付されます)。
+          </p>
+          <div class="row">
+            <span class="lbl">◆お相手</span>
+            <input type="text" v-model.trim="transferName" placeholder="メンバー名" data-test="transfer-name" />
+          </div>
+          <div class="row">
+            <span class="lbl">◆金　額</span>
+            <input type="number" v-model.number="transferAmt" data-test="transfer-amount" /> 円
+            <button class="btn" :disabled="busy" data-test="transfer" @click="doTransfer">振り込む</button>
+          </div>
+        </section>
       </div>
 
       <div class="col">
-        <h3 class="sec">
-          ■スーパー定期<span class="blue">●スーパー定期預金額：{{ yen(player.super_savings) }}</span>
-        </h3>
-        <p class="note">
-          ※スーパー定期では1日1回1％の利息がつきます。<br />
-          預け入れは100万円単位、引き出しは解約(全額または100万円単位)となります。
-        </p>
-        <div class="row">
-          <span class="lbl">◆お　預　け</span>
-          <input type="number" v-model.number="superDepositMan" min="0" data-test="super-deposit-amount" /> 百万円
-          <button class="btn" :disabled="busy" data-test="super-deposit" @click="doSuperDeposit">預ける</button>
-        </div>
-        <div class="row">
-          <span class="lbl">◆解　　約</span>
-          <input type="number" v-model.number="superCancelMan" min="0" data-test="super-cancel-amount" /> 百万円
-          <button class="btn" :disabled="busy" data-test="super-cancel" @click="doSuperCancel(false)">部分解約</button>
-          <button class="btn" :disabled="busy" data-test="super-cancel-all" @click="doSuperCancel(true)">全額解約</button>
-        </div>
-
-        <h3 class="sec">■スーパー定期明細</h3>
-        <p class="note">※スーパー定期の預入・解約・利息の明細を見ることができます(最新30件)。</p>
-        <button class="btn" :disabled="busy" data-test="super-statement" @click="loadStatement('super')">
-          スーパー定期明細を見る
-        </button>
-        <table v-if="superStatement" class="statement">
-          <thead>
-            <tr><th>年月日</th><th>お取り引き</th><th class="num">金額</th><th class="num">残高</th></tr>
-          </thead>
-          <tbody>
-            <tr v-if="!superStatement.length">
-              <td colspan="4" class="muted">まだ取引がありません。</td>
-            </tr>
-            <tr v-for="(s, i) in superStatement" :key="i">
-              <td>{{ fmtDate(s.at) }}</td>
-              <td>{{ s.label }}</td>
-              <td class="num" :class="s.amount >= 0 ? 'plus' : 'minus'">
-                {{ s.amount >= 0 ? '+' : '' }}{{ yen(s.amount) }}
-              </td>
-              <td class="num">{{ yen(s.balance) }}</td>
-            </tr>
-          </tbody>
-        </table>
-
-        <h3 class="sec">■ローン</h3>
-        <p class="note">※当銀行へのご利用度や収入に応じてお金を借りることができます。</p>
-        <!-- 返済中 -->
-        <template v-if="player.loan_count > 0">
+        <section class="bsec bsec-super">
+          <h3 class="sec">
+            ■スーパー定期<span class="blue">●スーパー定期預金額：{{ yen(player.super_savings) }}</span>
+          </h3>
           <p class="note">
-            現在のローン残高：<span class="blue">{{ yen(player.loan_daily * player.loan_count) }}円</span><br />
-            （日額 {{ yen(player.loan_daily) }}円 × 残り{{ player.loan_count }}回）<br />
-            ※毎日AM5:00に日額が普通口座から自動で引き落とされます。
+            ※スーパー定期では1日1回1％の利息がつきます。<br />
+            預け入れは100万円単位、引き出しは解約(全額または100万円単位)となります。
           </p>
-          <button class="btn" :disabled="busy" data-test="loan-repay" @click="doLoanRepay">一括返済する</button>
-        </template>
-        <!-- 未借入 -->
-        <template v-else>
-          <button v-if="!loanQuote" class="btn" :disabled="busy" data-test="loan-quote" @click="loadLoanQuote">
-            借入可能額を調べる
-          </button>
-          <div v-else>
-            <p class="note">借入可能額：<span class="blue">{{ yen(loanQuote.limit) }}円</span></p>
-            <template v-if="loanQuote.limit > 0">
-              <p class="note">返済回数を選んで借り入れます(融資額は借入可能額の全額)。</p>
-              <table class="statement">
-                <thead>
-                  <tr><th>返済回数</th><th>利率</th><th class="num">日額</th><th class="num">総返済</th><th></th></tr>
-                </thead>
-                <tbody>
-                  <tr v-for="pl in loanQuote.plans" :key="pl.count">
-                    <td>{{ pl.count }}回</td>
-                    <td>{{ pl.rate }}%</td>
-                    <td class="num">{{ yen(pl.daily) }}</td>
-                    <td class="num">{{ yen(pl.total) }}</td>
-                    <td>
-                      <button class="btn" :disabled="busy" @click="doLoanBorrow(pl.count)">借りる</button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </template>
-            <p v-else class="note muted">現在借り入れできる金額がありません。</p>
+          <div class="row">
+            <span class="lbl">◆お　預　け</span>
+            <input type="number" v-model.number="superDepositMan" min="0" data-test="super-deposit-amount" /> 百万円
+            <button class="btn" :disabled="busy" data-test="super-deposit" @click="doSuperDeposit">預ける</button>
           </div>
-        </template>
+          <div class="row">
+            <span class="lbl">◆解　　約</span>
+            <input type="number" v-model.number="superCancelMan" min="0" data-test="super-cancel-amount" /> 百万円
+            <button class="btn" :disabled="busy" data-test="super-cancel" @click="doSuperCancel(false)">部分解約</button>
+            <button class="btn" :disabled="busy" data-test="super-cancel-all" @click="doSuperCancel(true)">全額解約</button>
+          </div>
+        </section>
+
+        <section class="bsec bsec-super-stmt">
+          <h3 class="sec">■スーパー定期明細</h3>
+          <p class="note">※スーパー定期の預入・解約・利息の明細を見ることができます(最新30件)。</p>
+          <button class="btn" :disabled="busy" data-test="super-statement" @click="loadStatement('super')">
+            スーパー定期明細を見る
+          </button>
+          <div v-if="superStatement" class="table-scroll">
+            <table class="statement">
+              <thead>
+                <tr><th>年月日</th><th>お取り引き</th><th class="num">金額</th><th class="num">残高</th></tr>
+              </thead>
+              <tbody>
+                <tr v-if="!superStatement.length">
+                  <td colspan="4" class="muted">まだ取引がありません。</td>
+                </tr>
+                <tr v-for="(s, i) in superStatement" :key="i">
+                  <td>{{ fmtDate(s.at) }}</td>
+                  <td>{{ s.label }}</td>
+                  <td class="num" :class="s.amount >= 0 ? 'plus' : 'minus'">
+                    {{ s.amount >= 0 ? '+' : '' }}{{ yen(s.amount) }}
+                  </td>
+                  <td class="num">{{ yen(s.balance) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="bsec bsec-loan">
+          <h3 class="sec">■ローン</h3>
+          <p class="note">※当銀行へのご利用度や収入に応じてお金を借りることができます。</p>
+          <!-- 返済中 -->
+          <template v-if="player.loan_count > 0">
+            <p class="note">
+              現在のローン残高：<span class="blue">{{ yen(player.loan_daily * player.loan_count) }}円</span><br />
+              （日額 {{ yen(player.loan_daily) }}円 × 残り{{ player.loan_count }}回）<br />
+              ※毎日AM5:00に日額が普通口座から自動で引き落とされます。
+            </p>
+            <button class="btn" :disabled="busy" data-test="loan-repay" @click="doLoanRepay">一括返済する</button>
+          </template>
+          <!-- 未借入 -->
+          <template v-else>
+            <button v-if="!loanQuote" class="btn" :disabled="busy" data-test="loan-quote" @click="loadLoanQuote">
+              借入可能額を調べる
+            </button>
+            <div v-else>
+              <p class="note">借入可能額：<span class="blue">{{ yen(loanQuote.limit) }}円</span></p>
+              <template v-if="loanQuote.limit > 0">
+                <p class="note">返済回数を選んで借り入れます(融資額は借入可能額の全額)。</p>
+                <div class="table-scroll">
+                  <table class="statement">
+                    <thead>
+                      <tr><th>返済回数</th><th>利率</th><th class="num">日額</th><th class="num">総返済</th><th></th></tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="pl in loanQuote.plans" :key="pl.count">
+                        <td>{{ pl.count }}回</td>
+                        <td>{{ pl.rate }}%</td>
+                        <td class="num">{{ yen(pl.daily) }}</td>
+                        <td class="num">{{ yen(pl.total) }}</td>
+                        <td>
+                          <button class="btn" :disabled="busy" @click="doLoanBorrow(pl.count)">借りる</button>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </template>
+              <p v-else class="note muted">現在借り入れできる金額がありません。</p>
+            </div>
+          </template>
+        </section>
       </div>
     </div>
 
@@ -336,12 +358,15 @@ const doLoanRepay = () =>
   flex: 1 1 0;
   min-width: 0;
 }
+.table-scroll {
+  overflow-x: auto;
+}
 .sec {
   color: #cc0000;
   font-size: 13px;
   margin: 14px 0 6px;
 }
-.sec:first-child {
+.bsec:first-child > .sec {
   margin-top: 0;
 }
 .sec .blue {
@@ -386,5 +411,50 @@ const doLoanRepay = () =>
 }
 .statement .minus {
   color: #cc3300;
+}
+/* モバイル: 2カラムを解体し、orderで縦一列に並べ替える */
+@media (max-width: 700px) {
+  .two-col {
+    flex-direction: column;
+    gap: 0;
+  }
+  .two-col .col {
+    display: contents;
+  }
+  .bsec-normal {
+    order: 1;
+  }
+  .bsec-stmt {
+    order: 2;
+  }
+  .bsec-super {
+    order: 3;
+  }
+  .bsec-super-stmt {
+    order: 4;
+  }
+  .bsec-transfer {
+    order: 5;
+  }
+  .bsec-loan {
+    order: 6;
+  }
+  /* display:contents下では:first-child基準が並び順と一致しないため上マージンを取り直す */
+  .two-col .bsec > .sec {
+    margin-top: 14px;
+  }
+  .two-col .bsec-normal > .sec {
+    margin-top: 0;
+  }
+  /* タイトル帯が広すぎて挨拶文が潰れるため縮める */
+  .bank-header .title {
+    flex: 0 0 96px;
+    font-size: 16px;
+    letter-spacing: 3px;
+  }
+  .row input[type='number'],
+  .row input[type='text'] {
+    max-width: 45vw;
+  }
 }
 </style>
