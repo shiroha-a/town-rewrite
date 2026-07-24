@@ -231,15 +231,12 @@ body {
   object-fit: cover;
   pointer-events: none;
 }
-/* 空き地(akichi)マス: うっすらと表示し、クリックで建設会社(そのマス選択済み)へ。 */
+/* 空き地(akichi)マス: クリックで建設会社(そのマス選択済み)へ。
+   SVGのSALE看板は配色が控えめなので減光せずそのまま表示する。 */
 .townmap-grid .akichi-btn .akichi-img {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  opacity: 0.55;
-}
-.townmap-grid .akichi-btn:hover .akichi-img {
-  opacity: 0.9;
 }
 .facility {
   width: 100%;
