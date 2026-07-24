@@ -707,9 +707,6 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
           <span class="cn">{{ g.user_name }}</span>：<span :style="{ color: g.color }">{{ g.body }}</span>
         </div>
       </div>
-      <div class="left-links">
-        <button class="link-btn" @click="nav('casino')">カジノ</button>
-      </div>
     </div>
 
     <!-- 右カラム: 街情報 + コマンド + ステータス -->
