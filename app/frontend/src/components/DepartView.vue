@@ -86,14 +86,14 @@ async function buy(it: ShopItem) {
           <thead>
             <tr>
               <th class="l">品名</th>
+              <th>在庫</th>
+              <th></th>
               <th>価格</th>
               <th>耐久</th>
               <th v-for="c in PARAM_COLUMNS_MAIN" :key="c.key" class="p">{{ c.label }}</th>
               <th>ｶﾛﾘｰ</th>
               <th v-for="c in PARAM_COLUMNS_POWER" :key="c.key" class="p">{{ c.label }}</th>
               <th>間隔</th>
-              <th>在庫</th>
-              <th></th>
             </tr>
           </thead>
           <template v-for="[cat, list] in grouped" :key="cat">
@@ -103,6 +103,14 @@ async function buy(it: ShopItem) {
               </tr>
               <tr v-for="it in list" :key="it.id" :data-test="`shop-${it.id}`">
                 <td class="l">{{ it.name }}</td>
+                <td class="stock" :class="{ soldout: it.stock === 0 }">
+                  {{ it.stock < 0 ? '-' : it.stock === 0 ? '売切' : it.stock }}
+                </td>
+                <td class="buy">
+                  <button class="btn" :disabled="busy || it.stock === 0" @click="buy(it)">
+                    {{ it.stock === 0 ? '売切' : '買う' }}
+                  </button>
+                </td>
                 <td class="price">{{ yen(it.price) }}円</td>
                 <td class="dura">{{ it.durability }}{{ it.durability_unit === 'day' ? '日' : '回' }}</td>
                 <td v-for="c in PARAM_COLUMNS_MAIN" :key="c.key" class="p" :class="{ up: (it.params[c.key] ?? 0) > 0 }">
@@ -113,14 +121,6 @@ async function buy(it: ShopItem) {
                   {{ it.params[c.key] ?? 0 }}
                 </td>
                 <td class="interval">{{ intervalLabel(it.interval_min) }}</td>
-                <td class="stock" :class="{ soldout: it.stock === 0 }">
-                  {{ it.stock < 0 ? '-' : it.stock === 0 ? '売切' : it.stock }}
-                </td>
-                <td class="buy">
-                  <button class="btn" :disabled="busy || it.stock === 0" @click="buy(it)">
-                    {{ it.stock === 0 ? '売切' : '買う' }}
-                  </button>
-                </td>
               </tr>
             </tbody>
           </template>
