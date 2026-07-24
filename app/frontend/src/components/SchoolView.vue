@@ -27,8 +27,8 @@ const kind = ref<'ok' | 'error'>('ok');
 const busy = ref(false);
 const { toast, showToast, closeToast } = useToast();
 
-// 頭脳消費は effect の nou_energy 負値。表示用に絶対値を返す。
-const brainCost = (item: ShopItem) => Math.abs(Math.min(0, item.params['nou_energy'] ?? 0));
+// 頭脳消費は effect の nou_energy 負値。ジムの身体消費と同じくマイナス表記で見せる。
+const brainCost = (item: ShopItem) => Math.min(0, item.params['nou_energy'] ?? 0);
 
 onMounted(async () => {
   try {
@@ -99,7 +99,7 @@ async function attend(item: ShopItem) {
               {{ item.params[s.key] ?? 0 }}
             </td>
             <td class="price">{{ yen(item.price) }}円</td>
-            <td class="cost">{{ brainCost(item) }}</td>
+            <td class="cost" :class="{ down: brainCost(item) < 0 }">{{ brainCost(item) }}</td>
           </tr>
         </tbody>
       </table>
@@ -193,6 +193,11 @@ async function attend(item: ShopItem) {
 }
 .menu-table td.cost {
   color: #06c;
+}
+.menu-table td.cost.down {
+  color: #c00;
+  font-weight: bold;
+  background: #ffecec;
 }
 .menu-table td.use {
   width: 56px;
