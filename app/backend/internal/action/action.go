@@ -3167,8 +3167,11 @@ func (s *Service) loadItemUse(ctx context.Context, itemID int64) (effects.Effect
 	)
 	// enabledは購入カタログの掲載可否であり、所持済みアイテムの使用は妨げない
 	// (マスタを無効化しても手持ちが使えなくならないように)。
+	// 食べ物カテゴリはフラグの設定漏れがあっても満腹化する(カテゴリ由来で自動判定)。
 	err := s.pool.QueryRow(ctx,
-		`SELECT effect, use_interval_min, fills_satiety, durability_unit
+		`SELECT effect, use_interval_min,
+		        (fills_satiety OR category IN ('食料品', 'ファーストフード')),
+		        durability_unit
 		 FROM content_items WHERE id = $1`,
 		itemID).Scan(&effJSON, &intervalMin, &fillsSatiety, &durUnit)
 	if errors.Is(err, pgx.ErrNoRows) {
