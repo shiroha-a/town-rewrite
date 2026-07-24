@@ -14,7 +14,6 @@ import (
 	"github.com/shiroha-a/town/internal/mail"
 	"github.com/shiroha-a/town/internal/player"
 	"github.com/shiroha-a/town/internal/settings"
-	"github.com/shiroha-a/town/internal/shop"
 	"github.com/shiroha-a/town/internal/stock"
 	"github.com/shiroha-a/town/internal/townmap"
 )
@@ -31,14 +30,13 @@ type Server struct {
 	mail       *mail.Service
 	greeting   *greeting.Service
 	attendance *attendance.Service
-	shop       *shop.Service
 	cleague    *cleague.Service
 	greetHub   *greetHub // あいさつSSE配信のプロセス内ハブ
 }
 
 // NewServer builds the HTTP handler for the REST API.
-func NewServer(players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store, stockSvc *stock.Service, keibaSvc *keiba.Service, mailSvc *mail.Service, greetingSvc *greeting.Service, attendanceSvc *attendance.Service, shopSvc *shop.Service, cleagueSvc *cleague.Service) http.Handler {
-	s := &Server{players: players, actions: actions, content: contentSvc, settings: st, townmap: tmap, stock: stockSvc, keiba: keibaSvc, mail: mailSvc, greeting: greetingSvc, attendance: attendanceSvc, shop: shopSvc, cleague: cleagueSvc, greetHub: newGreetHub()}
+func NewServer(players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store, stockSvc *stock.Service, keibaSvc *keiba.Service, mailSvc *mail.Service, greetingSvc *greeting.Service, attendanceSvc *attendance.Service, cleagueSvc *cleague.Service) http.Handler {
+	s := &Server{players: players, actions: actions, content: contentSvc, settings: st, townmap: tmap, stock: stockSvc, keiba: keibaSvc, mail: mailSvc, greeting: greetingSvc, attendance: attendanceSvc, cleague: cleagueSvc, greetHub: newGreetHub()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("POST /api/v1/players", s.registerPlayer)
@@ -70,14 +68,6 @@ func NewServer(players *player.Service, actions *action.Service, contentSvc *con
 	mux.HandleFunc("GET /api/v1/attendance", s.attendanceBoard)
 	mux.HandleFunc("POST /api/v1/players/{id}/attendance/checkin", s.attendanceCheckin)
 	mux.HandleFunc("POST /api/v1/players/{id}/events/roll", s.eventRoll)
-	mux.HandleFunc("GET /api/v1/shops", s.listShops)
-	mux.HandleFunc("GET /api/v1/shops/{ownerId}", s.getShop)
-	mux.HandleFunc("POST /api/v1/players/{id}/shop/open", s.shopOpen)
-	mux.HandleFunc("POST /api/v1/players/{id}/shop/stock", s.shopStock)
-	mux.HandleFunc("POST /api/v1/players/{id}/shop/unstock", s.shopUnstock)
-	mux.HandleFunc("POST /api/v1/players/{id}/shop/price", s.shopPrice)
-	mux.HandleFunc("POST /api/v1/players/{id}/shop/buy", s.shopBuy)
-	mux.HandleFunc("POST /api/v1/players/{id}/shop/offer", s.shopOffer)
 	mux.HandleFunc("GET /api/v1/cleague", s.cleagueRanking)
 	mux.HandleFunc("GET /api/v1/players/{id}/character", s.getCharacter)
 	mux.HandleFunc("POST /api/v1/players/{id}/character", s.setCharacterName)

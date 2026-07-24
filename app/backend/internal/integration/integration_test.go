@@ -33,7 +33,6 @@ import (
 	"github.com/shiroha-a/town/internal/player"
 	"github.com/shiroha-a/town/internal/rng"
 	"github.com/shiroha-a/town/internal/settings"
-	"github.com/shiroha-a/town/internal/shop"
 	"github.com/shiroha-a/town/internal/stock"
 	"github.com/shiroha-a/town/internal/townmap"
 	"github.com/shiroha-a/town/internal/worker"
@@ -145,7 +144,7 @@ func setup(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 		pool.Close()
 		t.Fatalf("townmap set: %v", err)
 	}
-	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc, st, tmap, stock.New(pool), keiba.New(pool, rng.New(7)), mail.New(pool, time.UTC, 5), greeting.New(pool), attendance.New(pool, time.UTC, 5), shop.New(pool), cleague.New(pool)))
+	srv := httptest.NewServer(httpapi.NewServer(svc, actions, contentSvc, st, tmap, stock.New(pool), keiba.New(pool, rng.New(7)), mail.New(pool, time.UTC, 5), greeting.New(pool), attendance.New(pool, time.UTC, 5), cleague.New(pool)))
 	t.Cleanup(func() {
 		srv.Close()
 		pool.Close()
@@ -2470,102 +2469,6 @@ func grantMoney(t *testing.T, pool *pgxpool.Pool, playerID, amount int64) {
 		`INSERT INTO ledger_entry (tx_id, account, delta) VALUES ($1, $2, $3), ($1, $4, $5)`,
 		txid, "player:"+strconv.FormatInt(playerID, 10), amount, "system:test_grant", -amount); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// TestShop covers player shops: opening (fee), stocking from inventory, a buyer
-// purchasing (revenue to owner's savings, item transfers), offerings with the
-// daily cap, and self-buy rejection. Ledger stays zero-sum.
-func TestShop(t *testing.T) {
-	srv, pool := setup(t)
-	ctx := context.Background()
-	led := ledger.New(pool)
-	alice := register(t, srv.URL, "misskey.example", "alice") // 店主
-	bob := register(t, srv.URL, "misskey.example", "bob")     // 買い手
-	grantMoney(t, pool, alice.ID, 2000000)                    // 開設費+仕入れ用
-
-	var drinkID int64
-	if err := pool.QueryRow(ctx, `SELECT id FROM content_items WHERE name = '栄養ドリンク'`).Scan(&drinkID); err != nil {
-		t.Fatal(err)
-	}
-	// aliceが4セット仕入れる。
-	for i := 0; i < 4; i++ {
-		if _, code := itemAction(t, srv.URL, "/buy", alice.ID, drinkID, fmt.Sprintf("ab%d", i)); code != http.StatusOK {
-			t.Fatalf("alice buy status = %d", code)
-		}
-	}
-
-	shopPost := func(id int64, path string, body map[string]any) (int, []byte) {
-		b, _ := json.Marshal(body)
-		resp, err := http.Post(srv.URL+"/api/v1/players/"+strconv.FormatInt(id, 10)+path, "application/json", bytes.NewReader(b))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		data, _ := io.ReadAll(resp.Body)
-		return resp.StatusCode, data
-	}
-
-	// 開店。
-	if code, body := shopPost(alice.ID, "/shop/open", map[string]any{"name": "アリス商店", "idempotency_key": "open1"}); code != http.StatusOK {
-		t.Fatalf("open shop status = %d, body = %s", code, body)
-	}
-	// 在庫を3出品(価格1000)。
-	if code, body := shopPost(alice.ID, "/shop/stock", map[string]any{"item_id": drinkID, "quantity": 3, "price": 1000}); code != http.StatusOK {
-		t.Fatalf("stock status = %d, body = %s", code, body)
-	}
-
-	// 商店一覧にアリス商店。
-	resp, _ := http.Get(srv.URL + "/api/v1/shops")
-	var shops []struct {
-		OwnerID int64 `json:"owner_id"`
-	}
-	json.NewDecoder(resp.Body).Decode(&shops)
-	resp.Body.Close()
-	if len(shops) != 1 || shops[0].OwnerID != alice.ID {
-		t.Fatalf("shops = %+v", shops)
-	}
-
-	// bobが2個購入 → bob -2000, alice貯金 +2000, 在庫3→1。
-	if code, body := shopPost(bob.ID, "/shop/buy", map[string]any{"owner_id": alice.ID, "item_id": drinkID, "quantity": 2, "idempotency_key": "buy1"}); code != http.StatusOK {
-		t.Fatalf("buy status = %d, body = %s", code, body)
-	}
-	var bobMoney, aliceSavings int64
-	pool.QueryRow(ctx, `SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account = $1`, "player:"+strconv.FormatInt(bob.ID, 10)).Scan(&bobMoney)
-	pool.QueryRow(ctx, `SELECT COALESCE(SUM(delta),0) FROM ledger_entry WHERE account = $1`, "savings:"+strconv.FormatInt(alice.ID, 10)).Scan(&aliceSavings)
-	if bobMoney != 500000-2000 {
-		t.Errorf("bob money = %d, want %d", bobMoney, 500000-2000)
-	}
-	if aliceSavings != 2000 {
-		t.Errorf("alice savings = %d, want 2000", aliceSavings)
-	}
-	var stock int
-	pool.QueryRow(ctx, `SELECT stock FROM shop_listings WHERE owner_id=$1 AND item_id=$2`, alice.ID, drinkID).Scan(&stock)
-	if stock != 1 {
-		t.Errorf("stock = %d, want 1", stock)
-	}
-	var bobQty int
-	pool.QueryRow(ctx, `SELECT quantity FROM player_items WHERE player_id=$1 AND item_id=$2`, bob.ID, drinkID).Scan(&bobQty)
-	if bobQty != 2 {
-		t.Errorf("bob qty = %d, want 2", bobQty)
-	}
-
-	// 自分の店では買えない → 422。
-	if code, _ := shopPost(alice.ID, "/shop/buy", map[string]any{"owner_id": alice.ID, "item_id": drinkID, "quantity": 1, "idempotency_key": "self1"}); code != http.StatusUnprocessableEntity {
-		t.Errorf("self-buy status = %d, want 422", code)
-	}
-
-	// bobがさい銭5000 → OK。さらに20000で日次上限(合計25000>20000)超過 → 422。
-	if code, _ := shopPost(bob.ID, "/shop/offer", map[string]any{"owner_id": alice.ID, "amount": 5000, "idempotency_key": "off1"}); code != http.StatusOK {
-		t.Errorf("offer status != 200")
-	}
-	if code, _ := shopPost(bob.ID, "/shop/offer", map[string]any{"owner_id": alice.ID, "amount": 20000, "idempotency_key": "off2"}); code != http.StatusUnprocessableEntity {
-		t.Errorf("over-limit offer status = %d, want 422", code)
-	}
-
-	// 台帳ゼロ和。
-	if sum, _ := led.AuditZeroSum(ctx); sum != 0 {
-		t.Errorf("ledger zero-sum broken: %d", sum)
 	}
 }
 

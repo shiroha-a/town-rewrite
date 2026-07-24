@@ -603,28 +603,6 @@ export interface EventRollResp {
   event: EventOutcome | null;
 }
 
-export interface ShopSummary {
-  owner_id: number;
-  owner_name: string;
-  name: string;
-  listings: number;
-}
-export interface ShopListing {
-  item_id: number;
-  item_name: string;
-  category: string;
-  price: number;
-  stock: number;
-  money: number;
-  params: Record<string, number>;
-}
-export interface ShopDetail {
-  owner_id: number;
-  owner_name: string;
-  name: string;
-  listings: ShopListing[];
-}
-
 export interface Character {
   owner_id: number;
   name: string;
@@ -996,29 +974,6 @@ export const api = {
   battle: (id: number, opponentId: number) =>
     request<BattleResp>('POST', `/players/${id}/character/battle`, {
       opponent_id: opponentId,
-      idempotency_key: newIdempotencyKey(),
-    }),
-  listShops: () => request<ShopSummary[]>('GET', '/shops'),
-  getShop: (ownerId: number) => request<ShopDetail>('GET', `/shops/${ownerId}`),
-  shopOpen: (id: number, name: string) =>
-    request<Player>('POST', `/players/${id}/shop/open`, { name, idempotency_key: newIdempotencyKey() }),
-  shopStock: (id: number, itemId: number, quantity: number, price: number) =>
-    request<{ ok: boolean }>('POST', `/players/${id}/shop/stock`, { item_id: itemId, quantity, price }),
-  shopUnstock: (id: number, itemId: number, quantity: number) =>
-    request<{ ok: boolean }>('POST', `/players/${id}/shop/unstock`, { item_id: itemId, quantity }),
-  shopPrice: (id: number, itemId: number, price: number) =>
-    request<{ ok: boolean }>('POST', `/players/${id}/shop/price`, { item_id: itemId, price }),
-  shopBuy: (id: number, ownerId: number, itemId: number, quantity: number) =>
-    request<Player>('POST', `/players/${id}/shop/buy`, {
-      owner_id: ownerId,
-      item_id: itemId,
-      quantity,
-      idempotency_key: newIdempotencyKey(),
-    }),
-  shopOffer: (id: number, ownerId: number, amount: number) =>
-    request<Player>('POST', `/players/${id}/shop/offer`, {
-      owner_id: ownerId,
-      amount,
       idempotency_key: newIdempotencyKey(),
     }),
   attendanceBoard: () => request<AttendanceBoard>('GET', '/attendance'),

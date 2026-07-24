@@ -21,7 +21,6 @@ import KabuView from './components/KabuView.vue';
 import KeibaView from './components/KeibaView.vue';
 import MailView from './components/MailView.vue';
 import AshiatoView from './components/AshiatoView.vue';
-import ShopView from './components/ShopView.vue';
 import CLeagueView from './components/CLeagueView.vue';
 import YakubaView from './components/YakubaView.vue';
 import AdminView from './components/AdminView.vue';
@@ -150,7 +149,6 @@ const facilityTitles: Record<string, string> = {
     <KeibaView v-else-if="view === 'keiba'" :player="player" @update="onUpdate" @back="back" />
     <MailView v-else-if="view === 'mail'" :player="player" @back="back" />
     <AshiatoView v-else-if="view === 'ashiato'" :player="player" @back="back" />
-    <ShopView v-else-if="view === 'shopping'" :player="player" @update="onUpdate" @back="back" />
     <CLeagueView v-else-if="view === 'doukyo'" :player="player" @update="onUpdate" @back="back" />
     <YakubaView v-else-if="view === 'yakuba'" :player="player" @back="back" />
     <AdminView v-else-if="view === 'admin'" :player="player" @back="back" />

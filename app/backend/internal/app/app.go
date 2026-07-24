@@ -25,7 +25,6 @@ import (
 	"github.com/shiroha-a/town/internal/rediscli"
 	"github.com/shiroha-a/town/internal/rng"
 	"github.com/shiroha-a/town/internal/settings"
-	"github.com/shiroha-a/town/internal/shop"
 	"github.com/shiroha-a/town/internal/stock"
 	"github.com/shiroha-a/town/internal/townmap"
 	"github.com/shiroha-a/town/internal/worker"
@@ -99,12 +98,11 @@ func Run(ctx context.Context, mode string, cfg *config.Config) error {
 	mailSvc := mail.New(pool, loc, cfg.Game.DayBoundaryHour)
 	greetingSvc := greeting.New(pool)
 	attendanceSvc := attendance.New(pool, loc, cfg.Game.DayBoundaryHour)
-	shopSvc := shop.New(pool)
 	cleagueSvc := cleague.New(pool)
 
 	switch mode {
 	case "web":
-		return runWeb(ctx, cfg, logger, players, actions, contentSvc, st, tmap, stockSvc, keibaSvc, mailSvc, greetingSvc, attendanceSvc, shopSvc, cleagueSvc)
+		return runWeb(ctx, cfg, logger, players, actions, contentSvc, st, tmap, stockSvc, keibaSvc, mailSvc, greetingSvc, attendanceSvc, cleagueSvc)
 	case "worker":
 		return worker.New(rdb, pool, led, cfg, st, logger).Run(ctx)
 	default:
@@ -112,10 +110,10 @@ func Run(ctx context.Context, mode string, cfg *config.Config) error {
 	}
 }
 
-func runWeb(ctx context.Context, cfg *config.Config, logger *slog.Logger, players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store, stockSvc *stock.Service, keibaSvc *keiba.Service, mailSvc *mail.Service, greetingSvc *greeting.Service, attendanceSvc *attendance.Service, shopSvc *shop.Service, cleagueSvc *cleague.Service) error {
+func runWeb(ctx context.Context, cfg *config.Config, logger *slog.Logger, players *player.Service, actions *action.Service, contentSvc *content.Service, st *settings.Store, tmap *townmap.Store, stockSvc *stock.Service, keibaSvc *keiba.Service, mailSvc *mail.Service, greetingSvc *greeting.Service, attendanceSvc *attendance.Service, cleagueSvc *cleague.Service) error {
 	srv := &http.Server{
 		Addr:              cfg.Server.HTTPAddr,
-		Handler:           httpapi.NewServer(players, actions, contentSvc, st, tmap, stockSvc, keibaSvc, mailSvc, greetingSvc, attendanceSvc, shopSvc, cleagueSvc),
+		Handler:           httpapi.NewServer(players, actions, contentSvc, st, tmap, stockSvc, keibaSvc, mailSvc, greetingSvc, attendanceSvc, cleagueSvc),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

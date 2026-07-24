@@ -708,7 +708,6 @@ const paramBar = (v: number) => Math.max(3, Math.round((v / paramMax.value) * 10
         </div>
       </div>
       <div class="left-links">
-        <button class="link-btn" @click="nav('shopping')">商店街</button>
         <button class="link-btn" @click="nav('casino')">カジノ</button>
       </div>
     </div>
